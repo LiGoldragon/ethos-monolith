@@ -1,0 +1,28 @@
+[package]
+name         = "ethos-rust"
+version      = "0.1.0"
+edition      = "2024"
+rust-version = "1.89"
+license      = "MIT OR Apache-2.0"
+repository   = "https://github.com/LiGoldragon/ethos-rust"
+description  = "Reads Ethos text, emits Rust (signal.rs, nexus.rs, sema.rs) per component."
+publish      = false
+autobins     = false
+autoexamples = false
+autotests    = false
+
+[lib]
+name = "ethos_rust"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = "2"
+
+[[test]]
+name = "generate"
+path = "tests/generate.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+unused      = { level = "warn", priority = -1 }
+dead_code   = "warn"
