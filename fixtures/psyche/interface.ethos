@@ -1,0 +1,17 @@
+Interface.{0 1 0}
+[]
+{
+  [Record.Entry Subscribe.Layer Unsubscribe.SubscriptionHandle]
+  [Recorded.EntryIdentifier Subscribed.SubscriptionHandle Unsubscribed.SubscriptionHandle]
+  [AdmissionRejected.AdmissionRefusal UnknownSubscription.SubscriptionHandle]
+  [RecordChange.RecordEvent]
+  [
+    Layer.[Spirit Intent Vision]
+    Description.String
+    EntryIdentifier.String
+    SubscriptionHandle.Integer
+    Entry.{Layer Description}
+    AdmissionRefusal.[Duplicate InvalidRequest]
+    RecordEvent.[RecordRecorded.EntryIdentifier]
+  ]
+}

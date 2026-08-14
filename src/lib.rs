@@ -5,4 +5,5 @@
 //! all three artifacts atomically before the component build checks them.
 
 pub mod build;
+pub mod fixture;
 pub mod generate;

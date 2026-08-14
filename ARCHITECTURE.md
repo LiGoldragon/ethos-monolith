@@ -25,3 +25,10 @@ so that dependents can locate it at build time.
 The generator reads plain Ethos text — no authority seal, no bootstrap
 pipeline. Each of the three output files begins with
 `ETHOS_GENERATED_MARKER` and is checked into the consuming repository.
+
+The overnight Interface slice lives under `src/fixture`: the source fixture
+is `fixtures/psyche/interface.ethos`, and its committed Rust projection is
+`src/fixture/generated.rs`. The dialect walks Protos directly in both
+directions. `tests/interface_fixture.rs` checks round-trip equality, nested
+walk evidence, negative shape witnesses, generated freshness, and use of the
+projection as a real Rust module.
