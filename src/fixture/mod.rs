@@ -842,7 +842,7 @@ impl TypeElementReading for TypeElement {
                 Ok(TypeElement::Typedef(NamedTypedef { name, target }))
             }
             TypeSelection::Struct => {
-                let name = block.head().ok_or(InterfaceFault::Head)?.0.clone();
+                let name = Self::symbol(&block.head().ok_or(InterfaceFault::Head)?.0)?;
                 let fields = scope.realize_body(&mut |_, child| {
                     if child.shape != Shape::Bare || child.head().is_some() {
                         return Err(InterfaceFault::Shape);
@@ -852,7 +852,7 @@ impl TypeElementReading for TypeElement {
                 Ok(TypeElement::Struct(NamedStruct { name, fields }))
             }
             TypeSelection::Enum => {
-                let name = block.head().ok_or(InterfaceFault::Head)?.0.clone();
+                let name = Self::symbol(&block.head().ok_or(InterfaceFault::Head)?.0)?;
                 let variants = scope.realize_body(&mut |child_scope, child| {
                     <EnumVariantElement as EnumVariantReading>::realize_variant(child_scope, child)
                 })?;
