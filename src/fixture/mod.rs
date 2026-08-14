@@ -1085,6 +1085,7 @@ impl InterfaceValidation for Interface {
                 TypeElement::Struct(value) => &value.name,
                 TypeElement::Enum(value) => &value.name,
             };
+            <TypeElement as SymbolReading>::symbol(name)?;
             if !names.insert(name.clone()) {
                 return Err(InterfaceFault::Duplicate);
             }
@@ -1092,6 +1093,7 @@ impl InterfaceValidation for Interface {
         let known = |value: &str| value == "String" || value == "Integer" || names.contains(value);
         let mut input_names = BTreeSet::new();
         for operation in &self.inputs.0 {
+            <InputElement as SymbolReading>::symbol(&operation.operation)?;
             if !input_names.insert(operation.operation.clone()) {
                 return Err(InterfaceFault::Duplicate);
             }
@@ -1101,6 +1103,7 @@ impl InterfaceValidation for Interface {
         }
         let mut output_names = BTreeSet::new();
         for operation in &self.outputs.0 {
+            <OutputElement as SymbolReading>::symbol(&operation.operation)?;
             if !output_names.insert(operation.operation.clone()) {
                 return Err(InterfaceFault::Duplicate);
             }
@@ -1110,6 +1113,7 @@ impl InterfaceValidation for Interface {
         }
         let mut refusal_names = BTreeSet::new();
         for operation in &self.refusals.0 {
+            <RefusalElement as SymbolReading>::symbol(&operation.operation)?;
             if !refusal_names.insert(operation.operation.clone()) {
                 return Err(InterfaceFault::Duplicate);
             }
@@ -1119,6 +1123,7 @@ impl InterfaceValidation for Interface {
         }
         let mut stream_names = BTreeSet::new();
         for operation in &self.streams.0 {
+            <StreamElement as SymbolReading>::symbol(&operation.operation)?;
             if !stream_names.insert(operation.operation.clone()) {
                 return Err(InterfaceFault::Duplicate);
             }
@@ -1131,12 +1136,16 @@ impl InterfaceValidation for Interface {
                 TypeElement::Typedef(value) if !known(&value.target) => {
                     return Err(InterfaceFault::UnknownType);
                 }
+                TypeElement::Typedef(value) => {
+                    <TypeElement as SymbolReading>::symbol(&value.target)?;
+                }
                 TypeElement::Struct(value) => {
                     let mut fields = BTreeSet::new();
                     if value.fields.iter().any(|field| !known(field)) {
                         return Err(InterfaceFault::UnknownType);
                     }
                     for field in &value.fields {
+                        <NamedStruct as SymbolReading>::symbol(field)?;
                         if !fields.insert(field.clone()) {
                             return Err(InterfaceFault::Duplicate);
                         }
@@ -1154,12 +1163,12 @@ impl InterfaceValidation for Interface {
                             EnumVariantElement::Data { variant, .. }
                             | EnumVariantElement::Unit { variant } => variant,
                         };
+                        <EnumVariantElement as SymbolReading>::symbol(name)?;
                         if !variants.insert(name.clone()) {
                             return Err(InterfaceFault::Duplicate);
                         }
                     }
                 }
-                _ => {}
             }
         }
         Ok(())
