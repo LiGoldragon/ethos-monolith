@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::build::GeneratedArtifact;
+use crate::build::{GeneratedArtifact, GeneratedArtifactOperations};
 
 /// Marker placed as the first line of every Rust artifact emitted by
 /// ethos-monolith.
@@ -29,52 +29,75 @@ pub struct ComponentGeneration {
     output_directory: PathBuf,
 }
 
-impl ComponentGeneration {
+/// Operations for binding source and output directories to generated paths.
+pub trait ComponentGenerationOperations {
     /// Bind the source and output directories for one component.
-    pub fn new(source_directory: impl Into<PathBuf>, output_directory: impl Into<PathBuf>) -> Self {
+    fn new(source_directory: impl Into<PathBuf>, output_directory: impl Into<PathBuf>) -> Self
+    where
+        Self: Sized;
+
+    /// Directory containing the component's Ethos source files.
+    fn source_directory(&self) -> &Path;
+
+    /// Directory where the three generated Rust artifacts will be written.
+    fn output_directory(&self) -> &Path;
+
+    /// Expected path of the signal Ethos source file.
+    fn signal_source_path(&self) -> PathBuf;
+
+    /// Expected path of the nexus Ethos source file.
+    fn nexus_source_path(&self) -> PathBuf;
+
+    /// Expected path of the sema Ethos source file.
+    fn sema_source_path(&self) -> PathBuf;
+
+    /// Expected path of the generated signal Rust artifact.
+    fn signal_output_path(&self) -> PathBuf;
+
+    /// Expected path of the generated nexus Rust artifact.
+    fn nexus_output_path(&self) -> PathBuf;
+
+    /// Expected path of the generated sema Rust artifact.
+    fn sema_output_path(&self) -> PathBuf;
+}
+
+impl ComponentGenerationOperations for ComponentGeneration {
+    fn new(source_directory: impl Into<PathBuf>, output_directory: impl Into<PathBuf>) -> Self {
         Self {
             source_directory: source_directory.into(),
             output_directory: output_directory.into(),
         }
     }
 
-    /// Directory containing the component's Ethos source files.
-    pub fn source_directory(&self) -> &Path {
+    fn source_directory(&self) -> &Path {
         &self.source_directory
     }
 
-    /// Directory where the three generated Rust artifacts will be written.
-    pub fn output_directory(&self) -> &Path {
+    fn output_directory(&self) -> &Path {
         &self.output_directory
     }
 
-    /// Expected path of the signal Ethos source file.
-    pub fn signal_source_path(&self) -> PathBuf {
+    fn signal_source_path(&self) -> PathBuf {
         self.source_directory.join("signal.ethos")
     }
 
-    /// Expected path of the nexus Ethos source file.
-    pub fn nexus_source_path(&self) -> PathBuf {
+    fn nexus_source_path(&self) -> PathBuf {
         self.source_directory.join("nexus.ethos")
     }
 
-    /// Expected path of the sema Ethos source file.
-    pub fn sema_source_path(&self) -> PathBuf {
+    fn sema_source_path(&self) -> PathBuf {
         self.source_directory.join("sema.ethos")
     }
 
-    /// Expected path of the generated signal Rust artifact.
-    pub fn signal_output_path(&self) -> PathBuf {
+    fn signal_output_path(&self) -> PathBuf {
         self.output_directory.join("signal.rs")
     }
 
-    /// Expected path of the generated nexus Rust artifact.
-    pub fn nexus_output_path(&self) -> PathBuf {
+    fn nexus_output_path(&self) -> PathBuf {
         self.output_directory.join("nexus.rs")
     }
 
-    /// Expected path of the generated sema Rust artifact.
-    pub fn sema_output_path(&self) -> PathBuf {
+    fn sema_output_path(&self) -> PathBuf {
         self.output_directory.join("sema.rs")
     }
 }
@@ -90,13 +113,28 @@ pub struct GeneratedComponent {
     sema: GeneratedArtifact,
 }
 
-impl GeneratedComponent {
+/// Operations for accessing and checking a generated component's artifacts.
+pub trait GeneratedComponentOperations {
     /// Bind explicit artifact projections for the three component files.
-    pub fn new(
-        signal: GeneratedArtifact,
-        nexus: GeneratedArtifact,
-        sema: GeneratedArtifact,
-    ) -> Self {
+    fn new(signal: GeneratedArtifact, nexus: GeneratedArtifact, sema: GeneratedArtifact) -> Self
+    where
+        Self: Sized;
+
+    /// Generated `signal.rs` artifact.
+    fn signal(&self) -> &GeneratedArtifact;
+
+    /// Generated `nexus.rs` artifact.
+    fn nexus(&self) -> &GeneratedArtifact;
+
+    /// Generated `sema.rs` artifact.
+    fn sema(&self) -> &GeneratedArtifact;
+
+    /// Verify that all three artifacts match their checked-in content.
+    fn assert_all_match_existing(&self) -> Result<(), crate::build::BuildError>;
+}
+
+impl GeneratedComponentOperations for GeneratedComponent {
+    fn new(signal: GeneratedArtifact, nexus: GeneratedArtifact, sema: GeneratedArtifact) -> Self {
         Self {
             signal,
             nexus,
@@ -104,23 +142,19 @@ impl GeneratedComponent {
         }
     }
 
-    /// Generated `signal.rs` artifact.
-    pub fn signal(&self) -> &GeneratedArtifact {
+    fn signal(&self) -> &GeneratedArtifact {
         &self.signal
     }
 
-    /// Generated `nexus.rs` artifact.
-    pub fn nexus(&self) -> &GeneratedArtifact {
+    fn nexus(&self) -> &GeneratedArtifact {
         &self.nexus
     }
 
-    /// Generated `sema.rs` artifact.
-    pub fn sema(&self) -> &GeneratedArtifact {
+    fn sema(&self) -> &GeneratedArtifact {
         &self.sema
     }
 
-    /// Verify that all three artifacts match their checked-in content.
-    pub fn assert_all_match_existing(&self) -> Result<(), crate::build::BuildError> {
+    fn assert_all_match_existing(&self) -> Result<(), crate::build::BuildError> {
         self.signal.assert_matches_existing()?;
         self.nexus.assert_matches_existing()?;
         self.sema.assert_matches_existing()?;

@@ -12,43 +12,31 @@ pub struct CargoEthosSourceMetadata {
     links_name: String,
 }
 
-impl CargoEthosSourceMetadata {
+/// Operations for publishing and reading Cargo-owned Ethos source metadata.
+pub trait CargoEthosSourceMetadataOperations {
     /// Bind dependency discovery to one Cargo `links` name.
-    pub fn new(links_name: impl Into<String>) -> Self {
-        Self {
-            links_name: links_name.into(),
-        }
-    }
+    fn new(links_name: impl Into<String>) -> Self
+    where
+        Self: Sized;
 
     /// Publish an explicit directory owned by the component running this build script.
-    pub fn publish_owned_source_directory(&self, source_directory: impl AsRef<Path>) {
-        println!(
-            "cargo::metadata=ethos-source-dir={}",
-            source_directory.as_ref().display()
-        );
-    }
+    fn publish_owned_source_directory(&self, source_directory: impl AsRef<Path>);
 
     /// Read one dependency's published Ethos source directory when present.
-    pub fn dependency_source_directory(&self) -> Option<PathBuf> {
-        env::var_os(self.dependency_source_directory_variable()).map(PathBuf::from)
-    }
+    fn dependency_source_directory(&self) -> Option<PathBuf>;
 
     /// Exact Cargo environment variable for one dependency's Ethos source directory.
-    pub fn dependency_source_directory_variable(&self) -> String {
-        format!(
-            "DEP_{}_ETHOS_SOURCE_DIR",
-            Self::normalized_links_name(&self.links_name)
-        )
-    }
+    fn dependency_source_directory_variable(&self) -> String;
 
     /// Rebuild when Cargo reseats the dependency's published Ethos directory.
-    pub fn emit_dependency_rerun_instruction(&self) {
-        println!(
-            "cargo::rerun-if-env-changed={}",
-            self.dependency_source_directory_variable()
-        );
-    }
+    fn emit_dependency_rerun_instruction(&self);
+}
 
+trait LinksNameNormalizing {
+    fn normalized_links_name(links_name: &str) -> String;
+}
+
+impl LinksNameNormalizing for CargoEthosSourceMetadata {
     fn normalized_links_name(links_name: &str) -> String {
         links_name
             .chars()
@@ -60,6 +48,39 @@ impl CargoEthosSourceMetadata {
     }
 }
 
+impl CargoEthosSourceMetadataOperations for CargoEthosSourceMetadata {
+    fn new(links_name: impl Into<String>) -> Self {
+        Self {
+            links_name: links_name.into(),
+        }
+    }
+
+    fn publish_owned_source_directory(&self, source_directory: impl AsRef<Path>) {
+        println!(
+            "cargo::metadata=ethos-source-dir={}",
+            source_directory.as_ref().display()
+        );
+    }
+
+    fn dependency_source_directory(&self) -> Option<PathBuf> {
+        env::var_os(self.dependency_source_directory_variable()).map(PathBuf::from)
+    }
+
+    fn dependency_source_directory_variable(&self) -> String {
+        format!(
+            "DEP_{}_ETHOS_SOURCE_DIR",
+            Self::normalized_links_name(&self.links_name)
+        )
+    }
+
+    fn emit_dependency_rerun_instruction(&self) {
+        println!(
+            "cargo::rerun-if-env-changed={}",
+            self.dependency_source_directory_variable()
+        );
+    }
+}
+
 /// One canonical projection paired with its checked-in path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneratedArtifact {
@@ -67,25 +88,34 @@ pub struct GeneratedArtifact {
     content: String,
 }
 
-impl GeneratedArtifact {
+/// Operations on a checked generated artifact.
+pub trait GeneratedArtifactOperations {
     /// Bind canonical content to the path that must carry it.
-    pub fn new(path: impl Into<PathBuf>, content: impl Into<String>) -> Self {
-        Self {
-            path: path.into(),
-            content: content.into(),
-        }
-    }
+    fn new(path: impl Into<PathBuf>, content: impl Into<String>) -> Self
+    where
+        Self: Sized;
 
     /// Checked-in artifact path.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
+    fn path(&self) -> &Path;
 
     /// Canonical generated content.
-    pub fn content(&self) -> &str {
-        &self.content
-    }
+    fn content(&self) -> &str;
 
+    /// Require this artifact's checked-in content to equal its canonical projection.
+    fn assert_matches_existing(&self) -> Result<(), BuildError>;
+
+    /// Write this artifact's canonical content to an explicit target path.
+    fn write_to(&self, target: &Path) -> Result<(), BuildError>;
+
+    /// The sibling `.pending` path used during atomic installation.
+    fn pending_path(&self) -> PathBuf;
+}
+
+trait GeneratedArtifactComparison {
+    fn matches_existing(&self) -> Result<bool, BuildError>;
+}
+
+impl GeneratedArtifactComparison for GeneratedArtifact {
     fn matches_existing(&self) -> Result<bool, BuildError> {
         match fs::read_to_string(&self.path) {
             Ok(existing) => Ok(existing == self.content),
@@ -96,10 +126,25 @@ impl GeneratedArtifact {
             }),
         }
     }
+}
 
-    /// Require this artifact's checked-in content to equal its canonical
-    /// projection.
-    pub fn assert_matches_existing(&self) -> Result<(), BuildError> {
+impl GeneratedArtifactOperations for GeneratedArtifact {
+    fn new(path: impl Into<PathBuf>, content: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            content: content.into(),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn content(&self) -> &str {
+        &self.content
+    }
+
+    fn assert_matches_existing(&self) -> Result<(), BuildError> {
         if self.matches_existing()? {
             Ok(())
         } else {
@@ -109,9 +154,7 @@ impl GeneratedArtifact {
         }
     }
 
-    /// Write this artifact's canonical content to an explicit target path,
-    /// creating parent directories as needed.
-    pub fn write_to(&self, target: &Path) -> Result<(), BuildError> {
+    fn write_to(&self, target: &Path) -> Result<(), BuildError> {
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|source| BuildError::WriteGeneratedArtifact {
                 path: parent.to_path_buf(),
@@ -124,8 +167,7 @@ impl GeneratedArtifact {
         })
     }
 
-    /// The sibling `.pending` path used during atomic installation.
-    pub fn pending_path(&self) -> PathBuf {
+    fn pending_path(&self) -> PathBuf {
         let mut name = self
             .path
             .file_name()

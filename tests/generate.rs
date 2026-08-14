@@ -1,8 +1,11 @@
 use std::path::PathBuf;
 
 use ethos_monolith::{
-    build::{BuildError, GeneratedArtifact},
-    generate::{ComponentGeneration, ETHOS_GENERATED_MARKER, GeneratedComponent},
+    build::{BuildError, GeneratedArtifact, GeneratedArtifactOperations},
+    generate::{
+        ComponentGeneration, ComponentGenerationOperations, ETHOS_GENERATED_MARKER,
+        GeneratedComponent, GeneratedComponentOperations,
+    },
 };
 
 #[test]
