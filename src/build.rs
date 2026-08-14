@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn missing_artifact_is_stale() {
-        let path = PathBuf::from("ethos-rust-freshness-missing.rs");
+        let path = PathBuf::from("ethos-monolith-freshness-missing.rs");
         let error = GeneratedArtifact::new(&path, "generated")
             .assert_matches_existing()
             .expect_err("missing artifact is stale");

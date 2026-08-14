@@ -1,6 +1,6 @@
-# ethos-rust
+# ethos-monolith
 
-`ethos-rust` reads Ethos text files and emits Rust — `signal.rs`,
+`ethos-monolith` reads Ethos text files and emits Rust — `signal.rs`,
 `nexus.rs`, and `sema.rs` — for one component at a time.
 
 Consumers run the generator and commit the emitted Rust into their own

@@ -1,5 +1,5 @@
 {
-  description = "ethos-rust — reads Ethos text, emits Rust per component";
+  description = "ethos-monolith — reads Ethos text, emits Rust per component";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -25,7 +25,7 @@
         checks = {
           build = craneLib.cargoBuild (commonArguments // { inherit cargoArtifacts; });
           test = craneLib.cargoTest (commonArguments // { inherit cargoArtifacts; });
-          sole-emission-surface = pkgs.runCommand "ethos-rust-sole-emission-surface" { } ''
+          sole-emission-surface = pkgs.runCommand "ethos-monolith-sole-emission-surface" { } ''
             test "$(find ${src}/src -maxdepth 1 -type f -name '*.rs' -printf '%f\n' | sort | tr '\n' ' ')" = "build.rs generate.rs lib.rs "
             test "$(find ${src}/tests -maxdepth 1 -type f -name '*.rs' -printf '%f\n')" = "generate.rs"
             grep -q 'pub const ETHOS_GENERATED_MARKER' ${src}/src/generate.rs
@@ -44,7 +44,7 @@
           });
         };
         devShells.default = pkgs.mkShell {
-          name = "ethos-rust";
+          name = "ethos-monolith";
           packages = [ pkgs.jujutsu toolchain ];
         };
       });
