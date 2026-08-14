@@ -44,6 +44,23 @@
             test -f ${src}/src/fixture/generated.rs
             touch $out
           '';
+          binding-law = pkgs.runCommand "ethos-monolith-binding-law" {
+            nativeBuildInputs = [ pkgs.ripgrep ];
+          } ''
+            if rg -n '^impl [A-Za-z_][A-Za-z0-9_]*(<[^>]*>)?[[:space:]]*\\{' ${src}/src; then
+              echo "inherent production impl methods are forbidden" >&2
+              exit 1
+            fi
+            if rg -n '^(pub([[:space:]]*\\([^)]*\\))?[[:space:]]+)?fn[[:space:]]' ${src}/src; then
+              echo "production free functions are forbidden" >&2
+              exit 1
+            fi
+            if rg -n '^[[:space:]]*(pub[[:space:]]+)?struct[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*;' ${src}/src; then
+              echo "production behavior ZSTs are forbidden" >&2
+              exit 1
+            fi
+            touch $out
+          '';
           doc = craneLib.cargoDoc (commonArguments // {
             inherit cargoArtifacts;
             RUSTDOCFLAGS = "-D warnings";
