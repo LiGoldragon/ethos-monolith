@@ -11,7 +11,7 @@ use protos::{
     TextualizeScoping, TextualizeWalk, WalkFault, WalkObservation, WalkObserving,
 };
 
-use crate::build::GeneratedArtifact;
+use crate::build::{GeneratedArtifact, GeneratedArtifactOperations};
 
 pub mod generated;
 
@@ -145,6 +145,11 @@ pub enum EnumVariantElement {
     Unit { variant: String },
 }
 
+/// A data-bearing scalar body carrier used only while applying a placement's
+/// `ShapeDefined` selection before semantic symbol validation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BareValue(String);
+
 /// Read-only transition evidence for one Interface realization or projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InterfaceEvidence {
@@ -268,6 +273,18 @@ impl ShapeDefined for Import {
 
     fn select(shape: Shape, head: Option<&Head>) -> Option<Self::Selection> {
         (shape == Shape::DottedSquareBracketed && head.is_some()).then_some(())
+    }
+}
+
+impl ShapeDefined for Imports {
+    type Selection = ();
+
+    fn shapes() -> &'static [Shape] {
+        &[Shape::SquareBracketed]
+    }
+
+    fn select(shape: Shape, head: Option<&Head>) -> Option<Self::Selection> {
+        (shape == Shape::SquareBracketed && head.is_none()).then_some(())
     }
 }
 
@@ -419,6 +436,18 @@ impl ShapeDefined for EnumVariantElement {
     }
 }
 
+impl ShapeDefined for BareValue {
+    type Selection = ();
+
+    fn shapes() -> &'static [Shape] {
+        &[Shape::Bare]
+    }
+
+    fn select(shape: Shape, head: Option<&Head>) -> Option<Self::Selection> {
+        (shape == Shape::Bare && head.is_none()).then_some(())
+    }
+}
+
 trait SymbolReading {
     fn symbol(value: &str) -> Result<String, InterfaceFault> {
         if value.is_empty()
@@ -435,17 +464,18 @@ trait SymbolReading {
         Ok(value.to_owned())
     }
 
-    fn bare_symbol(block: &Block) -> Result<String, InterfaceFault> {
-        if block.shape != Shape::Bare || block.head().is_some() {
-            return Err(InterfaceFault::Shape);
-        }
-        Self::symbol(&block.body.0)
+    fn bare_value<T: ShapeDefined>(block: &Block) -> Result<BareValue, InterfaceFault> {
+        T::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)?;
+        Ok(BareValue(block.body.0.clone()))
     }
 
-    fn head_symbol(block: &Block) -> Result<(String, String), InterfaceFault> {
-        if block.shape != Shape::Bare || block.head().is_some() {
-            return Err(InterfaceFault::Shape);
-        }
+    fn bare_symbol<T: ShapeDefined>(block: &Block) -> Result<String, InterfaceFault> {
+        let BareValue(value) = Self::bare_value::<T>(block)?;
+        Self::symbol(&value)
+    }
+
+    fn head_symbol<T: ShapeDefined>(block: &Block) -> Result<(String, String), InterfaceFault> {
+        T::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)?;
         let Some((head, symbol)) = block.body.0.split_once('.') else {
             return Err(InterfaceFault::Member);
         };
@@ -456,14 +486,7 @@ trait SymbolReading {
     }
 }
 
-impl SymbolReading for Import {}
-impl SymbolReading for InputElement {}
-impl SymbolReading for OutputElement {}
-impl SymbolReading for RefusalElement {}
-impl SymbolReading for StreamElement {}
-impl SymbolReading for TypeElement {}
-impl SymbolReading for NamedStruct {}
-impl SymbolReading for EnumVariantElement {}
+impl SymbolReading for String {}
 
 trait VersionReading {
     fn read_header(scope: &mut RealizeScope<'_>, block: &Block) -> Result<Version, InterfaceFault>;
@@ -477,16 +500,10 @@ impl VersionReading for Version {
         }
         let mut values = Vec::new();
         scope.realize_body(&mut |_, child| {
-            if child.shape != Shape::Bare || child.head().is_some() {
-                return Err(InterfaceFault::Version);
-            }
-            let value = child
-                .body
-                .0
-                .parse::<u16>()
-                .map_err(|_| InterfaceFault::Version)?;
+            let BareValue(value) = String::bare_value::<BareValue>(child)?;
+            let value = value.parse::<u16>().map_err(|_| InterfaceFault::Version)?;
             values.push(value);
-            Ok(())
+            Ok::<(), InterfaceFault>(())
         })?;
         if values.len() != 3 {
             return Err(if values.len() < 3 {
@@ -531,7 +548,8 @@ impl ImportReading for Import {
             return Err(InterfaceFault::Shape);
         }
         let path = block.head().ok_or(InterfaceFault::Head)?.0.clone();
-        let symbols = scope.realize_body(&mut |_, child| Self::bare_symbol(child))?;
+        let symbols =
+            scope.realize_body(&mut |_, child| String::bare_symbol::<BareValue>(child))?;
         Ok(Import { path, symbols })
     }
 
@@ -562,9 +580,7 @@ impl SectionReading<Inputs> for Inputs {
         scope: &mut RealizeScope<'_>,
         block: &Block,
     ) -> Result<Inputs, InterfaceFault> {
-        if block.shape != Shape::SquareBracketed || block.head().is_some() {
-            return Err(InterfaceFault::Shape);
-        }
+        Self::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)?;
         Ok(Inputs(scope.realize_body(&mut |child_scope, child| {
             <InputElement as InputContext>::realize_input(child_scope, child)
         })?))
@@ -587,9 +603,7 @@ impl SectionReading<Outputs> for Outputs {
         scope: &mut RealizeScope<'_>,
         block: &Block,
     ) -> Result<Outputs, InterfaceFault> {
-        if block.shape != Shape::SquareBracketed || block.head().is_some() {
-            return Err(InterfaceFault::Shape);
-        }
+        Self::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)?;
         Ok(Outputs(scope.realize_body(&mut |child_scope, child| {
             <OutputElement as OutputContext>::realize_output(child_scope, child)
         })?))
@@ -612,9 +626,7 @@ impl SectionReading<Refusals> for Refusals {
         scope: &mut RealizeScope<'_>,
         block: &Block,
     ) -> Result<Refusals, InterfaceFault> {
-        if block.shape != Shape::SquareBracketed || block.head().is_some() {
-            return Err(InterfaceFault::Shape);
-        }
+        Self::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)?;
         Ok(Refusals(scope.realize_body(
             &mut |child_scope, child| {
                 <RefusalElement as RefusalContext>::realize_refusal(child_scope, child)
@@ -639,9 +651,7 @@ impl SectionReading<Streams> for Streams {
         scope: &mut RealizeScope<'_>,
         block: &Block,
     ) -> Result<Streams, InterfaceFault> {
-        if block.shape != Shape::SquareBracketed || block.head().is_some() {
-            return Err(InterfaceFault::Shape);
-        }
+        Self::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)?;
         Ok(Streams(scope.realize_body(&mut |child_scope, child| {
             <StreamElement as StreamContext>::realize_stream(child_scope, child)
         })?))
@@ -664,9 +674,7 @@ impl SectionReading<Types> for Types {
         scope: &mut RealizeScope<'_>,
         block: &Block,
     ) -> Result<Types, InterfaceFault> {
-        if block.shape != Shape::SquareBracketed || block.head().is_some() {
-            return Err(InterfaceFault::Shape);
-        }
+        Self::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)?;
         Ok(Types(scope.realize_body(&mut |child_scope, child| {
             <TypeElement as TypeElementReading>::realize_type(child_scope, child)
         })?))
@@ -694,7 +702,7 @@ trait OperationElementReading: Sized {
 
 impl OperationElementReading for InputElement {
     fn realize_operation(_: &mut RealizeScope<'_>, block: &Block) -> Result<Self, InterfaceFault> {
-        let (operation, payload) = Self::head_symbol(block)?;
+        let (operation, payload) = String::head_symbol::<InputElement>(block)?;
         Ok(Self { operation, payload })
     }
 
@@ -726,7 +734,7 @@ impl InputContext for InputElement {
 
 impl OperationElementReading for OutputElement {
     fn realize_operation(_: &mut RealizeScope<'_>, block: &Block) -> Result<Self, InterfaceFault> {
-        let (operation, payload) = Self::head_symbol(block)?;
+        let (operation, payload) = String::head_symbol::<OutputElement>(block)?;
         Ok(Self { operation, payload })
     }
 
@@ -758,7 +766,7 @@ impl OutputContext for OutputElement {
 
 impl OperationElementReading for RefusalElement {
     fn realize_operation(_: &mut RealizeScope<'_>, block: &Block) -> Result<Self, InterfaceFault> {
-        let (operation, payload) = Self::head_symbol(block)?;
+        let (operation, payload) = String::head_symbol::<RefusalElement>(block)?;
         Ok(Self { operation, payload })
     }
 
@@ -793,7 +801,7 @@ impl RefusalContext for RefusalElement {
 
 impl OperationElementReading for StreamElement {
     fn realize_operation(_: &mut RealizeScope<'_>, block: &Block) -> Result<Self, InterfaceFault> {
-        let (operation, payload) = Self::head_symbol(block)?;
+        let (operation, payload) = String::head_symbol::<StreamElement>(block)?;
         Ok(Self { operation, payload })
     }
 
@@ -838,21 +846,17 @@ impl TypeElementReading for TypeElement {
     ) -> Result<TypeElement, InterfaceFault> {
         match Self::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)? {
             TypeSelection::Typedef => {
-                let (name, target) = Self::head_symbol(block)?;
+                let (name, target) = String::head_symbol::<TypeElement>(block)?;
                 Ok(TypeElement::Typedef(NamedTypedef { name, target }))
             }
             TypeSelection::Struct => {
-                let name = Self::symbol(&block.head().ok_or(InterfaceFault::Head)?.0)?;
-                let fields = scope.realize_body(&mut |_, child| {
-                    if child.shape != Shape::Bare || child.head().is_some() {
-                        return Err(InterfaceFault::Shape);
-                    }
-                    Self::symbol(&child.body.0)
-                })?;
+                let name = String::symbol(&block.head().ok_or(InterfaceFault::Head)?.0)?;
+                let fields =
+                    scope.realize_body(&mut |_, child| String::bare_symbol::<BareValue>(child))?;
                 Ok(TypeElement::Struct(NamedStruct { name, fields }))
             }
             TypeSelection::Enum => {
-                let name = Self::symbol(&block.head().ok_or(InterfaceFault::Head)?.0)?;
+                let name = String::symbol(&block.head().ok_or(InterfaceFault::Head)?.0)?;
                 let variants = scope.realize_body(&mut |child_scope, child| {
                     <EnumVariantElement as EnumVariantReading>::realize_variant(child_scope, child)
                 })?;
@@ -913,11 +917,11 @@ impl EnumVariantReading for EnumVariantElement {
             return Err(InterfaceFault::Shape);
         }
         if block.body.0.contains('.') {
-            let (variant, payload) = Self::head_symbol(block)?;
+            let (variant, payload) = String::head_symbol::<EnumVariantElement>(block)?;
             Ok(EnumVariantElement::Data { variant, payload })
         } else {
             Ok(EnumVariantElement::Unit {
-                variant: Self::bare_symbol(block)?,
+                variant: String::bare_symbol::<EnumVariantElement>(block)?,
             })
         }
     }
@@ -950,6 +954,18 @@ struct InterfaceSections {
     types: Types,
 }
 
+impl ShapeDefined for InterfaceSections {
+    type Selection = ();
+
+    fn shapes() -> &'static [Shape] {
+        &[Shape::Braced]
+    }
+
+    fn select(shape: Shape, head: Option<&Head>) -> Option<Self::Selection> {
+        (shape == Shape::Braced && head.is_none()).then_some(())
+    }
+}
+
 trait InterfaceDocumentReading {
     fn realize_root_block(
         &mut self,
@@ -970,17 +986,14 @@ impl InterfaceDocumentReading for InterfaceState {
         match position {
             0 => self.version = Some(Version::read_header(scope, block)?),
             1 => {
-                if block.shape != Shape::SquareBracketed || block.head().is_some() {
-                    return Err(InterfaceFault::Shape);
-                }
+                Imports::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)?;
                 self.imports = Some(Imports(scope.realize_body(&mut |child_scope, child| {
                     Import::realize_import(child_scope, child)
                 })?));
             }
             2 => {
-                if block.shape != Shape::Braced || block.head().is_some() {
-                    return Err(InterfaceFault::Shape);
-                }
+                InterfaceSections::select(block.shape, block.head())
+                    .ok_or(InterfaceFault::Shape)?;
                 self.sections = Some(InterfaceSections::realize_sections(scope, block)?);
             }
             _ => return Err(InterfaceFault::ExtraPosition),
@@ -1014,9 +1027,7 @@ impl SectionsReading for InterfaceSections {
         scope: &mut RealizeScope<'_>,
         block: &Block,
     ) -> Result<InterfaceSections, InterfaceFault> {
-        if block.shape != Shape::Braced || block.head().is_some() {
-            return Err(InterfaceFault::Shape);
-        }
+        InterfaceSections::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)?;
         let mut position = 0;
         let mut inputs = None;
         let mut outputs = None;
@@ -1085,7 +1096,7 @@ impl InterfaceValidation for Interface {
                 TypeElement::Struct(value) => &value.name,
                 TypeElement::Enum(value) => &value.name,
             };
-            <TypeElement as SymbolReading>::symbol(name)?;
+            String::symbol(name)?;
             if !names.insert(name.clone()) {
                 return Err(InterfaceFault::Duplicate);
             }
@@ -1093,7 +1104,7 @@ impl InterfaceValidation for Interface {
         let known = |value: &str| value == "String" || value == "Integer" || names.contains(value);
         let mut input_names = BTreeSet::new();
         for operation in &self.inputs.0 {
-            <InputElement as SymbolReading>::symbol(&operation.operation)?;
+            String::symbol(&operation.operation)?;
             if !input_names.insert(operation.operation.clone()) {
                 return Err(InterfaceFault::Duplicate);
             }
@@ -1103,7 +1114,7 @@ impl InterfaceValidation for Interface {
         }
         let mut output_names = BTreeSet::new();
         for operation in &self.outputs.0 {
-            <OutputElement as SymbolReading>::symbol(&operation.operation)?;
+            String::symbol(&operation.operation)?;
             if !output_names.insert(operation.operation.clone()) {
                 return Err(InterfaceFault::Duplicate);
             }
@@ -1113,7 +1124,7 @@ impl InterfaceValidation for Interface {
         }
         let mut refusal_names = BTreeSet::new();
         for operation in &self.refusals.0 {
-            <RefusalElement as SymbolReading>::symbol(&operation.operation)?;
+            String::symbol(&operation.operation)?;
             if !refusal_names.insert(operation.operation.clone()) {
                 return Err(InterfaceFault::Duplicate);
             }
@@ -1123,7 +1134,7 @@ impl InterfaceValidation for Interface {
         }
         let mut stream_names = BTreeSet::new();
         for operation in &self.streams.0 {
-            <StreamElement as SymbolReading>::symbol(&operation.operation)?;
+            String::symbol(&operation.operation)?;
             if !stream_names.insert(operation.operation.clone()) {
                 return Err(InterfaceFault::Duplicate);
             }
@@ -1137,7 +1148,7 @@ impl InterfaceValidation for Interface {
                     return Err(InterfaceFault::UnknownType);
                 }
                 TypeElement::Typedef(value) => {
-                    <TypeElement as SymbolReading>::symbol(&value.target)?;
+                    String::symbol(&value.target)?;
                 }
                 TypeElement::Struct(value) => {
                     let mut fields = BTreeSet::new();
@@ -1145,7 +1156,7 @@ impl InterfaceValidation for Interface {
                         return Err(InterfaceFault::UnknownType);
                     }
                     for field in &value.fields {
-                        <NamedStruct as SymbolReading>::symbol(field)?;
+                        String::symbol(field)?;
                         if !fields.insert(field.clone()) {
                             return Err(InterfaceFault::Duplicate);
                         }
@@ -1163,7 +1174,7 @@ impl InterfaceValidation for Interface {
                             EnumVariantElement::Data { variant, .. }
                             | EnumVariantElement::Unit { variant } => variant,
                         };
-                        <EnumVariantElement as SymbolReading>::symbol(name)?;
+                        String::symbol(name)?;
                         if !variants.insert(name.clone()) {
                             return Err(InterfaceFault::Duplicate);
                         }
