@@ -4,7 +4,7 @@ use ethos_monolith::fixture::{
     EnumVariantElement, INTERFACE_SOURCE, InterfaceEvidencedRealizing, InterfaceText,
     RustArtifactProjecting, TypeElement, generated,
 };
-use protos::{ObservationViewing, Realize, Textualize};
+use protos::{ObservationViewing, Realize, Textualize, TransitionObserving, WalkTransitionKind};
 
 #[test]
 fn psyche_fixture_is_a_real_consumer_of_generated_types() {
@@ -48,6 +48,30 @@ fn fixture_walks_nested_sections_and_resumes_parents() {
     assert_eq!(realized.evidence.cursor, INTERFACE_SOURCE.len());
     assert_eq!(realized.evidence.observation.depth(), 0);
     assert!(realized.evidence.observation.resumptions() >= 10);
+    assert!(
+        realized
+            .evidence
+            .observation
+            .history()
+            .iter()
+            .any(|transition| transition.kind() == WalkTransitionKind::Enter)
+    );
+    assert!(
+        realized
+            .evidence
+            .observation
+            .history()
+            .iter()
+            .any(|transition| transition.kind() == WalkTransitionKind::Close)
+    );
+    assert!(
+        realized
+            .evidence
+            .observation
+            .history()
+            .iter()
+            .any(|transition| transition.kind() == WalkTransitionKind::Resume)
+    );
 }
 
 #[test]
