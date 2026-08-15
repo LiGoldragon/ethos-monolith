@@ -31,22 +31,49 @@ struct PathRef {
     segments: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum GenericParameterKind {
+    Type,
+    Const,
+    Lifetime,
+}
+
+#[derive(Clone, Debug)]
+struct GenericParameter {
+    name: String,
+    kind: GenericParameterKind,
+}
+
+#[derive(Clone)]
+enum GenericArgumentValue {
+    Type(Type),
+    Const(Expr),
+    Lifetime(syn::Lifetime),
+}
+
+#[derive(Clone, Default)]
+struct GenericSubstitutions {
+    types: BTreeMap<String, Type>,
+    consts: BTreeMap<String, Expr>,
+    lifetimes: BTreeMap<String, syn::Lifetime>,
+}
+
 #[derive(Clone)]
 struct TypeRef {
     path: PathRef,
-    arguments: Vec<Type>,
+    arguments: Vec<GenericArgumentValue>,
     unsupported_arguments: bool,
 }
 
 #[derive(Clone)]
 struct GenericLayout {
-    parameters: Vec<String>,
+    parameters: Vec<GenericParameter>,
     fields: Vec<Type>,
 }
 
 #[derive(Clone)]
 struct GenericAlias {
-    parameters: Vec<String>,
+    parameters: Vec<GenericParameter>,
     target: Type,
 }
 
@@ -355,7 +382,7 @@ impl<'a> Resolver<'a> {
                         resolver.layouts.insert(
                             key,
                             GenericLayout {
-                                parameters: generic_type_parameters(&item_struct.generics),
+                                parameters: generic_parameters(&item_struct.generics),
                                 fields: struct_field_types(item_struct),
                             },
                         );
@@ -369,7 +396,7 @@ impl<'a> Resolver<'a> {
                         resolver.aliases.insert(
                             key,
                             GenericAlias {
-                                parameters: generic_type_parameters(&item_type.generics),
+                                parameters: generic_parameters(&item_type.generics),
                                 target: (*item_type.ty).clone(),
                             },
                         );
@@ -413,14 +440,19 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_self_type(&self, module: &[String], ty: &Type) -> bool {
-        self.type_is_zst(module, ty, &BTreeMap::new(), &mut BTreeSet::new())
+        self.type_is_zst(
+            module,
+            ty,
+            &GenericSubstitutions::default(),
+            &mut BTreeSet::new(),
+        )
     }
 
     fn type_is_zst(
         &self,
         module: &[String],
         ty: &Type,
-        substitutions: &BTreeMap<String, Type>,
+        substitutions: &GenericSubstitutions,
         visiting: &mut BTreeSet<TypeKey>,
     ) -> bool {
         let substituted = substitute_type(ty, substitutions);
@@ -448,7 +480,7 @@ impl<'a> Resolver<'a> {
                 .iter()
                 .all(|field| self.type_is_zst(module, field, substitutions, visiting)),
             Type::Array(array) => {
-                array_is_zero(&array.len)
+                array_is_zero(&array.len, substitutions)
                     || self.type_is_zst(module, &array.elem, substitutions, visiting)
             }
             Type::Reference(_) | Type::Ptr(_) => false,
@@ -459,7 +491,7 @@ impl<'a> Resolver<'a> {
     fn key_is_zst(
         &self,
         key: &TypeKey,
-        arguments: &[Type],
+        arguments: &[GenericArgumentValue],
         visiting: &mut BTreeSet<TypeKey>,
     ) -> bool {
         if !visiting.insert(key.clone()) {
@@ -480,7 +512,7 @@ impl<'a> Resolver<'a> {
                 return false;
             };
             let target = substitute_type(&alias.target, &substitutions);
-            self.type_is_zst(&key.module, &target, &BTreeMap::new(), visiting)
+            self.type_is_zst(&key.module, &target, &substitutions, visiting)
         } else {
             false
         };
@@ -893,41 +925,66 @@ fn struct_field_types(item: &syn::ItemStruct) -> Vec<Type> {
     }
 }
 
-fn generic_type_parameters(generics: &syn::Generics) -> Vec<String> {
+fn generic_parameters(generics: &syn::Generics) -> Vec<GenericParameter> {
     generics
         .params
         .iter()
-        .filter_map(|parameter| match parameter {
-            syn::GenericParam::Type(parameter) => Some(identifier_name(&parameter.ident)),
-            _ => None,
+        .map(|parameter| match parameter {
+            syn::GenericParam::Type(parameter) => GenericParameter {
+                name: identifier_name(&parameter.ident),
+                kind: GenericParameterKind::Type,
+            },
+            syn::GenericParam::Const(parameter) => GenericParameter {
+                name: identifier_name(&parameter.ident),
+                kind: GenericParameterKind::Const,
+            },
+            syn::GenericParam::Lifetime(parameter) => GenericParameter {
+                name: parameter.lifetime.ident.to_string(),
+                kind: GenericParameterKind::Lifetime,
+            },
         })
         .collect()
 }
 
 fn generic_substitutions(
-    parameters: &[String],
-    arguments: &[Type],
-) -> Option<BTreeMap<String, Type>> {
-    (parameters.len() == arguments.len()).then(|| {
-        parameters
-            .iter()
-            .cloned()
-            .zip(
-                arguments
-                    .iter()
-                    .map(|argument| substitute_type(argument, &BTreeMap::new())),
-            )
-            .collect()
-    })
+    parameters: &[GenericParameter],
+    arguments: &[GenericArgumentValue],
+) -> Option<GenericSubstitutions> {
+    if parameters.len() != arguments.len() {
+        return None;
+    }
+    let mut substitutions = GenericSubstitutions::default();
+    for (parameter, argument) in parameters.iter().zip(arguments) {
+        match (parameter.kind, argument) {
+            (GenericParameterKind::Type, GenericArgumentValue::Type(argument)) => {
+                substitutions.types.insert(
+                    parameter.name.clone(),
+                    substitute_type(argument, &GenericSubstitutions::default()),
+                );
+            }
+            (GenericParameterKind::Const, GenericArgumentValue::Const(argument)) => {
+                substitutions
+                    .consts
+                    .insert(parameter.name.clone(), argument.clone());
+            }
+            (GenericParameterKind::Lifetime, GenericArgumentValue::Lifetime(argument)) => {
+                substitutions
+                    .lifetimes
+                    .insert(parameter.name.clone(), argument.clone());
+            }
+            _ => return None,
+        }
+    }
+    Some(substitutions)
 }
 
-fn substitute_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
+fn substitute_type(ty: &Type, substitutions: &GenericSubstitutions) -> Type {
     substitute_type_inner(ty, substitutions, &mut BTreeSet::new())
 }
 
 fn substitute_type_inner(
     ty: &Type,
-    substitutions: &BTreeMap<String, Type>,
+    substitutions: &GenericSubstitutions,
     seen: &mut BTreeSet<String>,
 ) -> Type {
     if let Type::Path(TypePath {
@@ -937,7 +994,7 @@ fn substitute_type_inner(
         && matches!(path.segments[0].arguments, PathArguments::None)
     {
         let name = identifier_name(&path.segments[0].ident);
-        if let Some(replacement) = substitutions.get(&name) {
+        if let Some(replacement) = substitutions.types.get(&name) {
             if !seen.insert(name.clone()) {
                 return ty.clone();
             }
@@ -954,8 +1011,16 @@ fn substitute_type_inner(
                 match &mut segment.arguments {
                     PathArguments::AngleBracketed(arguments) => {
                         for argument in &mut arguments.args {
-                            if let GenericArgument::Type(argument) = argument {
-                                *argument = substitute_type_inner(argument, substitutions, seen);
+                            match argument {
+                                GenericArgument::Type(argument) => {
+                                    *argument =
+                                        substitute_type_inner(argument, substitutions, seen);
+                                }
+                                GenericArgument::Const(argument) => {
+                                    *argument = substitute_expr(argument, substitutions);
+                                }
+                                GenericArgument::Lifetime(_) => {}
+                                _ => {}
                             }
                         }
                     }
@@ -973,6 +1038,7 @@ fn substitute_type_inner(
         }
         Type::Array(array) => {
             *array.elem = substitute_type_inner(&array.elem, substitutions, seen);
+            array.len = substitute_expr(&array.len, substitutions);
         }
         Type::Group(group) => {
             *group.elem = substitute_type_inner(&group.elem, substitutions, seen);
@@ -999,6 +1065,76 @@ fn substitute_type_inner(
     substituted
 }
 
+fn substitute_expr(expr: &Expr, substitutions: &GenericSubstitutions) -> Expr {
+    substitute_expr_inner(expr, substitutions, &mut BTreeSet::new())
+}
+
+fn substitute_expr_inner(
+    expr: &Expr,
+    substitutions: &GenericSubstitutions,
+    seen: &mut BTreeSet<String>,
+) -> Expr {
+    if let Expr::Path(path) = expr
+        && path.qself.is_none()
+        && path.path.segments.len() == 1
+        && matches!(path.path.segments[0].arguments, PathArguments::None)
+    {
+        let name = identifier_name(&path.path.segments[0].ident);
+        if let Some(replacement) = substitutions.consts.get(&name) {
+            if !seen.insert(name.clone()) {
+                return expr.clone();
+            }
+            let substituted = substitute_expr_inner(replacement, substitutions, seen);
+            seen.remove(&name);
+            return substituted;
+        }
+    }
+
+    let mut substituted = expr.clone();
+    match &mut substituted {
+        Expr::Path(path) => {
+            for segment in &mut path.path.segments {
+                if let PathArguments::AngleBracketed(arguments) = &mut segment.arguments {
+                    for argument in &mut arguments.args {
+                        match argument {
+                            GenericArgument::Type(argument) => {
+                                *argument = substitute_type(argument, substitutions);
+                            }
+                            GenericArgument::Const(argument) => {
+                                *argument = substitute_expr(argument, substitutions);
+                            }
+                            GenericArgument::Lifetime(_) => {}
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        Expr::Paren(paren) => {
+            *paren.expr = substitute_expr_inner(&paren.expr, substitutions, seen);
+        }
+        Expr::Group(group) => {
+            *group.expr = substitute_expr_inner(&group.expr, substitutions, seen);
+        }
+        Expr::Block(block) => {
+            for statement in &mut block.block.stmts {
+                if let syn::Stmt::Expr(expression, _) = statement {
+                    *expression = substitute_expr_inner(expression, substitutions, seen);
+                }
+            }
+        }
+        Expr::Const(constant) => {
+            for statement in &mut constant.block.stmts {
+                if let syn::Stmt::Expr(expression, _) = statement {
+                    *expression = substitute_expr_inner(expression, substitutions, seen);
+                }
+            }
+        }
+        _ => {}
+    }
+    substituted
+}
+
 fn type_ref(ty: &Type) -> Option<TypeRef> {
     match ty {
         Type::Path(TypePath {
@@ -1012,7 +1148,15 @@ fn type_ref(ty: &Type) -> Option<TypeRef> {
                 PathArguments::AngleBracketed(arguments_list) => {
                     for argument in &arguments_list.args {
                         match argument {
-                            GenericArgument::Type(argument) => arguments.push(argument.clone()),
+                            GenericArgument::Type(argument) => {
+                                arguments.push(GenericArgumentValue::Type(argument.clone()));
+                            }
+                            GenericArgument::Const(argument) => {
+                                arguments.push(GenericArgumentValue::Const(argument.clone()));
+                            }
+                            GenericArgument::Lifetime(argument) => {
+                                arguments.push(GenericArgumentValue::Lifetime(argument.clone()));
+                            }
                             _ => unsupported_arguments = true,
                         }
                     }
@@ -1046,10 +1190,7 @@ fn type_name(ty: &Type) -> String {
                         let arguments = arguments
                             .args
                             .iter()
-                            .map(|argument| match argument {
-                                GenericArgument::Type(argument) => type_name(argument),
-                                _ => "?".into(),
-                            })
+                            .map(generic_argument_name)
                             .collect::<Vec<_>>()
                             .join(", ");
                         format!("{name}<{arguments}>")
@@ -1074,8 +1215,109 @@ fn type_name(ty: &Type) -> String {
     }
 }
 
-fn array_is_zero(expr: &Expr) -> bool {
-    matches!(expr, Expr::Lit(ExprLit { lit: Lit::Int(value), .. }) if value.base10_digits() == "0")
+fn generic_argument_name(argument: &GenericArgument) -> String {
+    match argument {
+        GenericArgument::Type(argument) => type_name(argument),
+        GenericArgument::Const(argument) => expression_name(argument),
+        GenericArgument::Lifetime(argument) => format!("'{}", argument.ident),
+        _ => "?".into(),
+    }
+}
+
+fn expression_name(expr: &Expr) -> String {
+    match expr {
+        Expr::Lit(ExprLit {
+            lit: Lit::Int(value),
+            ..
+        }) => value.base10_digits().to_owned(),
+        Expr::Path(path) => path
+            .path
+            .segments
+            .iter()
+            .map(|segment| identifier_name(&segment.ident))
+            .collect::<Vec<_>>()
+            .join("::"),
+        Expr::Paren(paren) => format!("({})", expression_name(&paren.expr)),
+        Expr::Group(group) => expression_name(&group.expr),
+        Expr::Block(block) => block
+            .block
+            .stmts
+            .iter()
+            .find_map(|statement| match statement {
+                syn::Stmt::Expr(expression, _) => Some(expression_name(expression)),
+                _ => None,
+            })
+            .map_or_else(|| "{}".into(), |value| format!("{{ {value} }}")),
+        Expr::Const(constant) => constant
+            .block
+            .stmts
+            .iter()
+            .find_map(|statement| match statement {
+                syn::Stmt::Expr(expression, _) => Some(expression_name(expression)),
+                _ => None,
+            })
+            .map_or_else(|| "const {}".into(), |value| format!("const {{ {value} }}")),
+        _ => "?".into(),
+    }
+}
+
+fn array_is_zero(expr: &Expr, substitutions: &GenericSubstitutions) -> bool {
+    const_is_zero(expr, substitutions, &mut BTreeSet::new())
+}
+
+fn const_is_zero(
+    expr: &Expr,
+    substitutions: &GenericSubstitutions,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    let substituted = substitute_expr(expr, substitutions);
+    match &substituted {
+        Expr::Lit(ExprLit {
+            lit: Lit::Int(value),
+            ..
+        }) => value.base10_digits().chars().all(|digit| digit == '0'),
+        Expr::Paren(paren) => const_is_zero(&paren.expr, substitutions, visiting),
+        Expr::Group(group) => const_is_zero(&group.expr, substitutions, visiting),
+        Expr::Block(block) => block
+            .block
+            .stmts
+            .iter()
+            .find_map(|statement| match statement {
+                syn::Stmt::Expr(expression, _) => {
+                    Some(const_is_zero(expression, substitutions, visiting))
+                }
+                _ => None,
+            })
+            .unwrap_or(false),
+        Expr::Const(constant) => constant
+            .block
+            .stmts
+            .iter()
+            .find_map(|statement| match statement {
+                syn::Stmt::Expr(expression, _) => {
+                    Some(const_is_zero(expression, substitutions, visiting))
+                }
+                _ => None,
+            })
+            .unwrap_or(false),
+        Expr::Path(path)
+            if path.qself.is_none()
+                && path.path.segments.len() == 1
+                && matches!(path.path.segments[0].arguments, PathArguments::None) =>
+        {
+            let name = identifier_name(&path.path.segments[0].ident);
+            let Some(replacement) = substitutions.consts.get(&name) else {
+                return false;
+            };
+            if !visiting.insert(name.clone()) {
+                return false;
+            }
+            let result = const_is_zero(replacement, substitutions, visiting);
+            visiting.remove(&name);
+            result
+        }
+        _ => false,
+    }
 }
 
 fn is_visible_from(
@@ -1643,6 +1885,27 @@ fn architecture_guard_fixtures_are_falsifiable() {
         ],
     );
     assert_no_structural_violations(&root.join("zst-layout-good.rs"));
+    assert_exact_zst_names(
+        &root.join("zst-const-lifetime-bad.rs"),
+        &[
+            "Marker<{ 0 }>",
+            "Marker<{ 1 }>",
+            "Marker<1>",
+            "LifetimeMarker<'static>",
+            "PhantomMarker<'static, { 42 }>",
+            "ByteArray<{ 0 }>",
+            "ZstArray<(), { 1 }>",
+            "Mixed<'static, (), { 3 }>",
+            "MarkerAlias<{ 2 }>",
+            "LifetimeAlias<'static>",
+            "PhantomAlias<'static, { 7 }>",
+            "MixedAlias<'static, (), { 5 }>",
+            "ZstArrayAlias<(), { 4 }>",
+            "ParenthesizedMarker<{ 4 }>",
+            "ParenthesizedByteArray<{ 0 }>",
+        ],
+    );
+    assert_no_structural_violations(&root.join("zst-const-lifetime-good.rs"));
     assert_has_kind(&root.join("macro-bad.rs"), ViolationKind::MacroSurface);
     assert_no_structural_violations(&root.join("macro-good.rs"));
     assert_exact_nested_attribute_names(
