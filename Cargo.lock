@@ -24,7 +24,7 @@ dependencies = [
 [[package]]
 name = "protos"
 version = "0.6.0"
-source = "git+https://github.com/LiGoldragon/protos?rev=884f9334a658415053da277973df38549b82994a#884f9334a658415053da277973df38549b82994a"
+source = "git+https://github.com/LiGoldragon/protos?rev=8a056423e4b69011b17c460d2eb7e668c3b04af7#8a056423e4b69011b17c460d2eb7e668c3b04af7"
 
 [[package]]
 name = "quote"

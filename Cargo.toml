@@ -16,7 +16,7 @@ name = "ethos_monolith"
 path = "src/lib.rs"
 
 [dependencies]
-protos = { git = "https://github.com/LiGoldragon/protos", rev = "884f9334a658415053da277973df38549b82994a" }
+protos = { git = "https://github.com/LiGoldragon/protos", rev = "8a056423e4b69011b17c460d2eb7e668c3b04af7" }
 thiserror = "2"
 
 [dev-dependencies]
