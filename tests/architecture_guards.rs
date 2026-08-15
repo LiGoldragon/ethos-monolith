@@ -1,35 +1,77 @@
 use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     path::{Path, PathBuf},
 };
 
-use syn::{Attribute, Fields, Item, ItemImpl, ItemMod, Meta, Type, TypePath};
-use syn::{Token, parse::Parser, punctuated::Punctuated};
+use syn::{
+    Attribute, Expr, ExprLit, Fields, Item, ItemImpl, Lit, Meta, Token, Type, TypePath, UseTree,
+    parse::Parser, punctuated::Punctuated,
+};
 
 const FORBIDDEN_TERMS: [&str; 6] = ["transcode", "archive", "decode", "codec", "encode", "code"];
+const ALLOWED_DERIVES: [&str; 7] = [
+    "Clone",
+    "Copy",
+    "Debug",
+    "Eq",
+    "PartialEq",
+    "Default",
+    "thiserror::Error",
+];
 
-struct SourceUnit {
-    module: Vec<String>,
-    source: String,
-    syntax: syn::File,
-}
-
-#[derive(Debug)]
-struct ZstType {
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct TypeKey {
     module: Vec<String>,
     name: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
+struct PathRef {
+    segments: Vec<String>,
+}
+
+struct RelativePath {
+    bases: Vec<Vec<String>>,
+    tail_start: usize,
+}
+
+struct Unit {
+    module: Vec<String>,
+    items: Vec<Item>,
+}
+
+#[derive(Default)]
+struct Corpus {
+    units: Vec<Unit>,
+    sources: BTreeMap<PathBuf, String>,
+    loaded_files: HashSet<PathBuf>,
+    loaded_modules: HashSet<(PathBuf, Vec<String>)>,
+    active_files: HashSet<PathBuf>,
+}
+
+struct Resolver<'a> {
+    corpus: &'a Corpus,
+    type_defs: BTreeSet<TypeKey>,
+    aliases: BTreeMap<TypeKey, PathRef>,
+    fields: BTreeMap<TypeKey, Vec<Type>>,
+    bindings: BTreeMap<TypeKey, PathRef>,
+    globs: BTreeMap<Vec<String>, Vec<PathRef>>,
+    modules: BTreeSet<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum ViolationKind {
     FreeFunction,
     InherentImpl,
     ZstBehavior,
+    MacroSurface,
 }
 
 #[derive(Debug)]
 struct Violation {
     kind: ViolationKind,
+    detail: String,
 }
 
 fn identifier_name(identifier: &syn::Ident) -> String {
@@ -40,39 +82,97 @@ fn identifier_name(identifier: &syn::Ident) -> String {
         .to_owned()
 }
 
-fn source_module(root: &Path, path: &Path) -> Vec<String> {
-    let relative = path
+fn module_path_from_file(root: &Path, file: &Path) -> Vec<String> {
+    let relative = file
         .strip_prefix(root)
         .expect("source path is under scan root");
-    let mut components: Vec<String> = relative
+    let mut components = relative
         .components()
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    let file = components.pop().expect("source has a file name");
-    let stem = file.strip_suffix(".rs").expect("source is Rust");
-    if !matches!(stem, "lib" | "main" | "mod") {
-        components.push(stem.to_owned());
+        .collect::<Vec<_>>();
+    if let Some(last) = components.last_mut() {
+        if last == "lib.rs" || last == "main.rs" {
+            components.pop();
+        } else if let Some(stem) = last.strip_suffix(".rs") {
+            *last = stem.to_owned();
+        }
+    }
+    if components
+        .last()
+        .is_some_and(|component| component == "mod")
+    {
+        components.pop();
     }
     components
 }
 
-fn load_sources(root: &Path) -> Vec<SourceUnit> {
-    let mut paths = Vec::new();
-    collect_paths(root, &mut paths);
-    paths
-        .into_iter()
-        .map(|path| {
-            let source = fs::read_to_string(&path).expect("read Rust source");
-            let syntax = syn::parse_file(&source).unwrap_or_else(|error| {
-                panic!("{} is not parseable Rust: {error}", path.display())
-            });
-            SourceUnit {
-                module: source_module(root, &path),
-                source,
-                syntax,
+impl Corpus {
+    fn from_paths(paths: Vec<PathBuf>) -> Self {
+        let mut corpus = Self::default();
+        for path in paths {
+            corpus.add_file(path, Vec::new());
+        }
+        corpus
+    }
+
+    fn production(root: &Path) -> Self {
+        let root = root.canonicalize().expect("canonical source root");
+        let mut corpus = Self::default();
+        corpus.add_file(root.join("lib.rs"), Vec::new());
+        let mut all_files = Vec::new();
+        collect_paths(&root, &mut all_files);
+        for path in all_files {
+            if !corpus.loaded_files.contains(&path) {
+                corpus.add_file(path.clone(), module_path_from_file(&root, &path));
             }
-        })
-        .collect()
+        }
+        corpus
+    }
+
+    fn add_file(&mut self, path: PathBuf, module: Vec<String>) {
+        let path = path.canonicalize().unwrap_or(path);
+        if !self.loaded_modules.insert((path.clone(), module.clone())) {
+            return;
+        }
+        self.loaded_files.insert(path.clone());
+        if !self.active_files.insert(path.clone()) {
+            return;
+        }
+        let source =
+            fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let syntax = syn::parse_file(&source)
+            .unwrap_or_else(|error| panic!("{} is not parseable Rust: {error}", path.display()));
+        self.sources.insert(path.clone(), source.clone());
+        self.units.push(Unit {
+            module: module.clone(),
+            items: syntax.items.clone(),
+        });
+        for (child_module, child) in module_children(&path, &module, &syntax.items) {
+            match child {
+                ModuleChild::Inline(items) => self.add_inline(path.clone(), child_module, items),
+                ModuleChild::External(path) => self.add_file(path, child_module),
+            }
+        }
+        self.active_files.remove(&path);
+    }
+
+    fn add_inline(&mut self, file: PathBuf, module: Vec<String>, items: Vec<Item>) {
+        self.units.push(Unit {
+            module: module.clone(),
+            items: items.clone(),
+        });
+        for (child_module, child) in module_children(&file, &module, &items) {
+            match child {
+                ModuleChild::Inline(items) => self.add_inline(file.clone(), child_module, items),
+                ModuleChild::External(path) => self.add_file(path, child_module),
+            }
+        }
+    }
+}
+
+enum ModuleChild {
+    Inline(Vec<Item>),
+    External(PathBuf),
 }
 
 fn collect_paths(root: &Path, paths: &mut Vec<PathBuf>) {
@@ -87,14 +187,631 @@ fn collect_paths(root: &Path, paths: &mut Vec<PathBuf>) {
     paths.sort();
 }
 
-fn load_one(path: &Path) -> SourceUnit {
-    let source = fs::read_to_string(path).expect("read fixture");
-    let syntax = syn::parse_file(&source)
-        .unwrap_or_else(|error| panic!("{} is not parseable Rust: {error}", path.display()));
-    SourceUnit {
-        module: Vec::new(),
-        source,
-        syntax,
+fn module_children(
+    file: &Path,
+    module: &[String],
+    items: &[Item],
+) -> Vec<(Vec<String>, ModuleChild)> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let Item::Mod(item_mod) = item else {
+                return None;
+            };
+            let mut child_module = module.to_vec();
+            child_module.push(identifier_name(&item_mod.ident));
+            if let Some((_, inline_items)) = &item_mod.content {
+                return Some((child_module, ModuleChild::Inline(inline_items.clone())));
+            }
+            Some((
+                child_module,
+                ModuleChild::External(external_module_file(file, item_mod)),
+            ))
+        })
+        .collect()
+}
+
+fn external_module_file(parent: &Path, item_mod: &syn::ItemMod) -> PathBuf {
+    let parent_directory = parent.parent().expect("module parent directory");
+    if let Some(path) = module_path_attribute(item_mod) {
+        return parent_directory.join(path);
+    }
+    let directory = match parent.file_stem().and_then(|stem| stem.to_str()) {
+        Some("lib") | Some("main") | Some("mod") | None => parent_directory.to_path_buf(),
+        Some(stem) => parent_directory.join(stem),
+    };
+    let name = identifier_name(&item_mod.ident);
+    let flat = directory.join(format!("{name}.rs"));
+    if flat.is_file() {
+        return flat;
+    }
+    directory.join(name).join("mod.rs")
+}
+
+fn module_path_attribute(item_mod: &syn::ItemMod) -> Option<String> {
+    item_mod.attrs.iter().find_map(|attribute| {
+        if !attribute.path().is_ident("path") {
+            return None;
+        }
+        let Meta::NameValue(name_value) = &attribute.meta else {
+            return None;
+        };
+        let Expr::Lit(ExprLit {
+            lit: Lit::Str(path),
+            ..
+        }) = &name_value.value
+        else {
+            return None;
+        };
+        Some(path.value())
+    })
+}
+
+fn path_ref(path: &syn::Path) -> PathRef {
+    PathRef {
+        segments: path
+            .segments
+            .iter()
+            .map(|segment| identifier_name(&segment.ident))
+            .collect(),
+    }
+}
+
+fn type_path_ref(ty: &Type) -> Option<PathRef> {
+    match ty {
+        Type::Path(TypePath {
+            qself: None, path, ..
+        }) => Some(path_ref(path)),
+        Type::Paren(paren) => type_path_ref(&paren.elem),
+        Type::Group(group) => type_path_ref(&group.elem),
+        _ => None,
+    }
+}
+
+fn collect_use_tree(
+    tree: &UseTree,
+    prefix: &mut Vec<String>,
+    named: &mut Vec<(String, PathRef)>,
+    globs: &mut Vec<PathRef>,
+) {
+    match tree {
+        UseTree::Path(path) => {
+            prefix.push(identifier_name(&path.ident));
+            collect_use_tree(&path.tree, prefix, named, globs);
+            prefix.pop();
+        }
+        UseTree::Name(name) => {
+            if identifier_name(&name.ident) == "self" && !prefix.is_empty() {
+                named.push((
+                    prefix.last().cloned().expect("nonempty use prefix"),
+                    PathRef {
+                        segments: prefix.clone(),
+                    },
+                ));
+            } else {
+                let mut path = prefix.clone();
+                path.push(identifier_name(&name.ident));
+                named.push((identifier_name(&name.ident), PathRef { segments: path }));
+            }
+        }
+        UseTree::Rename(rename) => {
+            let path = if identifier_name(&rename.ident) == "self" {
+                if prefix.is_empty() {
+                    vec!["self".into()]
+                } else {
+                    prefix.clone()
+                }
+            } else {
+                let mut path = prefix.clone();
+                path.push(identifier_name(&rename.ident));
+                path
+            };
+            named.push((identifier_name(&rename.rename), PathRef { segments: path }));
+        }
+        UseTree::Glob(_) => globs.push(PathRef {
+            segments: prefix.clone(),
+        }),
+        UseTree::Group(group) => {
+            for item in &group.items {
+                collect_use_tree(item, prefix, named, globs);
+            }
+        }
+    }
+}
+
+impl<'a> Resolver<'a> {
+    fn new(corpus: &'a Corpus) -> Self {
+        let modules = corpus
+            .units
+            .iter()
+            .map(|unit| unit.module.clone())
+            .collect();
+        let mut resolver = Self {
+            corpus,
+            type_defs: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+            fields: BTreeMap::new(),
+            bindings: BTreeMap::new(),
+            globs: BTreeMap::new(),
+            modules,
+        };
+        for unit in &corpus.units {
+            for item in &unit.items {
+                match item {
+                    Item::Struct(item_struct) => {
+                        let key = TypeKey {
+                            module: unit.module.clone(),
+                            name: identifier_name(&item_struct.ident),
+                        };
+                        resolver.type_defs.insert(key.clone());
+                        resolver.fields.insert(key, struct_field_types(item_struct));
+                    }
+                    Item::Type(item_type) if item_type.generics.params.is_empty() => {
+                        let key = TypeKey {
+                            module: unit.module.clone(),
+                            name: identifier_name(&item_type.ident),
+                        };
+                        resolver.type_defs.insert(key.clone());
+                        if let Some(path) = type_path_ref(&item_type.ty) {
+                            resolver.aliases.insert(key, path);
+                        }
+                    }
+                    Item::Enum(item_enum) => {
+                        resolver.type_defs.insert(TypeKey {
+                            module: unit.module.clone(),
+                            name: identifier_name(&item_enum.ident),
+                        });
+                    }
+                    Item::Union(item_union) => {
+                        resolver.type_defs.insert(TypeKey {
+                            module: unit.module.clone(),
+                            name: identifier_name(&item_union.ident),
+                        });
+                    }
+                    Item::Use(item_use) => {
+                        let mut named = Vec::new();
+                        let mut globs = Vec::new();
+                        collect_use_tree(&item_use.tree, &mut Vec::new(), &mut named, &mut globs);
+                        for (name, path) in named {
+                            resolver.bindings.insert(
+                                TypeKey {
+                                    module: unit.module.clone(),
+                                    name,
+                                },
+                                path,
+                            );
+                        }
+                        resolver
+                            .globs
+                            .entry(unit.module.clone())
+                            .or_default()
+                            .extend(globs);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        resolver
+    }
+
+    fn resolve_self_type(&self, module: &[String], ty: &Type) -> bool {
+        self.type_is_zst(module, ty, &mut BTreeSet::new())
+    }
+
+    fn type_is_zst(&self, module: &[String], ty: &Type, visiting: &mut BTreeSet<TypeKey>) -> bool {
+        match ty {
+            Type::Path(TypePath {
+                qself: None, path, ..
+            }) => {
+                if phantom_data_path(path) && !self.local_item_names(module).contains("PhantomData")
+                {
+                    return true;
+                }
+                self.resolve_path(module, &path_ref(path), &mut BTreeSet::new())
+                    .is_some_and(|key| self.key_is_zst(&key, visiting))
+            }
+            Type::Paren(paren) => self.type_is_zst(module, &paren.elem, visiting),
+            Type::Group(group) => self.type_is_zst(module, &group.elem, visiting),
+            Type::Tuple(tuple) => tuple
+                .elems
+                .iter()
+                .all(|field| self.type_is_zst(module, field, visiting)),
+            Type::Array(array) => {
+                array_is_zero(&array.len) || self.type_is_zst(module, &array.elem, visiting)
+            }
+            Type::Reference(_) | Type::Ptr(_) => false,
+            _ => false,
+        }
+    }
+
+    fn key_is_zst(&self, key: &TypeKey, visiting: &mut BTreeSet<TypeKey>) -> bool {
+        if !visiting.insert(key.clone()) {
+            return false;
+        }
+        let result = self.fields.get(key).is_some_and(|fields| {
+            fields
+                .iter()
+                .all(|field| self.type_is_zst(&key.module, field, visiting))
+        }) || self.aliases.get(key).is_some_and(|path| {
+            self.resolve_path(&key.module, path, &mut BTreeSet::new())
+                .is_some_and(|target| self.key_is_zst(&target, visiting))
+        });
+        visiting.remove(key);
+        result
+    }
+
+    fn resolve_path(
+        &self,
+        module: &[String],
+        path: &PathRef,
+        visiting: &mut BTreeSet<TypeKey>,
+    ) -> Option<TypeKey> {
+        let relative = self.relative_module_bases(module, path)?;
+        let tail = &path.segments[relative.tail_start..];
+        let name = tail.last()?.clone();
+        if tail.len() > 1 {
+            let target_module = self.resolve_module_path(
+                module,
+                &PathRef {
+                    segments: path.segments[..path.segments.len() - 1].to_vec(),
+                },
+            )?;
+            return self.resolve_binding(&target_module, &name, visiting);
+        }
+        for base in relative.bases {
+            if let Some(result) = self.resolve_binding(&base, &name, visiting) {
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    fn resolve_binding(
+        &self,
+        module: &[String],
+        name: &str,
+        visiting: &mut BTreeSet<TypeKey>,
+    ) -> Option<TypeKey> {
+        let key = TypeKey {
+            module: module.to_vec(),
+            name: name.to_owned(),
+        };
+        if self.type_defs.contains(&key) {
+            return Some(key);
+        }
+        if !visiting.insert(key.clone()) {
+            return None;
+        }
+        if let Some(target) = self.bindings.get(&key).cloned() {
+            let result = self.resolve_path(module, &target, visiting);
+            visiting.remove(&key);
+            return result;
+        }
+        if self.local_item_names(module).contains(name) {
+            visiting.remove(&key);
+            return None;
+        }
+        for glob in self.globs.get(module).cloned().unwrap_or_default() {
+            let Some(target_module) = self.resolve_module_path(module, &glob) else {
+                continue;
+            };
+            if !self.public_names(&target_module, module).contains(name) {
+                continue;
+            }
+            if let Some(result) = self.resolve_binding(&target_module, name, visiting) {
+                visiting.remove(&key);
+                return Some(result);
+            }
+        }
+        visiting.remove(&key);
+        None
+    }
+
+    fn resolve_module_path(&self, module: &[String], path: &PathRef) -> Option<Vec<String>> {
+        self.resolve_module_path_inner(module, path, &mut BTreeSet::new())
+    }
+
+    fn resolve_module_path_inner(
+        &self,
+        module: &[String],
+        path: &PathRef,
+        visiting: &mut BTreeSet<TypeKey>,
+    ) -> Option<Vec<String>> {
+        let relative = self.relative_module_bases(module, path)?;
+        let tail = &path.segments[relative.tail_start..];
+        for base in relative.bases {
+            let mut candidate = base;
+            let mut resolved = true;
+            for segment in tail {
+                let mut direct = candidate.clone();
+                direct.push(segment.clone());
+                if self.modules.contains(&direct) {
+                    candidate = direct;
+                    continue;
+                }
+                let key = TypeKey {
+                    module: candidate.clone(),
+                    name: segment.clone(),
+                };
+                if let Some(alias) = self.bindings.get(&key).cloned() {
+                    if !visiting.insert(key.clone()) {
+                        resolved = false;
+                        break;
+                    }
+                    let Some(aliased) =
+                        self.resolve_module_path_inner(&candidate, &alias, visiting)
+                    else {
+                        visiting.remove(&key);
+                        resolved = false;
+                        break;
+                    };
+                    visiting.remove(&key);
+                    candidate = aliased;
+                    continue;
+                }
+                if let Some(glob_module) = self.resolve_glob_module_component(&candidate, segment) {
+                    candidate = glob_module;
+                    continue;
+                }
+                resolved = false;
+                break;
+            }
+            if resolved {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    fn resolve_glob_module_component(
+        &self,
+        importer: &[String],
+        name: &str,
+    ) -> Option<Vec<String>> {
+        for glob in self.globs.get(importer).cloned().unwrap_or_default() {
+            let Some(target_module) = self.resolve_module_path(importer, &glob) else {
+                continue;
+            };
+            if let Some(module) = self
+                .exported_modules(&target_module, importer, &mut BTreeSet::new())
+                .get(name)
+            {
+                return Some(module.clone());
+            }
+        }
+        None
+    }
+
+    fn relative_module_bases(&self, module: &[String], path: &PathRef) -> Option<RelativePath> {
+        let first = path.segments.first()?.as_str();
+        let (bases, tail_start) = match first {
+            "crate" => (vec![Vec::new()], 1),
+            "self" => (vec![module.to_vec()], 1),
+            "super" => {
+                let mut base = module.to_vec();
+                let mut count = 0;
+                while path
+                    .segments
+                    .get(count)
+                    .is_some_and(|segment| segment == "super")
+                {
+                    base.pop();
+                    count += 1;
+                }
+                (vec![base], count)
+            }
+            _ => (
+                (0..=module.len())
+                    .rev()
+                    .map(|prefix| module[..prefix].to_vec())
+                    .collect(),
+                0,
+            ),
+        };
+        Some(RelativePath { bases, tail_start })
+    }
+
+    fn public_names(&self, module: &[String], importer: &[String]) -> BTreeSet<String> {
+        self.exported_names(module, importer, &mut BTreeSet::new())
+    }
+
+    fn exported_names(
+        &self,
+        module: &[String],
+        importer: &[String],
+        visiting: &mut BTreeSet<Vec<String>>,
+    ) -> BTreeSet<String> {
+        if !visiting.insert(module.to_vec()) {
+            return BTreeSet::new();
+        }
+        let mut names = BTreeSet::new();
+        for unit in self
+            .corpus
+            .units
+            .iter()
+            .filter(|unit| unit.module == module)
+        {
+            for item in &unit.items {
+                match item {
+                    Item::Struct(item) if is_visible_from(&item.vis, module, importer) => {
+                        names.insert(identifier_name(&item.ident));
+                    }
+                    Item::Type(item) if is_visible_from(&item.vis, module, importer) => {
+                        names.insert(identifier_name(&item.ident));
+                    }
+                    Item::Enum(item) if is_visible_from(&item.vis, module, importer) => {
+                        names.insert(identifier_name(&item.ident));
+                    }
+                    Item::Union(item) if is_visible_from(&item.vis, module, importer) => {
+                        names.insert(identifier_name(&item.ident));
+                    }
+                    Item::Mod(item) if is_visible_from(&item.vis, module, importer) => {
+                        names.insert(identifier_name(&item.ident));
+                    }
+                    Item::Use(item) if is_visible_from(&item.vis, module, importer) => {
+                        let mut named = Vec::new();
+                        let mut globs = Vec::new();
+                        collect_use_tree(&item.tree, &mut Vec::new(), &mut named, &mut globs);
+                        names.extend(named.into_iter().map(|(name, _)| name));
+                        for glob in globs {
+                            if let Some(target) = self.resolve_module_path(module, &glob) {
+                                names.extend(self.exported_names(&target, importer, visiting));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        visiting.remove(module);
+        names
+    }
+
+    fn exported_modules(
+        &self,
+        module: &[String],
+        importer: &[String],
+        visiting: &mut BTreeSet<Vec<String>>,
+    ) -> BTreeMap<String, Vec<String>> {
+        if !visiting.insert(module.to_vec()) {
+            return BTreeMap::new();
+        }
+        let mut modules = BTreeMap::new();
+        for unit in self
+            .corpus
+            .units
+            .iter()
+            .filter(|unit| unit.module == module)
+        {
+            for item in &unit.items {
+                match item {
+                    Item::Mod(item) if is_visible_from(&item.vis, module, importer) => {
+                        let mut child = module.to_vec();
+                        child.push(identifier_name(&item.ident));
+                        if self.modules.contains(&child) {
+                            modules.insert(identifier_name(&item.ident), child);
+                        }
+                    }
+                    Item::Use(item) if is_visible_from(&item.vis, module, importer) => {
+                        let mut named = Vec::new();
+                        let mut globs = Vec::new();
+                        collect_use_tree(&item.tree, &mut Vec::new(), &mut named, &mut globs);
+                        for (name, path) in named {
+                            if let Some(target) = self.resolve_module_path(module, &path) {
+                                modules.insert(name, target);
+                            }
+                        }
+                        for glob in globs {
+                            if let Some(target) = self.resolve_module_path(module, &glob) {
+                                modules.extend(self.exported_modules(&target, importer, visiting));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        visiting.remove(module);
+        modules
+    }
+
+    fn local_item_names(&self, module: &[String]) -> BTreeSet<String> {
+        self.corpus
+            .units
+            .iter()
+            .filter(|unit| unit.module == module)
+            .flat_map(|unit| {
+                unit.items.iter().filter_map(|item| match item {
+                    Item::Enum(item) => Some(identifier_name(&item.ident)),
+                    Item::Struct(item) => Some(identifier_name(&item.ident)),
+                    Item::Trait(item) => Some(identifier_name(&item.ident)),
+                    Item::TraitAlias(item) => Some(identifier_name(&item.ident)),
+                    Item::Type(item) => Some(identifier_name(&item.ident)),
+                    Item::Union(item) => Some(identifier_name(&item.ident)),
+                    Item::Mod(item) => Some(identifier_name(&item.ident)),
+                    Item::Use(item) => {
+                        let mut named = Vec::new();
+                        let mut globs = Vec::new();
+                        collect_use_tree(&item.tree, &mut Vec::new(), &mut named, &mut globs);
+                        named.into_iter().map(|(name, _)| name).next()
+                    }
+                    _ => None,
+                })
+            })
+            .collect()
+    }
+}
+
+fn struct_field_types(item: &syn::ItemStruct) -> Vec<Type> {
+    match &item.fields {
+        Fields::Named(fields) => fields.named.iter().map(|field| field.ty.clone()).collect(),
+        Fields::Unnamed(fields) => fields
+            .unnamed
+            .iter()
+            .map(|field| field.ty.clone())
+            .collect(),
+        Fields::Unit => Vec::new(),
+    }
+}
+
+fn array_is_zero(expr: &Expr) -> bool {
+    matches!(expr, Expr::Lit(ExprLit { lit: Lit::Int(value), .. }) if value.base10_digits() == "0")
+}
+
+fn phantom_data_path(path: &syn::Path) -> bool {
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| identifier_name(&segment.ident))
+        .collect::<Vec<_>>();
+    segments.last().is_some_and(|name| name == "PhantomData")
+        && (segments.len() == 1 || segments.ends_with(&["marker".into(), "PhantomData".into()]))
+}
+
+fn is_visible_from(
+    visibility: &syn::Visibility,
+    defined_module: &[String],
+    importing_module: &[String],
+) -> bool {
+    match visibility {
+        syn::Visibility::Public(_) => true,
+        syn::Visibility::Inherited => importing_module.starts_with(defined_module),
+        syn::Visibility::Restricted(restricted) => {
+            let segments = restricted
+                .path
+                .segments
+                .iter()
+                .map(|segment| identifier_name(&segment.ident))
+                .collect::<Vec<_>>();
+            let first = segments.first().map(String::as_str);
+            let mut scope = match first {
+                Some("crate") => Vec::new(),
+                Some("self") => defined_module.to_vec(),
+                Some("super") => {
+                    let mut scope = defined_module.to_vec();
+                    let mut index = 0;
+                    while segments
+                        .get(index)
+                        .is_some_and(|segment| segment == "super")
+                    {
+                        scope.pop();
+                        index += 1;
+                    }
+                    scope
+                }
+                _ => return false,
+            };
+            let start = if first == Some("super") {
+                segments
+                    .iter()
+                    .take_while(|segment| *segment == "super")
+                    .count()
+            } else {
+                1
+            };
+            scope.extend(segments.into_iter().skip(start));
+            importing_module.starts_with(&scope)
+        }
     }
 }
 
@@ -109,23 +826,14 @@ fn cfg_test_only(attributes: &[Attribute]) -> bool {
         let nested = Punctuated::<Meta, Token![,]>::parse_terminated
             .parse2(list.tokens.clone())
             .unwrap_or_default();
-        meta_is_test_only(list.path.is_ident("all"), &nested)
-    })
-}
-
-fn meta_is_test_only(is_all: bool, nested: &Punctuated<Meta, Token![,]>) -> bool {
-    if !is_all {
-        return nested.len() == 1
-            && matches!(nested.first(), Some(Meta::Path(path)) if path.is_ident("test"));
-    }
-    nested.iter().any(|meta| {
-        matches!(meta, Meta::Path(path) if path.is_ident("test"))
-            || matches!(meta, Meta::List(list) if list.path.is_ident("all") && {
-                Punctuated::<Meta, Token![,]>::parse_terminated
-                    .parse2(list.tokens.clone())
-                    .map(|nested| meta_is_test_only(true, &nested))
-                    .unwrap_or(false)
-            })
+        if list.path.is_ident("all") {
+            nested
+                .iter()
+                .any(|meta| matches!(meta, Meta::Path(path) if path.is_ident("test")))
+        } else {
+            nested.len() == 1
+                && matches!(nested.first(), Some(Meta::Path(path)) if path.is_ident("test"))
+        }
     })
 }
 
@@ -135,158 +843,191 @@ fn test_attribute(attributes: &[Attribute]) -> bool {
         .any(|attribute| attribute.path().is_ident("test"))
 }
 
-fn is_zst_struct(item: &syn::ItemStruct) -> bool {
-    match &item.fields {
-        Fields::Unit => true,
-        Fields::Named(fields) => fields.named.is_empty(),
-        Fields::Unnamed(fields) => fields.unnamed.is_empty(),
+fn allowed_item_attribute(item: &Item, attribute: &Attribute) -> bool {
+    if attribute.path().is_ident("cfg") || attribute.path().is_ident("doc") {
+        return true;
     }
+    if attribute.path().is_ident("test") {
+        return matches!(item, Item::Fn(_));
+    }
+    if attribute.path().is_ident("path") {
+        return matches!(item, Item::Mod(_));
+    }
+    if !attribute.path().is_ident("derive") {
+        return false;
+    }
+    let Meta::List(list) = &attribute.meta else {
+        return false;
+    };
+    let derives = Punctuated::<syn::Path, Token![,]>::parse_terminated
+        .parse2(list.tokens.clone())
+        .unwrap_or_default();
+    derives.iter().all(|path| {
+        let name = path
+            .segments
+            .iter()
+            .map(|segment| identifier_name(&segment.ident))
+            .collect::<Vec<_>>()
+            .join("::");
+        ALLOWED_DERIVES.contains(&name.as_str())
+    })
 }
 
-fn collect_zsts(items: &[Item], module: &[String], zsts: &mut Vec<ZstType>) {
-    for item in items {
-        match item {
-            Item::Struct(item) if is_zst_struct(item) => zsts.push(ZstType {
-                module: module.to_owned(),
-                name: identifier_name(&item.ident),
-            }),
-            Item::Mod(ItemMod {
-                ident,
-                content: Some((_, items)),
-                ..
-            }) => {
-                let mut nested = module.to_owned();
-                nested.push(identifier_name(ident));
-                collect_zsts(items, &nested, zsts);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn path_segments(path: &syn::Path) -> Vec<String> {
-    path.segments
+fn item_has_unreviewed_attribute(item: &Item) -> bool {
+    item_attrs(item)
         .iter()
-        .map(|segment| identifier_name(&segment.ident))
-        .collect()
+        .any(|attribute| !allowed_item_attribute(item, attribute))
 }
 
-fn candidate_modules(module: &[String], segments: &[String]) -> Vec<Vec<String>> {
-    if segments.is_empty() {
-        return Vec::new();
+fn item_attrs(item: &Item) -> &[Attribute] {
+    match item {
+        Item::Const(item) => &item.attrs,
+        Item::Enum(item) => &item.attrs,
+        Item::ExternCrate(item) => &item.attrs,
+        Item::Fn(item) => &item.attrs,
+        Item::ForeignMod(item) => &item.attrs,
+        Item::Impl(item) => &item.attrs,
+        Item::Macro(item) => &item.attrs,
+        Item::Mod(item) => &item.attrs,
+        Item::Static(item) => &item.attrs,
+        Item::Struct(item) => &item.attrs,
+        Item::Trait(item) => &item.attrs,
+        Item::TraitAlias(item) => &item.attrs,
+        Item::Type(item) => &item.attrs,
+        Item::Union(item) => &item.attrs,
+        Item::Use(item) => &item.attrs,
+        _ => &[],
     }
-    if segments[0] == "crate" {
-        return vec![segments[1..].to_vec()];
-    }
-    if segments[0] == "self" {
-        let mut candidate = module.to_owned();
-        candidate.extend_from_slice(&segments[1..]);
-        return vec![candidate];
-    }
-    if segments[0] == "super" {
-        let mut parent = module.to_owned();
-        let mut index = 0;
-        while index < segments.len() && segments[index] == "super" {
-            parent.pop();
-            index += 1;
-        }
-        parent.extend_from_slice(&segments[index..]);
-        return vec![parent];
-    }
-
-    (0..=module.len())
-        .rev()
-        .map(|prefix| {
-            let mut candidate = module[..prefix].to_vec();
-            candidate.extend_from_slice(segments);
-            candidate
-        })
-        .collect()
 }
 
-fn resolves_zst(path: &syn::Path, module: &[String], zsts: &[ZstType]) -> bool {
-    let segments = path_segments(path);
-    candidate_modules(module, &segments)
-        .into_iter()
-        .any(|candidate| {
-            zsts.iter().any(|zst| {
-                zst.module == candidate[..candidate.len().saturating_sub(1)]
-                    && zst.name == candidate.last().map(String::as_str).unwrap_or_default()
-            })
-        })
+fn issue(kind: ViolationKind, detail: impl Into<String>) -> Violation {
+    Violation {
+        kind,
+        detail: detail.into(),
+    }
 }
 
-fn type_is_zst(ty: &Type, module: &[String], zsts: &[ZstType]) -> bool {
-    match ty {
-        Type::Path(TypePath { path, .. }) => resolves_zst(path, module, zsts),
-        Type::Paren(paren) => type_is_zst(&paren.elem, module, zsts),
-        Type::Reference(reference) => type_is_zst(&reference.elem, module, zsts),
-        Type::Tuple(tuple) => tuple.elems.is_empty(),
-        _ => false,
+fn structural_violations(corpus: &Corpus) -> Vec<Violation> {
+    let resolver = Resolver::new(corpus);
+    let mut violations = Vec::new();
+    for unit in &corpus.units {
+        scan_items(&unit.items, &unit.module, &resolver, false, &mut violations);
     }
+    violations
 }
 
 fn scan_items(
     items: &[Item],
     module: &[String],
-    zsts: &[ZstType],
+    resolver: &Resolver<'_>,
+    test_only: bool,
     violations: &mut Vec<Violation>,
 ) {
     for item in items {
+        if !test_only && item_has_unreviewed_attribute(item) {
+            violations.push(issue(
+                ViolationKind::MacroSurface,
+                format!(
+                    "unreviewed item attribute: {}",
+                    item_attrs(item)
+                        .iter()
+                        .find(|attribute| !allowed_item_attribute(item, attribute))
+                        .map(|attribute| {
+                            attribute
+                                .path()
+                                .segments
+                                .iter()
+                                .map(|segment| identifier_name(&segment.ident))
+                                .collect::<Vec<_>>()
+                                .join("::")
+                        })
+                        .unwrap_or_default()
+                ),
+            ));
+        }
         match item {
-            Item::Fn(function)
-                if !(test_attribute(&function.attrs)
-                    || cfg_test_only(&function.attrs)
-                    || module.is_empty() && identifier_name(&function.sig.ident) == "main") =>
-            {
-                violations.push(Violation {
-                    kind: ViolationKind::FreeFunction,
-                });
+            Item::Macro(_) | Item::Verbatim(_) if !test_only => {
+                violations.push(issue(
+                    ViolationKind::MacroSurface,
+                    "item-position macro surface",
+                ));
             }
-            Item::ForeignMod(foreign) => {
-                for item in &foreign.items {
-                    if matches!(item, syn::ForeignItem::Fn(_)) {
-                        violations.push(Violation {
-                            kind: ViolationKind::FreeFunction,
-                        });
+            Item::Fn(function)
+                if !(test_only
+                    || test_attribute(&function.attrs)
+                    || cfg_test_only(&function.attrs)
+                    || (module.is_empty() && identifier_name(&function.sig.ident) == "main")) =>
+            {
+                violations.push(issue(
+                    ViolationKind::FreeFunction,
+                    "production free function",
+                ));
+            }
+            Item::ForeignMod(foreign) if !test_only => {
+                for foreign_item in &foreign.items {
+                    if matches!(foreign_item, syn::ForeignItem::Fn(_)) {
+                        violations.push(issue(
+                            ViolationKind::FreeFunction,
+                            "foreign function declaration",
+                        ));
+                    }
+                    if matches!(foreign_item, syn::ForeignItem::Macro(_)) {
+                        violations.push(issue(ViolationKind::MacroSurface, "foreign item macro"));
                     }
                 }
             }
             Item::Impl(ItemImpl {
-                trait_, self_ty, ..
-            }) => {
+                trait_,
+                self_ty,
+                items: impl_items,
+                ..
+            }) if !test_only => {
                 if trait_.is_none() {
-                    violations.push(Violation {
-                        kind: ViolationKind::InherentImpl,
-                    });
-                } else if type_is_zst(self_ty, module, zsts) {
-                    violations.push(Violation {
-                        kind: ViolationKind::ZstBehavior,
-                    });
+                    violations.push(issue(
+                        ViolationKind::InherentImpl,
+                        "inherent implementation",
+                    ));
+                } else if resolver.resolve_self_type(module, self_ty) {
+                    violations.push(issue(
+                        ViolationKind::ZstBehavior,
+                        "behavior attached to known zero-sized type",
+                    ));
+                }
+                if impl_items
+                    .iter()
+                    .any(|item| matches!(item, syn::ImplItem::Macro(_)))
+                {
+                    violations.push(issue(
+                        ViolationKind::MacroSurface,
+                        "implementation item macro",
+                    ));
                 }
             }
-            Item::Mod(item) if !cfg_test_only(&item.attrs) => {
+            Item::Trait(item)
+                if !test_only
+                    && item
+                        .items
+                        .iter()
+                        .any(|item| matches!(item, syn::TraitItem::Macro(_))) =>
+            {
+                violations.push(issue(ViolationKind::MacroSurface, "trait item macro"));
+            }
+            Item::Mod(item) => {
                 if let Some((_, nested)) = &item.content {
                     let mut nested_module = module.to_owned();
                     nested_module.push(identifier_name(&item.ident));
-                    scan_items(nested, &nested_module, zsts, violations);
+                    scan_items(
+                        nested,
+                        &nested_module,
+                        resolver,
+                        test_only || cfg_test_only(&item.attrs),
+                        violations,
+                    );
                 }
             }
             _ => {}
         }
     }
-}
-
-fn structural_violations(sources: &[SourceUnit]) -> Vec<Violation> {
-    let mut zsts = Vec::new();
-    for source in sources {
-        collect_zsts(&source.syntax.items, &source.module, &mut zsts);
-    }
-    let mut violations = Vec::new();
-    for source in sources {
-        scan_items(&source.syntax.items, &source.module, &zsts, &mut violations);
-    }
-    violations
 }
 
 fn xid_continue(character: char) -> bool {
@@ -313,9 +1054,12 @@ fn vocabulary_violations(source: &str) -> usize {
         {
             continue;
         }
-        let before = source[..start].chars().next_back();
-        let after = source[end..].chars().next();
-        if before.is_some_and(xid_continue) || after.is_some_and(xid_continue) {
+        if source[..start]
+            .chars()
+            .next_back()
+            .is_some_and(xid_continue)
+            || source[end..].chars().next().is_some_and(xid_continue)
+        {
             continue;
         }
         accepted.push((start, end));
@@ -328,20 +1072,24 @@ fn fixture_root() -> PathBuf {
 }
 
 fn assert_no_structural_violations(path: &Path) {
-    let sources = vec![load_one(path)];
+    let corpus = Corpus::from_paths(vec![path.to_owned()]);
+    let violations = structural_violations(&corpus);
     assert!(
-        structural_violations(&sources).is_empty(),
-        "good fixture {} was rejected",
-        path.display()
+        violations.is_empty(),
+        "good fixture {} was rejected: {:?}",
+        path.display(),
+        violations
+            .iter()
+            .map(|violation| format!("{:?}: {}", violation.kind, violation.detail))
+            .collect::<Vec<_>>()
     );
 }
 
 fn assert_has_kind(path: &Path, kind: ViolationKind) {
-    let sources = vec![load_one(path)];
+    let corpus = Corpus::from_paths(vec![path.to_owned()]);
+    let violations = structural_violations(&corpus);
     assert!(
-        structural_violations(&sources)
-            .iter()
-            .any(|violation| violation.kind == kind),
+        violations.iter().any(|violation| violation.kind == kind),
         "bad fixture {} did not expose {kind:?}",
         path.display()
     );
@@ -361,41 +1109,57 @@ fn architecture_guard_fixtures_are_falsifiable() {
         ViolationKind::InherentImpl,
     );
     assert_no_structural_violations(&root.join("zst-behavior-good.rs"));
-    let zst_bad = vec![
-        load_one(&root.join("zst-behavior-bad.rs")),
-        load_one(&root.join("zst-cross-file-decl.rs")),
-        load_one(&root.join("zst-cross-file-impl.rs")),
-    ];
+    assert_has_kind(
+        &root.join("zst-behavior-bad.rs"),
+        ViolationKind::ZstBehavior,
+    );
+    let cross_file_corpus = Corpus::from_paths(vec![
+        root.join("zst-cross-file-decl.rs"),
+        root.join("zst-cross-file-impl.rs"),
+    ]);
     assert!(
-        structural_violations(&zst_bad)
+        structural_violations(&cross_file_corpus)
             .iter()
             .filter(|violation| violation.kind == ViolationKind::ZstBehavior)
             .count()
-            >= 4,
-        "ZST bad fixtures did not expose all namespace/tuple witnesses"
+            >= 1,
+        "cross-file ZST witness did not expose behavior"
     );
+    assert_has_kind(
+        &root.join("zst-resolution-bad.rs"),
+        ViolationKind::ZstBehavior,
+    );
+    assert_no_structural_violations(&root.join("zst-resolution-good.rs"));
+    assert_has_kind(&root.join("zst-layout-bad.rs"), ViolationKind::ZstBehavior);
+    assert_no_structural_violations(&root.join("zst-layout-good.rs"));
+    assert_has_kind(&root.join("macro-bad.rs"), ViolationKind::MacroSurface);
+    assert_no_structural_violations(&root.join("macro-good.rs"));
     assert_eq!(
         vocabulary_violations(&fs::read_to_string(root.join("vocabulary-good.rs")).unwrap()),
         0
     );
     assert!(
-        vocabulary_violations(&fs::read_to_string(root.join("vocabulary-bad.rs")).unwrap()) >= 7,
-        "vocabulary bad fixture did not expose all witnesses"
+        vocabulary_violations(&fs::read_to_string(root.join("vocabulary-bad.rs")).unwrap()) >= 7
     );
 }
 
 #[test]
 fn production_src_obeys_architecture_binding_law() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    let sources = load_sources(&root);
-    let violations = structural_violations(&sources);
+    let corpus = Corpus::production(&root);
+    let violations = structural_violations(&corpus);
     assert!(
         violations.is_empty(),
-        "production structural violations: {violations:?}"
+        "production structural violations: {:?}",
+        violations
+            .iter()
+            .map(|violation| format!("{:?}: {}", violation.kind, violation.detail))
+            .collect::<Vec<_>>()
     );
-    let vocabulary = sources
-        .iter()
-        .map(|source| vocabulary_violations(&source.source))
+    let vocabulary = corpus
+        .sources
+        .values()
+        .map(|source| vocabulary_violations(source))
         .sum::<usize>();
     assert_eq!(
         vocabulary, 0,

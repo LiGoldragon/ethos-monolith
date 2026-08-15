@@ -54,6 +54,10 @@ fn fixture_realizes_and_projects_with_walk_evidence() {
         source: protos::SourceText(INTERFACE_SOURCE.into()),
     };
     let realized = text.realize().expect("fixture realizes");
+    assert!(
+        realized.imports.0.is_empty(),
+        "the psyche fixture contract has no imports"
+    );
     assert_eq!(
         realized.version,
         Version {
