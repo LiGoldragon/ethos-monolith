@@ -5,8 +5,8 @@ use std::{
 };
 
 use syn::{
-    Attribute, Expr, ExprLit, Fields, Item, ItemImpl, Lit, Meta, Token, Type, TypePath, UseTree,
-    parse::Parser, punctuated::Punctuated,
+    Attribute, Expr, ExprLit, Fields, GenericArgument, Item, ItemImpl, Lit, Meta, PathArguments,
+    Token, Type, TypePath, UseTree, parse::Parser, punctuated::Punctuated,
 };
 
 const FORBIDDEN_TERMS: [&str; 6] = ["transcode", "archive", "decode", "codec", "encode", "code"];
@@ -31,6 +31,25 @@ struct PathRef {
     segments: Vec<String>,
 }
 
+#[derive(Clone)]
+struct TypeRef {
+    path: PathRef,
+    arguments: Vec<Type>,
+    unsupported_arguments: bool,
+}
+
+#[derive(Clone)]
+struct GenericLayout {
+    parameters: Vec<String>,
+    fields: Vec<Type>,
+}
+
+#[derive(Clone)]
+struct GenericAlias {
+    parameters: Vec<String>,
+    target: TypeRef,
+}
+
 struct RelativePath {
     bases: Vec<Vec<String>>,
     tail_start: usize,
@@ -53,8 +72,8 @@ struct Corpus {
 struct Resolver<'a> {
     corpus: &'a Corpus,
     type_defs: BTreeSet<TypeKey>,
-    aliases: BTreeMap<TypeKey, PathRef>,
-    fields: BTreeMap<TypeKey, Vec<Type>>,
+    aliases: BTreeMap<TypeKey, GenericAlias>,
+    layouts: BTreeMap<TypeKey, GenericLayout>,
     bindings: BTreeMap<TypeKey, PathRef>,
     globs: BTreeMap<Vec<String>, Vec<PathRef>>,
     modules: BTreeSet<Vec<String>>,
@@ -257,17 +276,6 @@ fn path_ref(path: &syn::Path) -> PathRef {
     }
 }
 
-fn type_path_ref(ty: &Type) -> Option<PathRef> {
-    match ty {
-        Type::Path(TypePath {
-            qself: None, path, ..
-        }) => Some(path_ref(path)),
-        Type::Paren(paren) => type_path_ref(&paren.elem),
-        Type::Group(group) => type_path_ref(&group.elem),
-        _ => None,
-    }
-}
-
 fn collect_use_tree(
     tree: &UseTree,
     prefix: &mut Vec<String>,
@@ -330,7 +338,7 @@ impl<'a> Resolver<'a> {
             corpus,
             type_defs: BTreeSet::new(),
             aliases: BTreeMap::new(),
-            fields: BTreeMap::new(),
+            layouts: BTreeMap::new(),
             bindings: BTreeMap::new(),
             globs: BTreeMap::new(),
             modules,
@@ -344,16 +352,28 @@ impl<'a> Resolver<'a> {
                             name: identifier_name(&item_struct.ident),
                         };
                         resolver.type_defs.insert(key.clone());
-                        resolver.fields.insert(key, struct_field_types(item_struct));
+                        resolver.layouts.insert(
+                            key,
+                            GenericLayout {
+                                parameters: generic_type_parameters(&item_struct.generics),
+                                fields: struct_field_types(item_struct),
+                            },
+                        );
                     }
-                    Item::Type(item_type) if item_type.generics.params.is_empty() => {
+                    Item::Type(item_type) => {
                         let key = TypeKey {
                             module: unit.module.clone(),
                             name: identifier_name(&item_type.ident),
                         };
                         resolver.type_defs.insert(key.clone());
-                        if let Some(path) = type_path_ref(&item_type.ty) {
-                            resolver.aliases.insert(key, path);
+                        if let Some(target) = type_ref(&item_type.ty) {
+                            resolver.aliases.insert(
+                                key,
+                                GenericAlias {
+                                    parameters: generic_type_parameters(&item_type.generics),
+                                    target,
+                                },
+                            );
                         }
                     }
                     Item::Enum(item_enum) => {
@@ -395,49 +415,187 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_self_type(&self, module: &[String], ty: &Type) -> bool {
-        self.type_is_zst(module, ty, &mut BTreeSet::new())
+        self.type_is_zst(module, ty, &BTreeMap::new(), &mut BTreeSet::new())
     }
 
-    fn type_is_zst(&self, module: &[String], ty: &Type, visiting: &mut BTreeSet<TypeKey>) -> bool {
+    fn type_is_zst(
+        &self,
+        module: &[String],
+        ty: &Type,
+        substitutions: &BTreeMap<String, Type>,
+        visiting: &mut BTreeSet<TypeKey>,
+    ) -> bool {
         match ty {
             Type::Path(TypePath {
                 qself: None, path, ..
             }) => {
-                if phantom_data_path(path) && !self.local_item_names(module).contains("PhantomData")
+                let Some(reference) = type_ref(ty) else {
+                    return false;
+                };
+                if reference.unsupported_arguments {
+                    return false;
+                }
+                if reference.path.segments.len() == 1
+                    && reference.arguments.is_empty()
+                    && let Some(replacement) = substitutions.get(&reference.path.segments[0])
                 {
+                    let replacement = substitute_type(replacement, substitutions);
+                    if !matches!(&replacement, Type::Path(TypePath { qself: None, path, .. }) if path.segments.len() == 1 && identifier_name(&path.segments[0].ident) == reference.path.segments[0])
+                    {
+                        return self.type_is_zst(module, &replacement, substitutions, visiting);
+                    }
+                    return false;
+                }
+                if self.is_canonical_phantom_data(module, &reference.path) {
                     return true;
                 }
                 self.resolve_path(module, &path_ref(path), &mut BTreeSet::new())
-                    .is_some_and(|key| self.key_is_zst(&key, visiting))
+                    .is_some_and(|key| self.key_is_zst(&key, &reference.arguments, visiting))
             }
-            Type::Paren(paren) => self.type_is_zst(module, &paren.elem, visiting),
-            Type::Group(group) => self.type_is_zst(module, &group.elem, visiting),
+            Type::Paren(paren) => self.type_is_zst(module, &paren.elem, substitutions, visiting),
+            Type::Group(group) => self.type_is_zst(module, &group.elem, substitutions, visiting),
             Type::Tuple(tuple) => tuple
                 .elems
                 .iter()
-                .all(|field| self.type_is_zst(module, field, visiting)),
+                .all(|field| self.type_is_zst(module, field, substitutions, visiting)),
             Type::Array(array) => {
-                array_is_zero(&array.len) || self.type_is_zst(module, &array.elem, visiting)
+                array_is_zero(&array.len)
+                    || self.type_is_zst(module, &array.elem, substitutions, visiting)
             }
             Type::Reference(_) | Type::Ptr(_) => false,
             _ => false,
         }
     }
 
-    fn key_is_zst(&self, key: &TypeKey, visiting: &mut BTreeSet<TypeKey>) -> bool {
+    fn key_is_zst(
+        &self,
+        key: &TypeKey,
+        arguments: &[Type],
+        visiting: &mut BTreeSet<TypeKey>,
+    ) -> bool {
         if !visiting.insert(key.clone()) {
             return false;
         }
-        let result = self.fields.get(key).is_some_and(|fields| {
-            fields
+        let result = if let Some(layout) = self.layouts.get(key) {
+            let Some(substitutions) = generic_substitutions(&layout.parameters, arguments) else {
+                visiting.remove(key);
+                return false;
+            };
+            layout
+                .fields
                 .iter()
-                .all(|field| self.type_is_zst(&key.module, field, visiting))
-        }) || self.aliases.get(key).is_some_and(|path| {
-            self.resolve_path(&key.module, path, &mut BTreeSet::new())
-                .is_some_and(|target| self.key_is_zst(&target, visiting))
-        });
+                .all(|field| self.type_is_zst(&key.module, field, &substitutions, visiting))
+        } else if let Some(alias) = self.aliases.get(key) {
+            let Some(substitutions) = generic_substitutions(&alias.parameters, arguments) else {
+                visiting.remove(key);
+                return false;
+            };
+            let target = substitute_type_ref(&alias.target, &substitutions);
+            if target.unsupported_arguments {
+                false
+            } else if self.is_canonical_phantom_data(&key.module, &target.path) {
+                true
+            } else {
+                self.resolve_path(&key.module, &target.path, &mut BTreeSet::new())
+                    .is_some_and(|target_key| {
+                        self.key_is_zst(&target_key, &target.arguments, visiting)
+                    })
+            }
+        } else {
+            false
+        };
         visiting.remove(key);
         result
+    }
+
+    fn is_canonical_phantom_data(&self, module: &[String], path: &PathRef) -> bool {
+        self.canonical_external_path(module, path, &mut BTreeSet::new())
+            .is_some_and(|resolved| {
+                resolved == ["std", "marker", "PhantomData"]
+                    || resolved == ["core", "marker", "PhantomData"]
+            })
+    }
+
+    fn canonical_external_path(
+        &self,
+        module: &[String],
+        path: &PathRef,
+        visiting: &mut BTreeSet<(Vec<String>, Vec<String>)>,
+    ) -> Option<Vec<String>> {
+        if !visiting.insert((module.to_vec(), path.segments.clone())) {
+            return None;
+        }
+        if path.segments.starts_with(&["std".into(), "marker".into()])
+            || path.segments.starts_with(&["core".into(), "marker".into()])
+        {
+            return Some(path.segments.clone());
+        }
+        let relative = self.relative_module_bases(module, path)?;
+        let tail = &path.segments[relative.tail_start..];
+        let name = tail.last()?.clone();
+        if tail.len() > 1 {
+            let prefix = PathRef {
+                segments: path.segments[..path.segments.len() - 1].to_vec(),
+            };
+            if let Some(mut resolved) = self.canonical_external_path(module, &prefix, visiting) {
+                resolved.push(name);
+                return Some(resolved);
+            }
+            if let Some(target_module) = self.resolve_module_path(module, &prefix)
+                && let Some(resolved) = self.canonical_external_path(
+                    &target_module,
+                    &PathRef {
+                        segments: vec![name],
+                    },
+                    visiting,
+                )
+            {
+                return Some(resolved);
+            }
+            return None;
+        }
+        for base in relative.bases {
+            let key = TypeKey {
+                module: base.clone(),
+                name: name.clone(),
+            };
+            if let Some(alias) = self.aliases.get(&key)
+                && let Some(resolved) =
+                    self.canonical_external_path(&base, &alias.target.path, visiting)
+            {
+                return Some(resolved);
+            }
+            if self.layouts.contains_key(&key) {
+                continue;
+            }
+            if let Some(target) = self.bindings.get(&key)
+                && let Some(resolved) = self.canonical_external_path(&base, target, visiting)
+            {
+                return Some(resolved);
+            }
+            for glob in self.globs.get(&base).cloned().unwrap_or_default() {
+                if let Some(mut resolved) = self.canonical_external_path(&base, &glob, visiting) {
+                    resolved.push(name.clone());
+                    return Some(resolved);
+                }
+                let Some(target_module) = self.resolve_module_path(&base, &glob) else {
+                    continue;
+                };
+                if !self.public_names(&target_module, module).contains(&name) {
+                    continue;
+                }
+                if let Some(resolved) = self.canonical_external_path(
+                    &target_module,
+                    &PathRef {
+                        segments: vec![name.clone()],
+                    },
+                    visiting,
+                ) {
+                    return Some(resolved);
+                }
+            }
+        }
+        None
     }
 
     fn resolve_path(
@@ -754,18 +912,147 @@ fn struct_field_types(item: &syn::ItemStruct) -> Vec<Type> {
     }
 }
 
-fn array_is_zero(expr: &Expr) -> bool {
-    matches!(expr, Expr::Lit(ExprLit { lit: Lit::Int(value), .. }) if value.base10_digits() == "0")
+fn generic_type_parameters(generics: &syn::Generics) -> Vec<String> {
+    generics
+        .params
+        .iter()
+        .filter_map(|parameter| match parameter {
+            syn::GenericParam::Type(parameter) => Some(identifier_name(&parameter.ident)),
+            _ => None,
+        })
+        .collect()
 }
 
-fn phantom_data_path(path: &syn::Path) -> bool {
-    let segments = path
-        .segments
-        .iter()
-        .map(|segment| identifier_name(&segment.ident))
-        .collect::<Vec<_>>();
-    segments.last().is_some_and(|name| name == "PhantomData")
-        && (segments.len() == 1 || segments.ends_with(&["marker".into(), "PhantomData".into()]))
+fn generic_substitutions(
+    parameters: &[String],
+    arguments: &[Type],
+) -> Option<BTreeMap<String, Type>> {
+    (parameters.len() == arguments.len()).then(|| {
+        parameters
+            .iter()
+            .cloned()
+            .zip(
+                arguments
+                    .iter()
+                    .map(|argument| substitute_type(argument, &BTreeMap::new())),
+            )
+            .collect()
+    })
+}
+
+fn substitute_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
+    let mut current = ty.clone();
+    let mut seen = BTreeSet::new();
+    loop {
+        let Type::Path(TypePath {
+            qself: None, path, ..
+        }) = &current
+        else {
+            return current;
+        };
+        if path.segments.len() != 1 || !matches!(path.segments[0].arguments, PathArguments::None) {
+            return current;
+        }
+        let name = identifier_name(&path.segments[0].ident);
+        let Some(replacement) = substitutions.get(&name) else {
+            return current;
+        };
+        if !seen.insert(name) {
+            return current;
+        }
+        current = replacement.clone();
+    }
+}
+
+fn substitute_type_ref(reference: &TypeRef, substitutions: &BTreeMap<String, Type>) -> TypeRef {
+    TypeRef {
+        path: reference.path.clone(),
+        arguments: reference
+            .arguments
+            .iter()
+            .map(|argument| substitute_type(argument, substitutions))
+            .collect(),
+        unsupported_arguments: reference.unsupported_arguments,
+    }
+}
+
+fn type_ref(ty: &Type) -> Option<TypeRef> {
+    match ty {
+        Type::Path(TypePath {
+            qself: None, path, ..
+        }) => {
+            let last = path.segments.last()?;
+            let mut arguments = Vec::new();
+            let mut unsupported_arguments = false;
+            match &last.arguments {
+                PathArguments::None => {}
+                PathArguments::AngleBracketed(arguments_list) => {
+                    for argument in &arguments_list.args {
+                        match argument {
+                            GenericArgument::Type(argument) => arguments.push(argument.clone()),
+                            _ => unsupported_arguments = true,
+                        }
+                    }
+                }
+                PathArguments::Parenthesized(_) => unsupported_arguments = true,
+            }
+            Some(TypeRef {
+                path: path_ref(path),
+                arguments,
+                unsupported_arguments,
+            })
+        }
+        Type::Paren(paren) => type_ref(&paren.elem),
+        Type::Group(group) => type_ref(&group.elem),
+        _ => None,
+    }
+}
+
+fn type_name(ty: &Type) -> String {
+    match ty {
+        Type::Path(TypePath {
+            qself: None, path, ..
+        }) => path
+            .segments
+            .iter()
+            .map(|segment| {
+                let name = identifier_name(&segment.ident);
+                match &segment.arguments {
+                    PathArguments::None => name,
+                    PathArguments::AngleBracketed(arguments) => {
+                        let arguments = arguments
+                            .args
+                            .iter()
+                            .map(|argument| match argument {
+                                GenericArgument::Type(argument) => type_name(argument),
+                                _ => "?".into(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("{name}<{arguments}>")
+                    }
+                    PathArguments::Parenthesized(_) => format!("{name}(?)"),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("::"),
+        Type::Paren(paren) => format!("({})", type_name(&paren.elem)),
+        Type::Group(group) => type_name(&group.elem),
+        Type::Tuple(tuple) => format!(
+            "({})",
+            tuple
+                .elems
+                .iter()
+                .map(type_name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => "?".into(),
+    }
+}
+
+fn array_is_zero(expr: &Expr) -> bool {
+    matches!(expr, Expr::Lit(ExprLit { lit: Lit::Int(value), .. }) if value.base10_digits() == "0")
 }
 
 fn is_visible_from(
@@ -990,7 +1277,10 @@ fn scan_items(
                 } else if resolver.resolve_self_type(module, self_ty) {
                     violations.push(issue(
                         ViolationKind::ZstBehavior,
-                        "behavior attached to known zero-sized type",
+                        format!(
+                            "behavior attached to known zero-sized type `{}`",
+                            type_name(self_ty)
+                        ),
                     ));
                 }
                 if impl_items
@@ -1095,6 +1385,26 @@ fn assert_has_kind(path: &Path, kind: ViolationKind) {
     );
 }
 
+fn assert_exact_zst_names(path: &Path, expected: &[&str]) {
+    let corpus = Corpus::from_paths(vec![path.to_owned()]);
+    let actual = structural_violations(&corpus)
+        .into_iter()
+        .filter(|violation| violation.kind == ViolationKind::ZstBehavior)
+        .filter_map(|violation| {
+            violation
+                .detail
+                .strip_prefix("behavior attached to known zero-sized type `")
+                .and_then(|detail| detail.strip_suffix('`'))
+                .map(str::to_owned)
+        })
+        .collect::<BTreeSet<_>>();
+    let expected = expected
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(actual, expected, "unexpected ZST behavior witness set");
+}
+
 #[test]
 fn architecture_guard_fixtures_are_falsifiable() {
     let root = fixture_root();
@@ -1109,28 +1419,79 @@ fn architecture_guard_fixtures_are_falsifiable() {
         ViolationKind::InherentImpl,
     );
     assert_no_structural_violations(&root.join("zst-behavior-good.rs"));
-    assert_has_kind(
+    assert_exact_zst_names(
         &root.join("zst-behavior-bad.rs"),
-        ViolationKind::ZstBehavior,
+        &[
+            "(Empty)",
+            "Empty",
+            "Generic<T>",
+            "Tuple",
+            "crate::namespace::Namespaced",
+            "self::Namespaced",
+        ],
     );
     let cross_file_corpus = Corpus::from_paths(vec![
         root.join("zst-cross-file-decl.rs"),
         root.join("zst-cross-file-impl.rs"),
     ]);
-    assert!(
-        structural_violations(&cross_file_corpus)
-            .iter()
-            .filter(|violation| violation.kind == ViolationKind::ZstBehavior)
-            .count()
-            >= 1,
-        "cross-file ZST witness did not expose behavior"
+    let cross_file_actual = structural_violations(&cross_file_corpus)
+        .into_iter()
+        .filter(|violation| violation.kind == ViolationKind::ZstBehavior)
+        .filter_map(|violation| {
+            violation
+                .detail
+                .strip_prefix("behavior attached to known zero-sized type `")
+                .and_then(|detail| detail.strip_suffix('`'))
+                .map(str::to_owned)
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        cross_file_actual,
+        BTreeSet::from(["(crate::CrossFile)".to_owned()]),
+        "unexpected cross-file ZST witness set"
     );
-    assert_has_kind(
+    assert_exact_zst_names(
         &root.join("zst-resolution-bad.rs"),
-        ViolationKind::ZstBehavior,
+        &[
+            "GlobZst",
+            "GrandparentZst",
+            "ImportedNamespace::AliasZst",
+            "ImportedZst",
+            "SecondAlias",
+            "alias::AliasZst",
+            "crate::path_forms::CrateZst",
+            "nested::Unit",
+            "self::SelfZst",
+            "super::super::source::MultiSuperZst",
+            "super::SuperZst",
+        ],
     );
     assert_no_structural_violations(&root.join("zst-resolution-good.rs"));
-    assert_has_kind(&root.join("zst-layout-bad.rs"), ViolationKind::ZstBehavior);
+    assert_exact_zst_names(
+        &root.join("zst-layout-bad.rs"),
+        &[
+            "ArrayOfEmpty",
+            "Braced",
+            "CoreHolder",
+            "DirectGlobHolder",
+            "Empty",
+            "GenericAlias<()>",
+            "GenericAliasTransitive<()>",
+            "GlobHolder",
+            "Nested",
+            "Pair",
+            "PairAlias",
+            "PairAliasTransitive",
+            "PhantomAlias<()>",
+            "PhantomAliasTransitive<()>",
+            "ReexportHolder",
+            "StdHolder",
+            "Tuple",
+            "UnitWrapper",
+            "Wrapper<()>",
+            "ZeroArray",
+        ],
+    );
     assert_no_structural_violations(&root.join("zst-layout-good.rs"));
     assert_has_kind(&root.join("macro-bad.rs"), ViolationKind::MacroSurface);
     assert_no_structural_violations(&root.join("macro-good.rs"));
