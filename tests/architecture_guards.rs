@@ -77,6 +77,11 @@ struct GenericAlias {
     target: Type,
 }
 
+#[derive(Clone)]
+struct ConstDefinition {
+    value: Expr,
+}
+
 struct RelativePath {
     bases: Vec<Vec<String>>,
     tail_start: usize,
@@ -101,6 +106,7 @@ struct Resolver<'a> {
     type_defs: BTreeSet<TypeKey>,
     aliases: BTreeMap<TypeKey, GenericAlias>,
     layouts: BTreeMap<TypeKey, GenericLayout>,
+    constants: BTreeMap<TypeKey, ConstDefinition>,
     bindings: BTreeMap<TypeKey, PathRef>,
     globs: BTreeMap<Vec<String>, Vec<PathRef>>,
     modules: BTreeSet<Vec<String>>,
@@ -366,6 +372,7 @@ impl<'a> Resolver<'a> {
             type_defs: BTreeSet::new(),
             aliases: BTreeMap::new(),
             layouts: BTreeMap::new(),
+            constants: BTreeMap::new(),
             bindings: BTreeMap::new(),
             globs: BTreeMap::new(),
             modules,
@@ -412,6 +419,17 @@ impl<'a> Resolver<'a> {
                             module: unit.module.clone(),
                             name: identifier_name(&item_union.ident),
                         });
+                    }
+                    Item::Const(item_const) => {
+                        resolver.constants.insert(
+                            TypeKey {
+                                module: unit.module.clone(),
+                                name: identifier_name(&item_const.ident),
+                            },
+                            ConstDefinition {
+                                value: (*item_const.expr).clone(),
+                            },
+                        );
                     }
                     Item::Use(item_use) => {
                         let mut named = Vec::new();
@@ -479,12 +497,91 @@ impl<'a> Resolver<'a> {
                 .elems
                 .iter()
                 .all(|field| self.type_is_zst(module, field, substitutions, visiting)),
-            Type::Array(array) => {
-                array_is_zero(&array.len, substitutions)
-                    || self.type_is_zst(module, &array.elem, substitutions, visiting)
-            }
+            Type::Array(array) => self.array_is_zst(module, array, substitutions, visiting),
             Type::Reference(_) | Type::Ptr(_) => false,
             _ => false,
+        }
+    }
+
+    fn array_is_zst(
+        &self,
+        module: &[String],
+        array: &syn::TypeArray,
+        substitutions: &GenericSubstitutions,
+        visiting: &mut BTreeSet<TypeKey>,
+    ) -> bool {
+        match self.const_value(module, &array.len, substitutions, &mut BTreeSet::new()) {
+            Some(length) if length != 0 => {
+                self.type_is_zst(module, &array.elem, substitutions, visiting)
+            }
+            Some(_) | None => true,
+        }
+    }
+
+    fn const_value(
+        &self,
+        module: &[String],
+        expr: &Expr,
+        substitutions: &GenericSubstitutions,
+        visiting: &mut BTreeSet<(Vec<String>, String)>,
+    ) -> Option<i128> {
+        match expr {
+            Expr::Lit(ExprLit {
+                lit: Lit::Int(value),
+                ..
+            }) => value.base10_digits().parse().ok(),
+            Expr::Paren(paren) => self.const_value(module, &paren.expr, substitutions, visiting),
+            Expr::Group(group) => self.const_value(module, &group.expr, substitutions, visiting),
+            Expr::Block(block) => block_expression(&block.block).and_then(|expression| {
+                self.const_value(module, expression, substitutions, visiting)
+            }),
+            Expr::Const(constant) => block_expression(&constant.block).and_then(|expression| {
+                self.const_value(module, expression, substitutions, visiting)
+            }),
+            Expr::Unary(unary) => {
+                let value = self.const_value(module, &unary.expr, substitutions, visiting)?;
+                match &unary.op {
+                    syn::UnOp::Neg(_) => value.checked_neg(),
+                    syn::UnOp::Not(_) => Some(!value),
+                    _ => None,
+                }
+            }
+            Expr::Binary(binary) => {
+                let left = self.const_value(module, &binary.left, substitutions, visiting)?;
+                let right = self.const_value(module, &binary.right, substitutions, visiting)?;
+                eval_integer_binary(&binary.op, left, right)
+            }
+            Expr::Path(path) if path.qself.is_none() => {
+                if path.path.segments.len() == 1
+                    && matches!(path.path.segments[0].arguments, PathArguments::None)
+                {
+                    let name = identifier_name(&path.path.segments[0].ident);
+                    if let Some(replacement) = substitutions.consts.get(&name) {
+                        let marker = (module.to_vec(), format!("$generic::{name}"));
+                        if !visiting.insert(marker.clone()) {
+                            return None;
+                        }
+                        let result = self.const_value(module, replacement, substitutions, visiting);
+                        visiting.remove(&marker);
+                        return result;
+                    }
+                }
+                let key =
+                    self.resolve_const_path(module, &path_ref(&path.path), &mut BTreeSet::new())?;
+                let marker = (key.module.clone(), key.name.clone());
+                if !visiting.insert(marker.clone()) {
+                    return None;
+                }
+                let Some(definition) = self.constants.get(&key) else {
+                    visiting.remove(&marker);
+                    return None;
+                };
+                let result =
+                    self.const_value(&key.module, &definition.value, substitutions, visiting);
+                visiting.remove(&marker);
+                result
+            }
+            _ => None,
         }
     }
 
@@ -637,6 +734,32 @@ impl<'a> Resolver<'a> {
         None
     }
 
+    fn resolve_const_path(
+        &self,
+        module: &[String],
+        path: &PathRef,
+        visiting: &mut BTreeSet<TypeKey>,
+    ) -> Option<TypeKey> {
+        let relative = self.relative_module_bases(module, path)?;
+        let tail = &path.segments[relative.tail_start..];
+        let name = tail.last()?.clone();
+        if tail.len() > 1 {
+            let target_module = self.resolve_module_path(
+                module,
+                &PathRef {
+                    segments: path.segments[..path.segments.len() - 1].to_vec(),
+                },
+            )?;
+            return self.resolve_const_binding(&target_module, &name, visiting);
+        }
+        for base in relative.bases {
+            if let Some(result) = self.resolve_const_binding(&base, &name, visiting) {
+                return Some(result);
+            }
+        }
+        None
+    }
+
     fn resolve_binding(
         &self,
         module: &[String],
@@ -670,6 +793,47 @@ impl<'a> Resolver<'a> {
                 continue;
             }
             if let Some(result) = self.resolve_binding(&target_module, name, visiting) {
+                visiting.remove(&key);
+                return Some(result);
+            }
+        }
+        visiting.remove(&key);
+        None
+    }
+
+    fn resolve_const_binding(
+        &self,
+        module: &[String],
+        name: &str,
+        visiting: &mut BTreeSet<TypeKey>,
+    ) -> Option<TypeKey> {
+        let key = TypeKey {
+            module: module.to_vec(),
+            name: name.to_owned(),
+        };
+        if self.constants.contains_key(&key) {
+            return Some(key);
+        }
+        if !visiting.insert(key.clone()) {
+            return None;
+        }
+        if let Some(target) = self.bindings.get(&key).cloned() {
+            let result = self.resolve_const_path(module, &target, visiting);
+            visiting.remove(&key);
+            return result;
+        }
+        if self.local_item_names(module).contains(name) {
+            visiting.remove(&key);
+            return None;
+        }
+        for glob in self.globs.get(module).cloned().unwrap_or_default() {
+            let Some(target_module) = self.resolve_module_path(module, &glob) else {
+                continue;
+            };
+            if !self.public_names(&target_module, module).contains(name) {
+                continue;
+            }
+            if let Some(result) = self.resolve_const_binding(&target_module, name, visiting) {
                 visiting.remove(&key);
                 return Some(result);
             }
@@ -816,6 +980,9 @@ impl<'a> Resolver<'a> {
                     Item::Union(item) if is_visible_from(&item.vis, module, importer) => {
                         names.insert(identifier_name(&item.ident));
                     }
+                    Item::Const(item) if is_visible_from(&item.vis, module, importer) => {
+                        names.insert(identifier_name(&item.ident));
+                    }
                     Item::Mod(item) if is_visible_from(&item.vis, module, importer) => {
                         names.insert(identifier_name(&item.ident));
                     }
@@ -899,6 +1066,7 @@ impl<'a> Resolver<'a> {
                     Item::TraitAlias(item) => Some(identifier_name(&item.ident)),
                     Item::Type(item) => Some(identifier_name(&item.ident)),
                     Item::Union(item) => Some(identifier_name(&item.ident)),
+                    Item::Const(item) => Some(identifier_name(&item.ident)),
                     Item::Mod(item) => Some(identifier_name(&item.ident)),
                     Item::Use(item) => {
                         let mut named = Vec::new();
@@ -922,6 +1090,33 @@ fn struct_field_types(item: &syn::ItemStruct) -> Vec<Type> {
             .map(|field| field.ty.clone())
             .collect(),
         Fields::Unit => Vec::new(),
+    }
+}
+
+fn block_expression(block: &syn::Block) -> Option<&Expr> {
+    (block.stmts.len() == 1).then(|| match &block.stmts[0] {
+        syn::Stmt::Expr(expression, _) => Some(expression),
+        _ => None,
+    })?
+}
+
+fn eval_integer_binary(op: &syn::BinOp, left: i128, right: i128) -> Option<i128> {
+    match op {
+        syn::BinOp::Add(_) => left.checked_add(right),
+        syn::BinOp::Sub(_) => left.checked_sub(right),
+        syn::BinOp::Mul(_) => left.checked_mul(right),
+        syn::BinOp::Div(_) => left.checked_div(right),
+        syn::BinOp::Rem(_) => left.checked_rem(right),
+        syn::BinOp::BitXor(_) => Some(left ^ right),
+        syn::BinOp::BitAnd(_) => Some(left & right),
+        syn::BinOp::BitOr(_) => Some(left | right),
+        syn::BinOp::Shl(_) => u32::try_from(right)
+            .ok()
+            .and_then(|shift| left.checked_shl(shift)),
+        syn::BinOp::Shr(_) => u32::try_from(right)
+            .ok()
+            .and_then(|shift| left.checked_shr(shift)),
+        _ => None,
     }
 }
 
@@ -967,6 +1162,12 @@ fn generic_substitutions(
                     .consts
                     .insert(parameter.name.clone(), argument.clone());
             }
+            (GenericParameterKind::Const, GenericArgumentValue::Type(argument)) => {
+                let argument = type_argument_as_const_expr(argument)?;
+                substitutions
+                    .consts
+                    .insert(parameter.name.clone(), argument);
+            }
             (GenericParameterKind::Lifetime, GenericArgumentValue::Lifetime(argument)) => {
                 substitutions
                     .lifetimes
@@ -976,6 +1177,25 @@ fn generic_substitutions(
         }
     }
     Some(substitutions)
+}
+
+fn type_argument_as_const_expr(argument: &Type) -> Option<Expr> {
+    let Type::Path(path) = argument else {
+        return None;
+    };
+    (path.qself.is_none()
+        && path
+            .path
+            .segments
+            .iter()
+            .all(|segment| segment.arguments.is_none()))
+    .then(|| {
+        Expr::Path(syn::ExprPath {
+            attrs: Vec::new(),
+            qself: None,
+            path: path.path.clone(),
+        })
+    })
 }
 
 fn substitute_type(ty: &Type, substitutions: &GenericSubstitutions) -> Type {
@@ -1257,66 +1477,61 @@ fn expression_name(expr: &Expr) -> String {
                 _ => None,
             })
             .map_or_else(|| "const {}".into(), |value| format!("const {{ {value} }}")),
+        Expr::Unary(unary) => format!(
+            "{}{}",
+            unary_operator_name(&unary.op),
+            expression_name(&unary.expr)
+        ),
+        Expr::Binary(binary) => format!(
+            "{} {} {}",
+            expression_name(&binary.left),
+            binary_operator_name(&binary.op),
+            expression_name(&binary.right)
+        ),
         _ => "?".into(),
     }
 }
 
-fn array_is_zero(expr: &Expr, substitutions: &GenericSubstitutions) -> bool {
-    const_is_zero(expr, substitutions, &mut BTreeSet::new())
+fn unary_operator_name(operator: &syn::UnOp) -> &'static str {
+    match operator {
+        syn::UnOp::Deref(_) => "*",
+        syn::UnOp::Not(_) => "!",
+        syn::UnOp::Neg(_) => "-",
+        _ => "?",
+    }
 }
 
-fn const_is_zero(
-    expr: &Expr,
-    substitutions: &GenericSubstitutions,
-    visiting: &mut BTreeSet<String>,
-) -> bool {
-    let substituted = substitute_expr(expr, substitutions);
-    match &substituted {
-        Expr::Lit(ExprLit {
-            lit: Lit::Int(value),
-            ..
-        }) => value.base10_digits().chars().all(|digit| digit == '0'),
-        Expr::Paren(paren) => const_is_zero(&paren.expr, substitutions, visiting),
-        Expr::Group(group) => const_is_zero(&group.expr, substitutions, visiting),
-        Expr::Block(block) => block
-            .block
-            .stmts
-            .iter()
-            .find_map(|statement| match statement {
-                syn::Stmt::Expr(expression, _) => {
-                    Some(const_is_zero(expression, substitutions, visiting))
-                }
-                _ => None,
-            })
-            .unwrap_or(false),
-        Expr::Const(constant) => constant
-            .block
-            .stmts
-            .iter()
-            .find_map(|statement| match statement {
-                syn::Stmt::Expr(expression, _) => {
-                    Some(const_is_zero(expression, substitutions, visiting))
-                }
-                _ => None,
-            })
-            .unwrap_or(false),
-        Expr::Path(path)
-            if path.qself.is_none()
-                && path.path.segments.len() == 1
-                && matches!(path.path.segments[0].arguments, PathArguments::None) =>
-        {
-            let name = identifier_name(&path.path.segments[0].ident);
-            let Some(replacement) = substitutions.consts.get(&name) else {
-                return false;
-            };
-            if !visiting.insert(name.clone()) {
-                return false;
-            }
-            let result = const_is_zero(replacement, substitutions, visiting);
-            visiting.remove(&name);
-            result
-        }
-        _ => false,
+fn binary_operator_name(operator: &syn::BinOp) -> &'static str {
+    match operator {
+        syn::BinOp::Add(_) => "+",
+        syn::BinOp::Sub(_) => "-",
+        syn::BinOp::Mul(_) => "*",
+        syn::BinOp::Div(_) => "/",
+        syn::BinOp::Rem(_) => "%",
+        syn::BinOp::And(_) => "&&",
+        syn::BinOp::Or(_) => "||",
+        syn::BinOp::BitXor(_) => "^",
+        syn::BinOp::BitAnd(_) => "&",
+        syn::BinOp::BitOr(_) => "|",
+        syn::BinOp::Shl(_) => "<<",
+        syn::BinOp::Shr(_) => ">>",
+        syn::BinOp::Eq(_) => "==",
+        syn::BinOp::Lt(_) => "<",
+        syn::BinOp::Le(_) => "<=",
+        syn::BinOp::Ne(_) => "!=",
+        syn::BinOp::Ge(_) => ">=",
+        syn::BinOp::Gt(_) => ">",
+        syn::BinOp::AddAssign(_) => "+=",
+        syn::BinOp::SubAssign(_) => "-=",
+        syn::BinOp::MulAssign(_) => "*=",
+        syn::BinOp::DivAssign(_) => "/=",
+        syn::BinOp::RemAssign(_) => "%=",
+        syn::BinOp::BitXorAssign(_) => "^=",
+        syn::BinOp::BitAndAssign(_) => "&=",
+        syn::BinOp::BitOrAssign(_) => "|=",
+        syn::BinOp::ShlAssign(_) => "<<=",
+        syn::BinOp::ShrAssign(_) => ">>=",
+        _ => "?",
     }
 }
 
@@ -1906,6 +2121,24 @@ fn architecture_guard_fixtures_are_falsifiable() {
         ],
     );
     assert_no_structural_violations(&root.join("zst-const-lifetime-good.rs"));
+    assert_exact_zst_names(
+        &root.join("zst-const-expressions-bad.rs"),
+        &[
+            "Bytes<0>",
+            "Bytes<EMPTY>",
+            "Bytes<{ ZERO_COMPUTED }>",
+            "Bytes<{ (1 - 1) }>",
+            "Bytes<{ namespace::ZERO }>",
+            "Bytes<{ IMPORTED_ZERO }>",
+            "Bytes<{ GLOB_ZERO }>",
+            "Bytes<{ CYCLE_A }>",
+            "Bytes<{ 2 & 0 }>",
+            "Bytes<{ 1 / 0 }>",
+            "GenericBytes<{ N }>",
+            "BytesAlias<{ N }>",
+        ],
+    );
+    assert_no_structural_violations(&root.join("zst-const-expressions-good.rs"));
     assert_has_kind(&root.join("macro-bad.rs"), ViolationKind::MacroSurface);
     assert_no_structural_violations(&root.join("macro-good.rs"));
     assert_exact_nested_attribute_names(
