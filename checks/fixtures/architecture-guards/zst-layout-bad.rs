@@ -47,9 +47,20 @@ struct PhantomData(u8);
 struct LocalHolder(PhantomData);
 
 struct Wrapper<T>(T);
+struct Leaf<T>(T);
+struct Outer<T>(Leaf<T>);
+struct NestedOuter<T>(Outer<(T,)>);
+struct ArrayOuter<T>([Leaf<T>; 1]);
+struct ParenOuter<T>((Leaf<T>));
 type UnitWrapper = Wrapper<()>;
 type GenericAlias<T> = Wrapper<T>;
 type GenericAliasTransitive<T> = GenericAlias<T>;
+type LeafUnit = Leaf<()>;
+type OuterAlias<T> = Outer<T>;
+type OuterAliasTransitive<T> = OuterAlias<(T,)>;
+type TupleAlias<T> = (Leaf<T>,);
+type ArrayAlias<T> = [Leaf<T>; 1];
+type ParenAlias<T> = (Leaf<T>);
 type PhantomAlias<T> = StdPhantomData<T>;
 type PhantomAliasTransitive<T> = PhantomAlias<T>;
 
@@ -95,6 +106,39 @@ impl Behavior for UnitWrapper {
 impl Behavior for Wrapper<()> {
     fn act(&self) {}
 }
+impl Behavior for Leaf<()> {
+    fn act(&self) {}
+}
+impl Behavior for Outer<()> {
+    fn act(&self) {}
+}
+impl Behavior for NestedOuter<()> {
+    fn act(&self) {}
+}
+impl Behavior for ArrayOuter<()> {
+    fn act(&self) {}
+}
+impl Behavior for ParenOuter<()> {
+    fn act(&self) {}
+}
+impl Behavior for LeafUnit {
+    fn act(&self) {}
+}
+impl Behavior for OuterAlias<()> {
+    fn act(&self) {}
+}
+impl Behavior for OuterAliasTransitive<()> {
+    fn act(&self) {}
+}
+impl Behavior for TupleAlias<()> {
+    fn act(&self) {}
+}
+impl Behavior for ArrayAlias<()> {
+    fn act(&self) {}
+}
+impl Behavior for ParenAlias<()> {
+    fn act(&self) {}
+}
 impl Behavior for GenericAlias<()> {
     fn act(&self) {}
 }
@@ -108,5 +152,35 @@ impl Behavior for PhantomAliasTransitive<()> {
     fn act(&self) {}
 }
 impl Behavior for Wrapper<u8> {
+    fn act(&self) {}
+}
+impl Behavior for Leaf<u8> {
+    fn act(&self) {}
+}
+impl Behavior for Outer<u8> {
+    fn act(&self) {}
+}
+impl Behavior for NestedOuter<u8> {
+    fn act(&self) {}
+}
+impl Behavior for ArrayOuter<u8> {
+    fn act(&self) {}
+}
+impl Behavior for ParenOuter<u8> {
+    fn act(&self) {}
+}
+impl Behavior for OuterAlias<u8> {
+    fn act(&self) {}
+}
+impl Behavior for OuterAliasTransitive<u8> {
+    fn act(&self) {}
+}
+impl Behavior for TupleAlias<u8> {
+    fn act(&self) {}
+}
+impl Behavior for ArrayAlias<u8> {
+    fn act(&self) {}
+}
+impl Behavior for ParenAlias<u8> {
     fn act(&self) {}
 }

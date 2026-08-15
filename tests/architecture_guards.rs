@@ -47,7 +47,7 @@ struct GenericLayout {
 #[derive(Clone)]
 struct GenericAlias {
     parameters: Vec<String>,
-    target: TypeRef,
+    target: Type,
 }
 
 struct RelativePath {
@@ -366,15 +366,13 @@ impl<'a> Resolver<'a> {
                             name: identifier_name(&item_type.ident),
                         };
                         resolver.type_defs.insert(key.clone());
-                        if let Some(target) = type_ref(&item_type.ty) {
-                            resolver.aliases.insert(
-                                key,
-                                GenericAlias {
-                                    parameters: generic_type_parameters(&item_type.generics),
-                                    target,
-                                },
-                            );
-                        }
+                        resolver.aliases.insert(
+                            key,
+                            GenericAlias {
+                                parameters: generic_type_parameters(&item_type.generics),
+                                target: (*item_type.ty).clone(),
+                            },
+                        );
                     }
                     Item::Enum(item_enum) => {
                         resolver.type_defs.insert(TypeKey {
@@ -425,6 +423,8 @@ impl<'a> Resolver<'a> {
         substitutions: &BTreeMap<String, Type>,
         visiting: &mut BTreeSet<TypeKey>,
     ) -> bool {
+        let substituted = substitute_type(ty, substitutions);
+        let ty = &substituted;
         match ty {
             Type::Path(TypePath {
                 qself: None, path, ..
@@ -433,17 +433,6 @@ impl<'a> Resolver<'a> {
                     return false;
                 };
                 if reference.unsupported_arguments {
-                    return false;
-                }
-                if reference.path.segments.len() == 1
-                    && reference.arguments.is_empty()
-                    && let Some(replacement) = substitutions.get(&reference.path.segments[0])
-                {
-                    let replacement = substitute_type(replacement, substitutions);
-                    if !matches!(&replacement, Type::Path(TypePath { qself: None, path, .. }) if path.segments.len() == 1 && identifier_name(&path.segments[0].ident) == reference.path.segments[0])
-                    {
-                        return self.type_is_zst(module, &replacement, substitutions, visiting);
-                    }
                     return false;
                 }
                 if self.is_canonical_phantom_data(module, &reference.path) {
@@ -490,17 +479,8 @@ impl<'a> Resolver<'a> {
                 visiting.remove(key);
                 return false;
             };
-            let target = substitute_type_ref(&alias.target, &substitutions);
-            if target.unsupported_arguments {
-                false
-            } else if self.is_canonical_phantom_data(&key.module, &target.path) {
-                true
-            } else {
-                self.resolve_path(&key.module, &target.path, &mut BTreeSet::new())
-                    .is_some_and(|target_key| {
-                        self.key_is_zst(&target_key, &target.arguments, visiting)
-                    })
-            }
+            let target = substitute_type(&alias.target, &substitutions);
+            self.type_is_zst(&key.module, &target, &BTreeMap::new(), visiting)
         } else {
             false
         };
@@ -560,8 +540,9 @@ impl<'a> Resolver<'a> {
                 name: name.clone(),
             };
             if let Some(alias) = self.aliases.get(&key)
-                && let Some(resolved) =
-                    self.canonical_external_path(&base, &alias.target.path, visiting)
+                && let Some(target) = type_ref(&alias.target)
+                && !target.unsupported_arguments
+                && let Some(resolved) = self.canonical_external_path(&base, &target.path, visiting)
             {
                 return Some(resolved);
             }
@@ -941,39 +922,81 @@ fn generic_substitutions(
 }
 
 fn substitute_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
-    let mut current = ty.clone();
-    let mut seen = BTreeSet::new();
-    loop {
-        let Type::Path(TypePath {
-            qself: None, path, ..
-        }) = &current
-        else {
-            return current;
-        };
-        if path.segments.len() != 1 || !matches!(path.segments[0].arguments, PathArguments::None) {
-            return current;
-        }
-        let name = identifier_name(&path.segments[0].ident);
-        let Some(replacement) = substitutions.get(&name) else {
-            return current;
-        };
-        if !seen.insert(name) {
-            return current;
-        }
-        current = replacement.clone();
-    }
+    substitute_type_inner(ty, substitutions, &mut BTreeSet::new())
 }
 
-fn substitute_type_ref(reference: &TypeRef, substitutions: &BTreeMap<String, Type>) -> TypeRef {
-    TypeRef {
-        path: reference.path.clone(),
-        arguments: reference
-            .arguments
-            .iter()
-            .map(|argument| substitute_type(argument, substitutions))
-            .collect(),
-        unsupported_arguments: reference.unsupported_arguments,
+fn substitute_type_inner(
+    ty: &Type,
+    substitutions: &BTreeMap<String, Type>,
+    seen: &mut BTreeSet<String>,
+) -> Type {
+    if let Type::Path(TypePath {
+        qself: None, path, ..
+    }) = ty
+        && path.segments.len() == 1
+        && matches!(path.segments[0].arguments, PathArguments::None)
+    {
+        let name = identifier_name(&path.segments[0].ident);
+        if let Some(replacement) = substitutions.get(&name) {
+            if !seen.insert(name.clone()) {
+                return ty.clone();
+            }
+            let substituted = substitute_type_inner(replacement, substitutions, seen);
+            seen.remove(&name);
+            return substituted;
+        }
     }
+
+    let mut substituted = ty.clone();
+    match &mut substituted {
+        Type::Path(type_path) => {
+            for segment in &mut type_path.path.segments {
+                match &mut segment.arguments {
+                    PathArguments::AngleBracketed(arguments) => {
+                        for argument in &mut arguments.args {
+                            if let GenericArgument::Type(argument) = argument {
+                                *argument = substitute_type_inner(argument, substitutions, seen);
+                            }
+                        }
+                    }
+                    PathArguments::Parenthesized(arguments) => {
+                        for argument in &mut arguments.inputs {
+                            argument.ty = substitute_type_inner(&argument.ty, substitutions, seen);
+                        }
+                        if let syn::ReturnType::Type(_, output) = &mut arguments.output {
+                            **output = substitute_type_inner(output, substitutions, seen);
+                        }
+                    }
+                    PathArguments::None => {}
+                }
+            }
+        }
+        Type::Array(array) => {
+            *array.elem = substitute_type_inner(&array.elem, substitutions, seen);
+        }
+        Type::Group(group) => {
+            *group.elem = substitute_type_inner(&group.elem, substitutions, seen);
+        }
+        Type::Paren(paren) => {
+            *paren.elem = substitute_type_inner(&paren.elem, substitutions, seen);
+        }
+        Type::Ptr(pointer) => {
+            *pointer.elem = substitute_type_inner(&pointer.elem, substitutions, seen);
+        }
+        Type::Reference(reference) => {
+            *reference.elem = substitute_type_inner(&reference.elem, substitutions, seen);
+        }
+        Type::Slice(slice) => {
+            *slice.elem = substitute_type_inner(&slice.elem, substitutions, seen);
+        }
+        Type::Tuple(tuple) => {
+            for element in &mut tuple.elems {
+                *element = substitute_type_inner(element, substitutions, seen);
+            }
+        }
+        _ => {}
+    }
+    substituted
 }
 
 fn type_ref(ty: &Type) -> Option<TypeRef> {
@@ -1166,6 +1189,104 @@ fn item_has_unreviewed_attribute(item: &Item) -> bool {
         .any(|attribute| !allowed_item_attribute(item, attribute))
 }
 
+fn allowed_nested_attribute(attribute: &Attribute) -> bool {
+    let path = attribute.path();
+    path.is_ident("allow")
+        || path.is_ident("cfg")
+        || path.is_ident("cold")
+        || path.is_ident("deny")
+        || path.is_ident("deprecated")
+        || path.is_ident("doc")
+        || path.is_ident("forbid")
+        || path.is_ident("inline")
+        || path.is_ident("must_use")
+        || path.is_ident("track_caller")
+        || path.is_ident("warn")
+}
+
+fn nested_attribute_name(attribute: &Attribute) -> String {
+    attribute
+        .path()
+        .segments
+        .iter()
+        .map(|segment| identifier_name(&segment.ident))
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+fn scan_nested_attributes(
+    attributes: &[Attribute],
+    kind: ViolationKind,
+    violations: &mut Vec<Violation>,
+) {
+    if let Some(attribute) = attributes
+        .iter()
+        .find(|attribute| !allowed_nested_attribute(attribute))
+    {
+        violations.push(issue(
+            kind,
+            format!(
+                "unreviewed nested item attribute: {}",
+                nested_attribute_name(attribute)
+            ),
+        ));
+    }
+}
+
+fn scan_impl_items(items: &[syn::ImplItem], violations: &mut Vec<Violation>) {
+    for item in items {
+        match item {
+            syn::ImplItem::Const(item) => {
+                scan_nested_attributes(&item.attrs, ViolationKind::MacroSurface, violations)
+            }
+            syn::ImplItem::Fn(item) => {
+                scan_nested_attributes(&item.attrs, ViolationKind::MacroSurface, violations)
+            }
+            syn::ImplItem::Type(item) => {
+                scan_nested_attributes(&item.attrs, ViolationKind::MacroSurface, violations)
+            }
+            syn::ImplItem::Macro(item) => {
+                scan_nested_attributes(&item.attrs, ViolationKind::MacroSurface, violations);
+                violations.push(issue(
+                    ViolationKind::MacroSurface,
+                    "implementation item macro",
+                ));
+            }
+            syn::ImplItem::Verbatim(_) => {
+                violations.push(issue(
+                    ViolationKind::MacroSurface,
+                    "implementation item macro",
+                ));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn scan_trait_items(items: &[syn::TraitItem], violations: &mut Vec<Violation>) {
+    for item in items {
+        match item {
+            syn::TraitItem::Const(item) => {
+                scan_nested_attributes(&item.attrs, ViolationKind::MacroSurface, violations)
+            }
+            syn::TraitItem::Fn(item) => {
+                scan_nested_attributes(&item.attrs, ViolationKind::MacroSurface, violations)
+            }
+            syn::TraitItem::Type(item) => {
+                scan_nested_attributes(&item.attrs, ViolationKind::MacroSurface, violations)
+            }
+            syn::TraitItem::Macro(item) => {
+                scan_nested_attributes(&item.attrs, ViolationKind::MacroSurface, violations);
+                violations.push(issue(ViolationKind::MacroSurface, "trait item macro"));
+            }
+            syn::TraitItem::Verbatim(_) => {
+                violations.push(issue(ViolationKind::MacroSurface, "trait item macro"));
+            }
+            _ => {}
+        }
+    }
+}
+
 fn item_attrs(item: &Item) -> &[Attribute] {
     match item {
         Item::Const(item) => &item.attrs,
@@ -1283,24 +1404,10 @@ fn scan_items(
                         ),
                     ));
                 }
-                if impl_items
-                    .iter()
-                    .any(|item| matches!(item, syn::ImplItem::Macro(_)))
-                {
-                    violations.push(issue(
-                        ViolationKind::MacroSurface,
-                        "implementation item macro",
-                    ));
-                }
+                scan_impl_items(impl_items, violations);
             }
-            Item::Trait(item)
-                if !test_only
-                    && item
-                        .items
-                        .iter()
-                        .any(|item| matches!(item, syn::TraitItem::Macro(_))) =>
-            {
-                violations.push(issue(ViolationKind::MacroSurface, "trait item macro"));
+            Item::Trait(item) if !test_only => {
+                scan_trait_items(&item.items, violations);
             }
             Item::Mod(item) => {
                 if let Some((_, nested)) = &item.content {
@@ -1405,6 +1512,38 @@ fn assert_exact_zst_names(path: &Path, expected: &[&str]) {
     assert_eq!(actual, expected, "unexpected ZST behavior witness set");
 }
 
+fn assert_exact_nested_attribute_names(path: &Path, expected: &[&str]) {
+    let corpus = Corpus::from_paths(vec![path.to_owned()]);
+    let actual_names = structural_violations(&corpus)
+        .into_iter()
+        .filter(|violation| violation.kind == ViolationKind::MacroSurface)
+        .filter_map(|violation| {
+            violation
+                .detail
+                .strip_prefix("unreviewed nested item attribute: ")
+                .map(str::to_owned)
+        })
+        .collect::<BTreeSet<_>>();
+    let actual_count = structural_violations(&corpus)
+        .into_iter()
+        .filter(|violation| violation.kind == ViolationKind::MacroSurface)
+        .filter(|violation| {
+            violation
+                .detail
+                .starts_with("unreviewed nested item attribute: ")
+        })
+        .count();
+    let expected = expected
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(actual_count, 6);
+    assert_eq!(
+        actual_names, expected,
+        "unexpected nested attribute witness set"
+    );
+}
+
 #[test]
 fn architecture_guard_fixtures_are_falsifiable() {
     let root = fixture_root();
@@ -1471,6 +1610,7 @@ fn architecture_guard_fixtures_are_falsifiable() {
         &root.join("zst-layout-bad.rs"),
         &[
             "ArrayOfEmpty",
+            "ArrayOuter<()>",
             "Braced",
             "CoreHolder",
             "DirectGlobHolder",
@@ -1478,7 +1618,14 @@ fn architecture_guard_fixtures_are_falsifiable() {
             "GenericAlias<()>",
             "GenericAliasTransitive<()>",
             "GlobHolder",
+            "Leaf<()>",
+            "LeafUnit",
             "Nested",
+            "NestedOuter<()>",
+            "Outer<()>",
+            "OuterAlias<()>",
+            "OuterAliasTransitive<()>",
+            "ParenOuter<()>",
             "Pair",
             "PairAlias",
             "PairAliasTransitive",
@@ -1487,7 +1634,10 @@ fn architecture_guard_fixtures_are_falsifiable() {
             "ReexportHolder",
             "StdHolder",
             "Tuple",
+            "TupleAlias<()>",
             "UnitWrapper",
+            "ArrayAlias<()>",
+            "ParenAlias<()>",
             "Wrapper<()>",
             "ZeroArray",
         ],
@@ -1495,6 +1645,16 @@ fn architecture_guard_fixtures_are_falsifiable() {
     assert_no_structural_violations(&root.join("zst-layout-good.rs"));
     assert_has_kind(&root.join("macro-bad.rs"), ViolationKind::MacroSurface);
     assert_no_structural_violations(&root.join("macro-good.rs"));
+    assert_exact_nested_attribute_names(
+        &root.join("nested-items-bad.rs"),
+        &[
+            "const_attribute_macro",
+            "evil::inline",
+            "method_attribute_macro",
+            "type_attribute_macro",
+        ],
+    );
+    assert_no_structural_violations(&root.join("nested-items-good.rs"));
     assert_eq!(
         vocabulary_violations(&fs::read_to_string(root.join("vocabulary-good.rs")).unwrap()),
         0

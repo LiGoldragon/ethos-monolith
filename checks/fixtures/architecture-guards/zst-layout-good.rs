@@ -21,6 +21,8 @@ struct NonZeroComposite {
 struct Wrapper<T>(T);
 type ByteWrapper = Wrapper<u8>;
 type Cycle = Cycle;
+struct Recursive<T>(Recursive<T>);
+type RecursiveAlias<T> = RecursiveAlias<T>;
 struct PhantomData(u8);
 struct LocalHolder(PhantomData);
 struct ImportedHolder(StdPhantomData<String>);
@@ -53,5 +55,11 @@ impl Behavior for LocalHolder {
     fn act(&self) {}
 }
 impl Behavior for Cycle {
+    fn act(&self) {}
+}
+impl Behavior for Recursive<()> {
+    fn act(&self) {}
+}
+impl Behavior for RecursiveAlias<()> {
     fn act(&self) {}
 }
