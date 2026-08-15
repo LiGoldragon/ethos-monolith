@@ -44,12 +44,10 @@
             test -f ${src}/src/fixture/generated.rs
             touch $out
           '';
-          binding-law = pkgs.runCommand "ethos-monolith-binding-law" {
-            nativeBuildInputs = [ toolchain ];
-          } ''
-            cargo test --manifest-path ${src}/Cargo.toml --locked --test architecture_guards
-            touch $out
-          '';
+          binding-law = craneLib.cargoTest (commonArguments // {
+            inherit cargoArtifacts;
+            cargoTestExtraArgs = "--test architecture_guards";
+          });
           doc = craneLib.cargoDoc (commonArguments // {
             inherit cargoArtifacts;
             RUSTDOCFLAGS = "-D warnings";
