@@ -36,7 +36,7 @@
           });
           sole-emission-surface = pkgs.runCommand "ethos-monolith-sole-emission-surface" { } ''
             test "$(find ${src}/src -maxdepth 1 -type f -name '*.rs' -printf '%f\n' | sort | tr '\n' ' ')" = "build.rs generate.rs lib.rs "
-            test "$(find ${src}/tests -maxdepth 1 -type f -name '*.rs' -printf '%f\n' | sort | tr '\n' ' ')" = "generate.rs interface_fixture.rs "
+            test "$(find ${src}/tests -maxdepth 1 -type f -name '*.rs' -printf '%f\n' | sort | tr '\n' ' ')" = "architecture_guards.rs generate.rs interface_fixture.rs "
             grep -q 'pub const ETHOS_GENERATED_MARKER' ${src}/src/generate.rs
             grep -q 'pub struct GeneratedComponent' ${src}/src/generate.rs
             grep -q 'pub struct ComponentGeneration' ${src}/src/generate.rs
@@ -45,20 +45,9 @@
             touch $out
           '';
           binding-law = pkgs.runCommand "ethos-monolith-binding-law" {
-            nativeBuildInputs = [ pkgs.ripgrep ];
+            nativeBuildInputs = [ toolchain ];
           } ''
-            if rg -n '^impl [A-Za-z_][A-Za-z0-9_]*(<[^>]*>)?[[:space:]]*\{' ${src}/src; then
-              echo "inherent production impl methods are forbidden" >&2
-              exit 1
-            fi
-            if rg -n '^(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?fn[[:space:]]' ${src}/src; then
-              echo "production free functions are forbidden" >&2
-              exit 1
-            fi
-            if rg -n '^[[:space:]]*(pub[[:space:]]+)?struct[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*;' ${src}/src; then
-              echo "production behavior ZSTs are forbidden" >&2
-              exit 1
-            fi
+            cargo test --manifest-path ${src}/Cargo.toml --locked --test architecture_guards
             touch $out
           '';
           doc = craneLib.cargoDoc (commonArguments // {

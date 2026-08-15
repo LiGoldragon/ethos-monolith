@@ -19,6 +19,10 @@ path = "src/lib.rs"
 protos = { git = "https://github.com/LiGoldragon/protos", rev = "884f9334a658415053da277973df38549b82994a" }
 thiserror = "2"
 
+[dev-dependencies]
+syn = { version = "3", features = ["full"] }
+unicode-ident = "1"
+
 [[test]]
 name = "generate"
 path = "tests/generate.rs"
@@ -26,6 +30,10 @@ path = "tests/generate.rs"
 [[test]]
 name = "interface_fixture"
 path = "tests/interface_fixture.rs"
+
+[[test]]
+name = "architecture_guards"
+path = "tests/architecture_guards.rs"
 
 [lints.rust]
 unsafe_code = "forbid"

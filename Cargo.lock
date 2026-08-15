@@ -7,7 +7,9 @@ name = "ethos-monolith"
 version = "0.1.0"
 dependencies = [
  "protos",
+ "syn",
  "thiserror",
+ "unicode-ident",
 ]
 
 [[package]]
