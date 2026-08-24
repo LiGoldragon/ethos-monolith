@@ -18,6 +18,35 @@ signal.ethos  nexus.ethos  sema.ethos
 source and output directory bindings; `GeneratedComponent` carries the
 three `GeneratedArtifact` values produced by one generation run.
 
+The `signal.ethos` document must contain a source-owned channel binding after
+its Interface version header:
+
+```text
+Interface.{0 1 0}
+Channel.{Orchestrate 1 4}
+[]
+{
+  [Reserve.PathLock Release.PathLockRelease]
+  [PathLockRegistered.PathLock PathLockReleased.PathLockRelease]
+  []
+  []
+  [PathLockName.String PathLockPath.String PathLockPaths.Vector<PathLockPath>]
+}
+```
+
+`Channel.{Name ContractId WireRevision}` emits the marker `NameWire`, its
+`WireContract` binding, derived structural textual carriers, and one
+`signal_channel!` declaration. Inputs become its operations; Outputs become
+the closed `NameReply`; `NameRequest` aliases its generated operation root.
+The binding integers are positive and an invalid or absent channel declaration
+on `signal.ethos` rejects the whole generation before output installation.
+
+`Vector<T>` is the supported collection reference and emits `Vec<T>` when `T`
+is a known local type. Imports, trait interactions, unconstrained generic
+parameters, and stream runtime declarations remain outside this POC and are
+rejected or not selected by the relevant projection; no fallback Rust is
+invented for them.
+
 `build` owns the checked-artifact and Cargo metadata contract: consumers
 may publish their Ethos source directory through `CargoEthosSourceMetadata`
 so that dependents can locate it at build time.

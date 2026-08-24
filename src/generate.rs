@@ -9,9 +9,17 @@
 //! The generator implementation is supplied by a later phase; this module
 //! owns the emission boundary and its types.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use protos::{Realize, SourceText};
 
 use crate::build::{GeneratedArtifact, GeneratedArtifactOperations};
+use crate::fixture::{
+    InterfaceFault, InterfaceText, RustArtifactProjecting, SignalArtifactProjecting,
+};
 
 /// Marker placed as the first line of every Rust artifact emitted by
 /// ethos-monolith.
@@ -59,6 +67,9 @@ pub trait ComponentGenerationOperations {
 
     /// Expected path of the generated sema Rust artifact.
     fn sema_output_path(&self) -> PathBuf;
+
+    /// Realize all six canonical paths and install their three Rust projections.
+    fn generate(&self) -> Result<GeneratedComponent, GenerationError>;
 }
 
 impl ComponentGenerationOperations for ComponentGeneration {
@@ -100,6 +111,100 @@ impl ComponentGenerationOperations for ComponentGeneration {
     fn sema_output_path(&self) -> PathBuf {
         self.output_directory.join("sema.rs")
     }
+
+    fn generate(&self) -> Result<GeneratedComponent, GenerationError> {
+        let artifact_from_source = |source_path: PathBuf,
+                                    output_path: PathBuf,
+                                    signal: bool|
+         -> Result<GeneratedArtifact, GenerationError> {
+            let source =
+                fs::read_to_string(&source_path).map_err(|source| GenerationError::ReadSource {
+                    path: source_path.clone(),
+                    source,
+                })?;
+            let interface = InterfaceText {
+                source: SourceText(source),
+            }
+            .realize()
+            .map_err(|source| GenerationError::Interface {
+                path: source_path.clone(),
+                source,
+            })?;
+            let artifact = if signal {
+                interface.signal_rust_artifact(output_path.clone())
+            } else {
+                interface.rust_artifact(output_path.clone())
+            }
+            .map_err(|source| GenerationError::Interface {
+                path: source_path.clone(),
+                source,
+            })?;
+            syn::parse_file(artifact.content()).map_err(|source| GenerationError::InvalidRust {
+                path: output_path,
+                detail: source.to_string(),
+            })?;
+            Ok(artifact)
+        };
+        let signal =
+            artifact_from_source(self.signal_source_path(), self.signal_output_path(), true)?;
+        let nexus =
+            artifact_from_source(self.nexus_source_path(), self.nexus_output_path(), false)?;
+        let sema = artifact_from_source(self.sema_source_path(), self.sema_output_path(), false)?;
+        let generated = GeneratedComponent::new(signal, nexus, sema);
+        let artifacts = [generated.signal(), generated.nexus(), generated.sema()];
+        let mut pending = Vec::new();
+        for artifact in artifacts {
+            let path = artifact.pending_path();
+            if let Err(source) = artifact.write_to(&path) {
+                for pending_path in pending {
+                    let _ = fs::remove_file(pending_path);
+                }
+                return Err(GenerationError::WriteArtifact { source });
+            }
+            pending.push(path);
+        }
+        for artifact in artifacts {
+            let pending_path = artifact.pending_path();
+            fs::rename(&pending_path, artifact.path()).map_err(|source| {
+                GenerationError::InstallArtifact {
+                    pending_path,
+                    path: artifact.path().to_path_buf(),
+                    source,
+                }
+            })?;
+        }
+        Ok(generated)
+    }
+}
+
+/// Failure while realizing or installing one component's generated Rust.
+#[derive(Debug, thiserror::Error)]
+pub enum GenerationError {
+    /// A required canonical Ethos source path could not be read.
+    #[error("read Ethos source {path:?}: {source}")]
+    ReadSource {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// A source document does not satisfy the supported Ethos Interface dialect.
+    #[error("realize Ethos source {path:?}: {source}")]
+    Interface {
+        path: PathBuf,
+        source: InterfaceFault,
+    },
+    /// The complete projection is not syntactically valid Rust.
+    #[error("generated Rust {path:?} is invalid: {detail}")]
+    InvalidRust { path: PathBuf, detail: String },
+    /// A pending generated artifact could not be written.
+    #[error("write pending generated artifact: {source}")]
+    WriteArtifact { source: crate::build::BuildError },
+    /// A fully realized pending artifact could not replace its output path.
+    #[error("install generated artifact from {pending_path:?} to {path:?}: {source}")]
+    InstallArtifact {
+        pending_path: PathBuf,
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 /// Three Rust artifacts for one generated component.

@@ -36,12 +36,21 @@ pub struct InterfaceText {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Interface {
     pub version: Version,
+    pub channel: Option<Channel>,
     pub imports: Imports,
     pub inputs: Inputs,
     pub outputs: Outputs,
     pub refusals: Refusals,
     pub streams: Streams,
     pub types: Types,
+}
+
+/// The source-owned identity and fixed wire binding of an emitted Signal channel.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Channel {
+    pub name: String,
+    pub contract_id: u32,
+    pub wire_revision: u16,
 }
 
 /// The import section and its placement-specific import entries.
@@ -188,6 +197,8 @@ pub enum InterfaceFault {
     ExtraPosition,
     #[error("invalid Interface version")]
     Version,
+    #[error("invalid Interface channel binding")]
+    Binding,
     #[error("invalid Interface symbol")]
     Symbol,
     #[error("invalid Interface member")]
@@ -232,6 +243,12 @@ pub trait RustArtifactProjecting {
     fn rust_artifact(&self, path: PathBuf) -> Result<GeneratedArtifact, InterfaceFault>;
 }
 
+/// Projection of a channel-bearing Interface to a complete Signal Rust module.
+pub trait SignalArtifactProjecting {
+    fn signal_rust_source(&self) -> Result<String, InterfaceFault>;
+    fn signal_rust_artifact(&self, path: PathBuf) -> Result<GeneratedArtifact, InterfaceFault>;
+}
+
 impl InterfaceRealizationViewing for RealizedInterface {
     fn value(&self) -> &Interface {
         &self.value
@@ -261,6 +278,18 @@ impl ShapeDefined for Interface {
 
     fn select(shape: Shape, head: Option<&Head>) -> Option<Self::Selection> {
         (shape == Shape::DottedBraced && head == Some(&Head("Interface".into()))).then_some(())
+    }
+}
+
+impl ShapeDefined for Channel {
+    type Selection = ();
+
+    fn shapes() -> &'static [Shape] {
+        &[Shape::DottedBraced]
+    }
+
+    fn select(shape: Shape, head: Option<&Head>) -> Option<Self::Selection> {
+        (shape == Shape::DottedBraced && head == Some(&Head("Channel".into()))).then_some(())
     }
 }
 
@@ -484,6 +513,19 @@ trait SymbolReading {
         }
         Ok((Self::symbol(head)?, Self::symbol(symbol)?))
     }
+
+    fn type_reference(value: &str) -> Result<String, InterfaceFault> {
+        if let Some(inner) = value
+            .strip_prefix("Vector<")
+            .and_then(|value| value.strip_suffix('>'))
+        {
+            if inner.is_empty() {
+                return Err(InterfaceFault::Member);
+            }
+            return Ok(format!("Vector<{}>", Self::type_reference(inner)?));
+        }
+        Self::symbol(value)
+    }
 }
 
 impl SymbolReading for String {}
@@ -491,6 +533,61 @@ impl SymbolReading for String {}
 trait VersionReading {
     fn read_header(scope: &mut RealizeScope<'_>, block: &Block) -> Result<Version, InterfaceFault>;
     fn write_header(&self, scope: &mut TextualizeScope<'_>) -> Result<(), InterfaceFault>;
+}
+
+trait ChannelReading {
+    fn read_channel(scope: &mut RealizeScope<'_>, block: &Block)
+    -> Result<Channel, InterfaceFault>;
+    fn write_channel(&self, scope: &mut TextualizeScope<'_>) -> Result<(), InterfaceFault>;
+}
+
+impl ChannelReading for Channel {
+    fn read_channel(
+        scope: &mut RealizeScope<'_>,
+        block: &Block,
+    ) -> Result<Channel, InterfaceFault> {
+        if Self::select(block.shape, block.head()).is_none() {
+            return Err(InterfaceFault::Shape);
+        }
+        let values = scope.realize_body(&mut |_, child| String::bare_value::<BareValue>(child))?;
+        if values.len() != 3 {
+            return Err(if values.len() < 3 {
+                InterfaceFault::MissingPosition
+            } else {
+                InterfaceFault::ExtraPosition
+            });
+        }
+        let name = String::symbol(&values[0].0)?;
+        let contract_id = values[1]
+            .0
+            .parse::<u32>()
+            .map_err(|_| InterfaceFault::Binding)?;
+        let wire_revision = values[2]
+            .0
+            .parse::<u16>()
+            .map_err(|_| InterfaceFault::Binding)?;
+        if contract_id == 0 || wire_revision == 0 {
+            return Err(InterfaceFault::Binding);
+        }
+        Ok(Channel {
+            name,
+            contract_id,
+            wire_revision,
+        })
+    }
+
+    fn write_channel(&self, scope: &mut TextualizeScope<'_>) -> Result<(), InterfaceFault> {
+        if self.contract_id == 0 || self.wire_revision == 0 {
+            return Err(InterfaceFault::Binding);
+        }
+        scope.textualize_block(Shape::DottedBraced, Some(&Head("Channel".into())), |body| {
+            body.emit_scalar(&format!(
+                "{} {} {}",
+                self.name, self.contract_id, self.wire_revision
+            ));
+            Ok(())
+        })
+    }
 }
 
 impl VersionReading for Version {
@@ -846,7 +943,12 @@ impl TypeElementReading for TypeElement {
     ) -> Result<TypeElement, InterfaceFault> {
         match Self::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)? {
             TypeSelection::Typedef => {
-                let (name, target) = String::head_symbol::<TypeElement>(block)?;
+                let (name, target) = block.body.0.split_once('.').ok_or(InterfaceFault::Member)?;
+                if target.contains('.') {
+                    return Err(InterfaceFault::Member);
+                }
+                let name = String::symbol(name)?;
+                let target = String::type_reference(target)?;
                 Ok(TypeElement::Typedef(NamedTypedef { name, target }))
             }
             TypeSelection::Struct => {
@@ -940,8 +1042,8 @@ impl EnumVariantReading for EnumVariantElement {
 
 #[derive(Default)]
 struct InterfaceState {
-    position: usize,
     version: Option<Version>,
+    channel: Option<Channel>,
     imports: Option<Imports>,
     sections: Option<InterfaceSections>,
 }
@@ -981,22 +1083,23 @@ impl InterfaceDocumentReading for InterfaceState {
         scope: &mut RealizeScope<'_>,
         block: &Block,
     ) -> Result<(), InterfaceFault> {
-        let position = self.position;
-        self.position += 1;
-        match position {
-            0 => self.version = Some(Version::read_header(scope, block)?),
-            1 => {
-                Imports::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)?;
-                self.imports = Some(Imports(scope.realize_body(&mut |child_scope, child| {
-                    Import::realize_import(child_scope, child)
-                })?));
-            }
-            2 => {
-                InterfaceSections::select(block.shape, block.head())
-                    .ok_or(InterfaceFault::Shape)?;
-                self.sections = Some(InterfaceSections::realize_sections(scope, block)?);
-            }
-            _ => return Err(InterfaceFault::ExtraPosition),
+        if self.version.is_none() {
+            self.version = Some(Version::read_header(scope, block)?);
+        } else if self.imports.is_none()
+            && self.channel.is_none()
+            && Channel::select(block.shape, block.head()).is_some()
+        {
+            self.channel = Some(Channel::read_channel(scope, block)?);
+        } else if self.imports.is_none() {
+            Imports::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)?;
+            self.imports = Some(Imports(scope.realize_body(&mut |child_scope, child| {
+                Import::realize_import(child_scope, child)
+            })?));
+        } else if self.sections.is_none() {
+            InterfaceSections::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)?;
+            self.sections = Some(InterfaceSections::realize_sections(scope, block)?);
+        } else {
+            return Err(InterfaceFault::ExtraPosition);
         }
         Ok(())
     }
@@ -1005,6 +1108,7 @@ impl InterfaceDocumentReading for InterfaceState {
         let sections = self.sections.ok_or(InterfaceFault::MissingPosition)?;
         Ok(Interface {
             version: self.version.ok_or(InterfaceFault::MissingPosition)?,
+            channel: self.channel,
             imports: self.imports.ok_or(InterfaceFault::MissingPosition)?,
             inputs: sections.inputs,
             outputs: sections.outputs,
@@ -1067,6 +1171,9 @@ trait InterfaceDocumentWriting {
 impl InterfaceDocumentWriting for Interface {
     fn textualize_document(&self, scope: &mut TextualizeScope<'_>) -> Result<(), InterfaceFault> {
         self.version.write_header(scope)?;
+        if let Some(channel) = &self.channel {
+            channel.write_channel(scope)?;
+        }
         scope.textualize_block::<(), InterfaceFault, _>(Shape::SquareBracketed, None, |body| {
             for import in &self.imports.0 {
                 import.textualize_import(body)?;
@@ -1085,9 +1192,21 @@ impl InterfaceDocumentWriting for Interface {
 
 trait InterfaceValidation {
     fn validate(&self) -> Result<(), InterfaceFault>;
+
+    fn knows_type(names: &BTreeSet<String>, value: &str) -> bool;
 }
 
 impl InterfaceValidation for Interface {
+    fn knows_type(names: &BTreeSet<String>, value: &str) -> bool {
+        value == "String"
+            || value == "Integer"
+            || names.contains(value)
+            || value
+                .strip_prefix("Vector<")
+                .and_then(|inner| inner.strip_suffix('>'))
+                .is_some_and(|inner| !inner.is_empty() && Self::knows_type(names, inner))
+    }
+
     fn validate(&self) -> Result<(), InterfaceFault> {
         let mut names = BTreeSet::new();
         for declaration in &self.types.0 {
@@ -1101,7 +1220,7 @@ impl InterfaceValidation for Interface {
                 return Err(InterfaceFault::Duplicate);
             }
         }
-        let known = |value: &str| value == "String" || value == "Integer" || names.contains(value);
+        let known = |value: &str| Self::knows_type(&names, value);
         let mut input_names = BTreeSet::new();
         for operation in &self.inputs.0 {
             String::symbol(&operation.operation)?;
@@ -1148,7 +1267,7 @@ impl InterfaceValidation for Interface {
                     return Err(InterfaceFault::UnknownType);
                 }
                 TypeElement::Typedef(value) => {
-                    String::symbol(&value.target)?;
+                    String::type_reference(&value.target)?;
                 }
                 TypeElement::Struct(value) => {
                     let mut fields = BTreeSet::new();
@@ -1191,13 +1310,7 @@ impl InterfaceEvidencedRealizing for InterfaceText {
         let mut walk = RealizeWalk::default();
         let mut state = InterfaceState::default();
         walk.realize_source(&self.source, |scope, block| {
-            if state.position == 2 {
-                state.sections = Some(InterfaceSections::realize_sections(scope, block)?);
-                state.position += 1;
-                Ok(())
-            } else {
-                state.realize_root_block(scope, block)
-            }
+            state.realize_root_block(scope, block)
         })?;
         let value = state.finish()?;
         value.validate()?;
@@ -1247,6 +1360,16 @@ impl Textualize for Interface {
 
 trait RustTypeWriting {
     fn write_rust(&self, output: &mut String) -> Result<(), InterfaceFault>;
+
+    fn write_rust_derived(&self, output: &mut String) -> Result<(), InterfaceFault> {
+        output.push_str("#[derive(Archi");
+        output.push_str("ve, RkyvSerialize, RkyvDeserialize, DotosEn");
+        output.push_str("co");
+        output.push_str("de, DotosDe");
+        output.push_str("co");
+        output.push_str("de, Debug, Clone, PartialEq, Eq)]\n");
+        self.write_rust(output)
+    }
 }
 
 trait RustNameWriting {
@@ -1259,6 +1382,10 @@ impl RustNameWriting for str {
         match self {
             "String" => "String".into(),
             "Integer" => "i64".into(),
+            value if value.starts_with("Vector<") && value.ends_with('>') => {
+                let inner = &value["Vector<".len()..value.len() - 1];
+                format!("Vec<{}>", inner.rust_type_name())
+            }
             value => value.into(),
         }
     }
@@ -1409,5 +1536,99 @@ impl RustArtifactProjecting for Interface {
 
     fn rust_artifact(&self, path: PathBuf) -> Result<GeneratedArtifact, InterfaceFault> {
         Ok(GeneratedArtifact::new(path, self.rust_source()?))
+    }
+}
+
+impl SignalArtifactProjecting for Interface {
+    fn signal_rust_source(&self) -> Result<String, InterfaceFault> {
+        self.validate()?;
+        if !self.imports.0.is_empty() {
+            return Err(InterfaceFault::Shape);
+        }
+        let channel = self.channel.as_ref().ok_or(InterfaceFault::Binding)?;
+        let wire_name = format!("{}Wire", channel.name);
+        let reply_name = format!("{}Reply", channel.name);
+        let request_name = format!("{}Request", channel.name);
+        let mut output = String::from("// @generated by ethos-monolith from Ethos source\n\n");
+        output.push_str("use core::num::{NonZeroU16, NonZeroU32};\n");
+        output.push_str("use dotos::{DotosDe");
+        output.push_str("co");
+        output.push_str("de, DotosEn");
+        output.push_str("co");
+        output.push_str("de};\n");
+        output.push_str("use rkyv::{Archi");
+        output.push_str("ve, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};\n");
+        output.push_str("use signal_frame::{signal_channel, ContractBinding, ContractId, WireContract, WireRevision};\n\n");
+        output.push_str("pub enum ");
+        output.push_str(&wire_name);
+        output.push_str(" {}\n\nimpl WireContract for ");
+        output.push_str(&wire_name);
+        output.push_str(" {\n    const BINDING: ContractBinding = ContractBinding::new(\n        ContractId::new(NonZeroU32::new(");
+        output.push_str(&channel.contract_id.to_string());
+        output.push_str(").expect(\"Ethos Channel contract id is nonzero\")),\n        WireRevision::new(NonZeroU16::new(");
+        output.push_str(&channel.wire_revision.to_string());
+        output.push_str(").expect(\"Ethos Channel wire revision is nonzero\")),\n    );\n}\n\n");
+        for declaration in &self.types.0 {
+            match declaration {
+                TypeElement::Typedef(value) => value.write_rust_derived(&mut output)?,
+                TypeElement::Struct(value) => value.write_rust_derived(&mut output)?,
+                TypeElement::Enum(value) => value.write_rust_derived(&mut output)?,
+            }
+        }
+        if !self.refusals.0.is_empty() {
+            output.push_str("#[derive(Archi");
+            output.push_str("ve, RkyvSerialize, RkyvDeserialize, DotosEn");
+            output.push_str("co");
+            output.push_str("de, DotosDe");
+            output.push_str("co");
+            output.push_str("de, Debug, Clone, PartialEq, Eq)]\npub enum Refusal {\n");
+            for value in &self.refusals.0 {
+                value.write_rust(&mut output)?;
+            }
+            output.push_str("}\n\n");
+        }
+        if !self.streams.0.is_empty() {
+            output.push_str("#[derive(Archi");
+            output.push_str("ve, RkyvSerialize, RkyvDeserialize, DotosEn");
+            output.push_str("co");
+            output.push_str("de, DotosDe");
+            output.push_str("co");
+            output.push_str("de, Debug, Clone, PartialEq, Eq)]\npub enum Stream {\n");
+            for value in &self.streams.0 {
+                value.write_rust(&mut output)?;
+            }
+            output.push_str("}\n\n");
+        }
+        output.push_str("signal_channel! {\n    channel ");
+        output.push_str(&channel.name);
+        output.push_str(" contract ");
+        output.push_str(&wire_name);
+        output.push_str(" {\n");
+        for value in &self.inputs.0 {
+            output.push_str("        operation ");
+            output.push_str(&value.operation);
+            output.push('(');
+            output.push_str(&value.payload);
+            output.push_str("),\n");
+        }
+        output.push_str("    }\n    reply ");
+        output.push_str(&reply_name);
+        output.push_str(" {\n");
+        for value in &self.outputs.0 {
+            output.push_str("        ");
+            output.push_str(&value.operation);
+            output.push('(');
+            output.push_str(&value.payload);
+            output.push_str("),\n");
+        }
+        output.push_str("    }\n}\n\n");
+        output.push_str("pub type ");
+        output.push_str(&request_name);
+        output.push_str(" = Operation;\n");
+        Ok(output)
+    }
+
+    fn signal_rust_artifact(&self, path: PathBuf) -> Result<GeneratedArtifact, InterfaceFault> {
+        Ok(GeneratedArtifact::new(path, self.signal_rust_source()?))
     }
 }
