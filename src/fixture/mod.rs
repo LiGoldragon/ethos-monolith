@@ -1379,7 +1379,19 @@ trait RustTypeWriting {
 }
 
 trait NamedDotosTextWriting {
-    fn write_named_dotos_text(&self, output: &mut String) -> Result<(), InterfaceFault>;
+    fn write_named_dotos_text(
+        &self,
+        output: &mut String,
+        nested_structs: Option<&BTreeSet<String>>,
+    ) -> Result<(), InterfaceFault>;
+}
+
+trait SignalStructWriting {
+    fn write_signal_struct(
+        &self,
+        output: &mut String,
+        nested_structs: &BTreeSet<String>,
+    ) -> Result<(), InterfaceFault>;
 }
 
 trait RustNameWriting {
@@ -1486,7 +1498,7 @@ impl RustTypeWriting for NamedTypedef {
 
     fn write_rust_derived(&self, output: &mut String) -> Result<(), InterfaceFault> {
         self.write_rust_structural(output)?;
-        self.write_named_dotos_text(output)
+        self.write_named_dotos_text(output, None)
     }
 }
 
@@ -1508,12 +1520,16 @@ impl RustTypeWriting for NamedStruct {
 
     fn write_rust_derived(&self, output: &mut String) -> Result<(), InterfaceFault> {
         self.write_rust_structural(output)?;
-        self.write_named_dotos_text(output)
+        self.write_named_dotos_text(output, None)
     }
 }
 
 impl NamedDotosTextWriting for NamedTypedef {
-    fn write_named_dotos_text(&self, output: &mut String) -> Result<(), InterfaceFault> {
+    fn write_named_dotos_text(
+        &self,
+        output: &mut String,
+        _: Option<&BTreeSet<String>>,
+    ) -> Result<(), InterfaceFault> {
         let target = self.target.as_str().rust_type_name();
         output.push_str("impl EthosValueEncoding for ");
         output.push_str(&self.name);
@@ -1582,7 +1598,13 @@ impl NamedDotosTextWriting for NamedTypedef {
 }
 
 impl NamedDotosTextWriting for NamedStruct {
-    fn write_named_dotos_text(&self, output: &mut String) -> Result<(), InterfaceFault> {
+    fn write_named_dotos_text(
+        &self,
+        output: &mut String,
+        nested_structs: Option<&BTreeSet<String>>,
+    ) -> Result<(), InterfaceFault> {
+        let flattened_single_nested = self.fields.len() == 1
+            && nested_structs.is_some_and(|known| known.contains(&self.fields[0]));
         output.push_str("impl EthosValueEncoding for ");
         output.push_str(&self.name);
         output.push_str(
@@ -1620,11 +1642,19 @@ impl NamedDotosTextWriting for NamedStruct {
         output.push_str(&self.name);
         output.push_str(" {\n    fn to_dotos(&self) -> String {\n        format!(\"");
         output.push_str(&self.name);
-        output.push_str(".{}\", <Self as ::dotos::DotosBodyEn");
-        output.push_str("co");
-        output.push_str(
-            "de>::to_dotos_body(self).to_delimited_dotos(::dotos::Delimiter::Brace))\n    }\n}\n\n",
-        );
+        if flattened_single_nested {
+            output.push_str(".{}\", <");
+            output.push_str(&self.fields[0].as_str().rust_type_name());
+            output.push_str(" as ::dotos::DotosBodyEn");
+            output.push_str("co");
+            output.push_str("de>::to_dotos_body(&self.");
+            output.push_str(&self.fields[0].as_str().rust_field_name());
+            output.push_str(").to_delimited_dotos(::dotos::Delimiter::Brace))\n    }\n}\n\n");
+        } else {
+            output.push_str(".{}\", <Self as ::dotos::DotosBodyEn");
+            output.push_str("co");
+            output.push_str("de>::to_dotos_body(self).to_delimited_dotos(::dotos::Delimiter::Brace))\n    }\n}\n\n");
+        }
         output.push_str("impl ::dotos::DotosDe");
         output.push_str("co");
         output.push_str("de for ");
@@ -1647,7 +1677,22 @@ impl NamedDotosTextWriting for NamedStruct {
         output.push_str("co");
         output.push_str("deError::UnknownVariant { enum_name: \"");
         output.push_str(&self.name);
-        output.push_str("\", variant: head.to_owned() });\n        }\n        <Self as EthosValueDecoding>::from_ethos_value(payload)\n    }\n}\n\n");
+        output.push_str("\", variant: head.to_owned() });\n        }\n");
+        if flattened_single_nested {
+            output.push_str("        let body = ::dotos::DotosBlock::new(payload).expect_body(::dotos::Delimiter::Brace, \"");
+            output.push_str(&self.name);
+            output.push_str("\")?;\n        Ok(Self { ");
+            output.push_str(&self.fields[0].as_str().rust_field_name());
+            output.push_str(": <");
+            output.push_str(&self.fields[0].as_str().rust_type_name());
+            output.push_str(" as ::dotos::DotosBodyDe");
+            output.push_str("co");
+            output.push_str("de>::from_dotos_body(&body)? })\n    }\n}\n\n");
+        } else {
+            output.push_str(
+                "        <Self as EthosValueDecoding>::from_ethos_value(payload)\n    }\n}\n\n",
+            );
+        }
         output.push_str("impl ::dotos::DotosBodyDe");
         output.push_str("co");
         output.push_str("de for ");
@@ -1699,12 +1744,27 @@ impl RustTypeWriting for NamedEnum {
 
     fn write_rust_derived(&self, output: &mut String) -> Result<(), InterfaceFault> {
         self.write_rust_structural(output)?;
-        self.write_named_dotos_text(output)
+        self.write_named_dotos_text(output, None)
+    }
+}
+
+impl SignalStructWriting for NamedStruct {
+    fn write_signal_struct(
+        &self,
+        output: &mut String,
+        nested_structs: &BTreeSet<String>,
+    ) -> Result<(), InterfaceFault> {
+        self.write_rust_structural(output)?;
+        self.write_named_dotos_text(output, Some(nested_structs))
     }
 }
 
 impl NamedDotosTextWriting for NamedEnum {
-    fn write_named_dotos_text(&self, output: &mut String) -> Result<(), InterfaceFault> {
+    fn write_named_dotos_text(
+        &self,
+        output: &mut String,
+        _: Option<&BTreeSet<String>>,
+    ) -> Result<(), InterfaceFault> {
         output.push_str("impl EthosValueEncoding for ");
         output.push_str(&self.name);
         output.push_str(" {\n    fn to_ethos_value(&self) -> String {\n        match self {\n");
@@ -1898,10 +1958,21 @@ impl SignalArtifactProjecting for Interface {
         output.push_str("impl<Value> EthosValueDecoding for Vec<Value> where Value: EthosValueDecoding {\n    fn from_ethos_value(block: &::dotos::Block) -> Result<Self, ::dotos::DotosDe");
         output.push_str("co");
         output.push_str("deError> {\n        ::dotos::DotosCollection::new(block).parse_vector(EthosValueDecoding::from_ethos_value)\n    }\n}\n\n");
+        let nested_structs = self
+            .types
+            .0
+            .iter()
+            .filter_map(|declaration| match declaration {
+                TypeElement::Struct(value) => Some(value.name.clone()),
+                TypeElement::Typedef(_) | TypeElement::Enum(_) => None,
+            })
+            .collect::<BTreeSet<_>>();
         for declaration in &self.types.0 {
             match declaration {
                 TypeElement::Typedef(value) => value.write_rust_derived(&mut output)?,
-                TypeElement::Struct(value) => value.write_rust_derived(&mut output)?,
+                TypeElement::Struct(value) => {
+                    value.write_signal_struct(&mut output, &nested_structs)?
+                }
                 TypeElement::Enum(value) => value.write_rust_derived(&mut output)?,
             }
         }

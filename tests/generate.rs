@@ -261,7 +261,7 @@ fn generation_emits_comparable_wire_marker_and_named_struct_textual_heads() {
     write_component_sources(&source_directory);
     fs::write(
         source_directory.join("signal.ethos"),
-        "Interface.{0 1 0}\nChannel.{Fixture 7 3}\n[]\n{\n  [Register.PathLock]\n  [PathLockRegistrationRejected.PathLockRegistrationRejected]\n  []\n  []\n  [PathLockName.String PathLockPath.String PathLockPaths.Vector<PathLockPath> PathLockDescription.String PathLockRegistrationRefusal.[DuplicateActiveName.PathLockName] PathLock.{PathLockName PathLockPaths PathLockDescription} PathLockRegistrationRejected.{PathLock PathLockRegistrationRefusal}]\n}\n",
+        "Interface.{0 1 0}\nChannel.{Fixture 7 3}\n[]\n{\n  [Register.PathLock]\n  [PathLockRegistered.PathLockRegistered PathLockRegistrationRejected.PathLockRegistrationRejected]\n  []\n  []\n  [PathLockName.String PathLockPath.String PathLockPaths.Vector<PathLockPath> PathLockDescription.String PathLockRegistrationRefusal.[DuplicateActiveName.PathLockName] PathLock.{PathLockName PathLockPaths PathLockDescription} PathLockRegistered.{PathLock} PathLockRegistrationRejected.{PathLock PathLockRegistrationRefusal}]\n}\n",
     )
     .expect("write named-head signal source");
 
@@ -295,6 +295,10 @@ fn generation_emits_comparable_wire_marker_and_named_struct_textual_heads() {
     assert!(
         signal.contains("::dotos::Delimiter::SquareBracket.wrap(self.iter().map(EthosValueEncoding::to_ethos_value))"),
         "a vector projects each nominal element as its underlying value"
+    );
+    assert!(
+        signal.contains("format!(\"PathLockRegistered.{}\", <PathLock as ::dotos::DotosBodyEncode>::to_dotos_body(&self.path_lock).to_delimited_dotos(::dotos::Delimiter::Brace))"),
+        "a one-field named wrapper flattens its nested record under one outer body"
     );
     assert!(
         signal.contains("<PathLockRegistrationRefusal as EthosValueDecoding>::from_ethos_value"),
