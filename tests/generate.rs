@@ -261,7 +261,7 @@ fn generation_emits_comparable_wire_marker_and_named_struct_textual_heads() {
     write_component_sources(&source_directory);
     fs::write(
         source_directory.join("signal.ethos"),
-        "Interface.{0 1 0}\nChannel.{Fixture 7 3}\n[]\n{\n  [Register.PathLock]\n  [PathLockRegistered.PathLock]\n  []\n  []\n  [PathLockName.String PathLockRegistrationRefusal.[DuplicateActiveName.PathLockName] PathLock.{PathLockName PathLockRegistrationRefusal}]\n}\n",
+        "Interface.{0 1 0}\nChannel.{Fixture 7 3}\n[]\n{\n  [Register.PathLock]\n  [PathLockRegistrationRejected.PathLockRegistrationRejected]\n  []\n  []\n  [PathLockName.String PathLockPath.String PathLockPaths.Vector<PathLockPath> PathLockDescription.String PathLockRegistrationRefusal.[DuplicateActiveName.PathLockName] PathLock.{PathLockName PathLockPaths PathLockDescription} PathLockRegistrationRejected.{PathLock PathLockRegistrationRefusal}]\n}\n",
     )
     .expect("write named-head signal source");
 
@@ -280,17 +280,25 @@ fn generation_emits_comparable_wire_marker_and_named_struct_textual_heads() {
     );
     assert!(
         signal.contains(
-            "format!(\"PathLockName.{}\", <String as ::dotos::DotosEncode>::to_dotos(&self.0))"
+            "format!(\"PathLockName.{}\", <Self as EthosValueEncoding>::to_ethos_value(self))"
         ),
         "a concrete named scalar retains its ruled Type.value head"
     );
     assert!(
-        signal.contains("let (head, payload) = block.as_application()"),
-        "a concrete named payload accepts only a dotted application"
+        signal.contains("EthosValueEncoding::to_ethos_value(&self.path_lock_name)"),
+        "a named struct omits a nested nominal scalar head"
     );
     assert!(
-        signal.contains("::dotos::DotosEncode, ::dotos::DotosDecode"),
-        "a closed enum nested in a named payload resolves its textual derives without imports"
+        signal.contains("EthosValueEncoding::to_ethos_value(&self.path_lock_paths)"),
+        "a named vector field emits its elements without nominal heads"
+    );
+    assert!(
+        signal.contains("::dotos::Delimiter::SquareBracket.wrap(self.iter().map(EthosValueEncoding::to_ethos_value))"),
+        "a vector projects each nominal element as its underlying value"
+    );
+    assert!(
+        signal.contains("<PathLockRegistrationRefusal as EthosValueDecoding>::from_ethos_value"),
+        "an enum-bearing reply decodes its nested refusal without a nominal head"
     );
 
     fs::remove_dir_all(temporary).expect("remove isolated test directory");

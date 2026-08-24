@@ -1515,17 +1515,27 @@ impl RustTypeWriting for NamedStruct {
 impl NamedDotosTextWriting for NamedTypedef {
     fn write_named_dotos_text(&self, output: &mut String) -> Result<(), InterfaceFault> {
         let target = self.target.as_str().rust_type_name();
+        output.push_str("impl EthosValueEncoding for ");
+        output.push_str(&self.name);
+        output.push_str(" {\n    fn to_ethos_value(&self) -> String {\n        <");
+        output.push_str(&target);
+        output.push_str(" as EthosValueEncoding>::to_ethos_value(&self.0)\n    }\n}\n\n");
+        output.push_str("impl EthosValueDecoding for ");
+        output.push_str(&self.name);
+        output.push_str(
+            " {\n    fn from_ethos_value(block: &::dotos::Block) -> Result<Self, ::dotos::DotosDe",
+        );
+        output.push_str("co");
+        output.push_str("deError> {\n        Ok(Self(<");
+        output.push_str(&target);
+        output.push_str(" as EthosValueDecoding>::from_ethos_value(block)?))\n    }\n}\n\n");
         output.push_str("impl ::dotos::DotosEn");
         output.push_str("co");
         output.push_str("de for ");
         output.push_str(&self.name);
         output.push_str(" {\n    fn to_dotos(&self) -> String {\n        format!(\"");
         output.push_str(&self.name);
-        output.push_str(".{}\", <");
-        output.push_str(&target);
-        output.push_str(" as ::dotos::DotosEn");
-        output.push_str("co");
-        output.push_str("de>::to_dotos(&self.0))\n    }\n}\n\n");
+        output.push_str(".{}\", <Self as EthosValueEncoding>::to_ethos_value(self))\n    }\n}\n\n");
         output.push_str("impl ::dotos::DotosDe");
         output.push_str("co");
         output.push_str("de for ");
@@ -1548,11 +1558,7 @@ impl NamedDotosTextWriting for NamedTypedef {
         output.push_str("co");
         output.push_str("deError::UnknownVariant { enum_name: \"");
         output.push_str(&self.name);
-        output.push_str("\", variant: head.to_owned() });\n        }\n        Ok(Self(<");
-        output.push_str(&target);
-        output.push_str(" as ::dotos::DotosDe");
-        output.push_str("co");
-        output.push_str("de>::from_dotos_block(payload)?))\n    }\n}\n\n");
+        output.push_str("\", variant: head.to_owned() });\n        }\n        <Self as EthosValueDecoding>::from_ethos_value(payload)\n    }\n}\n\n");
         output.push_str("impl ::dotos::DotosBodyEn");
         output.push_str("co");
         output.push_str("de for ");
@@ -1577,15 +1583,33 @@ impl NamedDotosTextWriting for NamedTypedef {
 
 impl NamedDotosTextWriting for NamedStruct {
     fn write_named_dotos_text(&self, output: &mut String) -> Result<(), InterfaceFault> {
+        output.push_str("impl EthosValueEncoding for ");
+        output.push_str(&self.name);
+        output.push_str(
+            " {\n    fn to_ethos_value(&self) -> String {\n        <Self as ::dotos::DotosBodyEn",
+        );
+        output.push_str("co");
+        output.push_str(
+            "de>::to_dotos_body(self).to_delimited_dotos(::dotos::Delimiter::Brace)\n    }\n}\n\n",
+        );
+        output.push_str("impl EthosValueDecoding for ");
+        output.push_str(&self.name);
+        output.push_str(
+            " {\n    fn from_ethos_value(block: &::dotos::Block) -> Result<Self, ::dotos::DotosDe",
+        );
+        output.push_str("co");
+        output.push_str("deError> {\n        let body = ::dotos::DotosBlock::new(block).expect_body(::dotos::Delimiter::Brace, \"");
+        output.push_str(&self.name);
+        output.push_str("\")?;\n        <Self as ::dotos::DotosBodyDe");
+        output.push_str("co");
+        output.push_str("de>::from_dotos_body(&body)\n    }\n}\n\n");
         output.push_str("impl ::dotos::DotosBodyEn");
         output.push_str("co");
         output.push_str("de for ");
         output.push_str(&self.name);
         output.push_str(" {\n    fn to_dotos_body(&self) -> ::dotos::DotosBodyEncoding {\n        ::dotos::DotosBodyEncoding::new(vec![\n");
         for field in &self.fields {
-            output.push_str("            ::dotos::DotosEn");
-            output.push_str("co");
-            output.push_str("de::to_dotos(&self.");
+            output.push_str("            EthosValueEncoding::to_ethos_value(&self.");
             output.push_str(&field.as_str().rust_field_name());
             output.push_str("),\n");
         }
@@ -1625,9 +1649,9 @@ impl NamedDotosTextWriting for NamedStruct {
         output.push_str(&self.name);
         output.push_str("\", variant: head.to_owned() });\n        }\n        let body = ::dotos::DotosBlock::new(payload).expect_body(::dotos::Delimiter::Brace, \"");
         output.push_str(&self.name);
-        output.push_str("\")?;\n        <Self as ::dotos::DotosBodyDe");
-        output.push_str("co");
-        output.push_str("de>::from_dotos_body(&body)\n    }\n}\n\n");
+        output.push_str(
+            "\")?;\n        <Self as EthosValueDecoding>::from_ethos_value(payload)\n    }\n}\n\n",
+        );
         output.push_str("impl ::dotos::DotosBodyDe");
         output.push_str("co");
         output.push_str("de for ");
@@ -1644,9 +1668,7 @@ impl NamedDotosTextWriting for NamedStruct {
             output.push_str(&field.as_str().rust_field_name());
             output.push_str(": <");
             output.push_str(&field.as_str().rust_type_name());
-            output.push_str(" as ::dotos::DotosDe");
-            output.push_str("co");
-            output.push_str("de>::from_dotos_block(&fields[");
+            output.push_str(" as EthosValueDecoding>::from_ethos_value(&fields[");
             output.push_str(&index.to_string());
             output.push_str("])?,\n");
         }
@@ -1676,6 +1698,115 @@ impl RustTypeWriting for NamedEnum {
             }
         }
         output.push_str("}\n\n");
+        Ok(())
+    }
+
+    fn write_rust_derived(&self, output: &mut String) -> Result<(), InterfaceFault> {
+        self.write_rust_structural(output)?;
+        self.write_named_dotos_text(output)
+    }
+}
+
+impl NamedDotosTextWriting for NamedEnum {
+    fn write_named_dotos_text(&self, output: &mut String) -> Result<(), InterfaceFault> {
+        output.push_str("impl EthosValueEncoding for ");
+        output.push_str(&self.name);
+        output.push_str(" {\n    fn to_ethos_value(&self) -> String {\n        match self {\n");
+        for variant in &self.variants {
+            output.push_str("            Self::");
+            match variant {
+                EnumVariantElement::Unit { variant } => {
+                    output.push_str(variant);
+                    output.push_str(" => \"");
+                    output.push_str(variant);
+                    output.push_str("\".to_owned(),\n");
+                }
+                EnumVariantElement::Data { variant, .. } => {
+                    output.push_str(variant);
+                    output.push_str("(payload) => format!(\"");
+                    output.push_str(variant);
+                    output.push_str(".{}\", EthosValueEncoding::to_ethos_value(payload)),\n");
+                }
+            }
+        }
+        output.push_str("        }\n    }\n}\n\n");
+        output.push_str("impl EthosValueDecoding for ");
+        output.push_str(&self.name);
+        output.push_str(
+            " {\n    fn from_ethos_value(block: &::dotos::Block) -> Result<Self, ::dotos::DotosDe",
+        );
+        output.push_str("co");
+        output.push_str("deError> {\n        if let Some(variant) = block.atom().map(|atom| atom.text()) {\n            return match variant {\n");
+        for variant in &self.variants {
+            if let EnumVariantElement::Unit { variant } = variant {
+                output.push_str("                \"");
+                output.push_str(variant);
+                output.push_str("\" => Ok(Self::");
+                output.push_str(variant);
+                output.push_str("),\n");
+            }
+        }
+        output.push_str("                other => Err(::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError::UnknownVariant { enum_name: \"");
+        output.push_str(&self.name);
+        output.push_str("\", variant: other.to_owned() }),\n            };\n        }\n        let (head, payload) = block.as_application().ok_or(::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError::ExpectedDelimited {\n            type_name: \"");
+        output.push_str(&self.name);
+        output.push_str("\",\n            delimiter: \"enum variant application\",\n        })?;\n        let variant = head.demote_to_string().ok_or(::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str(
+            "deError::ExpectedAtom { type_name: \"enum variant\" })?;\n        match variant {\n",
+        );
+        for variant in &self.variants {
+            if let EnumVariantElement::Data { variant, payload } = variant {
+                output.push_str("            \"");
+                output.push_str(variant);
+                output.push_str("\" => Ok(Self::");
+                output.push_str(variant);
+                output.push_str("(<");
+                output.push_str(&payload.as_str().rust_type_name());
+                output.push_str(" as EthosValueDecoding>::from_ethos_value(payload)?)),\n");
+            }
+        }
+        output.push_str("            other => Err(::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError::UnknownVariant { enum_name: \"");
+        output.push_str(&self.name);
+        output.push_str("\", variant: other.to_owned() }),\n        }\n    }\n}\n\n");
+        output.push_str("impl ::dotos::DotosEn");
+        output.push_str("co");
+        output.push_str("de for ");
+        output.push_str(&self.name);
+        output.push_str(" {\n    fn to_dotos(&self) -> String {\n        EthosValueEncoding::to_ethos_value(self)\n    }\n}\n\n");
+        output.push_str("impl ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("de for ");
+        output.push_str(&self.name);
+        output.push_str(
+            " {\n    fn from_dotos_block(block: &::dotos::Block) -> Result<Self, ::dotos::DotosDe",
+        );
+        output.push_str("co");
+        output.push_str("deError> {\n        <Self as EthosValueDecoding>::from_ethos_value(block)\n    }\n}\n\n");
+        output.push_str("impl ::dotos::DotosBodyEn");
+        output.push_str("co");
+        output.push_str("de for ");
+        output.push_str(&self.name);
+        output.push_str(" {\n    fn to_dotos_body(&self) -> ::dotos::DotosBodyEncoding {\n        ::dotos::DotosBodyEncoding::new(vec![::dotos::DotosEn");
+        output.push_str("co");
+        output.push_str("de::to_dotos(self)])\n    }\n}\n\n");
+        output.push_str("impl ::dotos::DotosBodyDe");
+        output.push_str("co");
+        output.push_str("de for ");
+        output.push_str(&self.name);
+        output.push_str(" {\n    fn from_dotos_body(body: &::dotos::DotosBody<'_>) -> Result<Self, ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError> {\n        let fields = body.expect_fields(\"");
+        output.push_str(&self.name);
+        output.push_str("\", 1)?;\n        <Self as ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("de>::from_dotos_block(&fields[0])\n    }\n}\n\n");
         Ok(())
     }
 }
@@ -1746,6 +1877,31 @@ impl SignalArtifactProjecting for Interface {
         output.push_str(").expect(\"Ethos Channel contract id is nonzero\")),\n        WireRevision::new(NonZeroU16::new(");
         output.push_str(&channel.wire_revision.to_string());
         output.push_str(").expect(\"Ethos Channel wire revision is nonzero\")),\n    );\n}\n\n");
+        output
+            .push_str("trait EthosValueEncoding {\n    fn to_ethos_value(&self) -> String;\n}\n\n");
+        output.push_str("trait EthosValueDecoding: Sized {\n    fn from_ethos_value(block: &::dotos::Block) -> Result<Self, ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError>;\n}\n\n");
+        output.push_str("impl EthosValueEncoding for String {\n    fn to_ethos_value(&self) -> String {\n        ::dotos::DotosEn");
+        output.push_str("co");
+        output.push_str("de::to_dotos(self)\n    }\n}\n\n");
+        output.push_str("impl EthosValueDecoding for String {\n    fn from_ethos_value(block: &::dotos::Block) -> Result<Self, ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError> {\n        ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("de::from_dotos_block(block)\n    }\n}\n\n");
+        output.push_str("impl EthosValueEncoding for i64 {\n    fn to_ethos_value(&self) -> String {\n        ::dotos::DotosEn");
+        output.push_str("co");
+        output.push_str("de::to_dotos(self)\n    }\n}\n\n");
+        output.push_str("impl EthosValueDecoding for i64 {\n    fn from_ethos_value(block: &::dotos::Block) -> Result<Self, ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError> {\n        ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("de::from_dotos_block(block)\n    }\n}\n\n");
+        output.push_str("impl<Value> EthosValueEncoding for Vec<Value> where Value: EthosValueEncoding {\n    fn to_ethos_value(&self) -> String {\n        ::dotos::Delimiter::SquareBracket.wrap(self.iter().map(EthosValueEncoding::to_ethos_value))\n    }\n}\n\n");
+        output.push_str("impl<Value> EthosValueDecoding for Vec<Value> where Value: EthosValueDecoding {\n    fn from_ethos_value(block: &::dotos::Block) -> Result<Self, ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError> {\n        ::dotos::DotosCollection::new(block).parse_vector(EthosValueDecoding::from_ethos_value)\n    }\n}\n\n");
         for declaration in &self.types.0 {
             match declaration {
                 TypeElement::Typedef(value) => value.write_rust_derived(&mut output)?,
