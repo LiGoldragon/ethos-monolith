@@ -1647,11 +1647,7 @@ impl NamedDotosTextWriting for NamedStruct {
         output.push_str("co");
         output.push_str("deError::UnknownVariant { enum_name: \"");
         output.push_str(&self.name);
-        output.push_str("\", variant: head.to_owned() });\n        }\n        let body = ::dotos::DotosBlock::new(payload).expect_body(::dotos::Delimiter::Brace, \"");
-        output.push_str(&self.name);
-        output.push_str(
-            "\")?;\n        <Self as EthosValueDecoding>::from_ethos_value(payload)\n    }\n}\n\n",
-        );
+        output.push_str("\", variant: head.to_owned() });\n        }\n        <Self as EthosValueDecoding>::from_ethos_value(payload)\n    }\n}\n\n");
         output.push_str("impl ::dotos::DotosBodyDe");
         output.push_str("co");
         output.push_str("de for ");
@@ -1750,7 +1746,7 @@ impl NamedDotosTextWriting for NamedEnum {
         output.push_str("co");
         output.push_str("deError::UnknownVariant { enum_name: \"");
         output.push_str(&self.name);
-        output.push_str("\", variant: other.to_owned() }),\n            };\n        }\n        let (head, payload) = block.as_application().ok_or(::dotos::DotosDe");
+        output.push_str("\", variant: other.to_owned() }),\n            };\n        }\n        let (head, _payload) = block.as_application().ok_or(::dotos::DotosDe");
         output.push_str("co");
         output.push_str("deError::ExpectedDelimited {\n            type_name: \"");
         output.push_str(&self.name);
@@ -1767,7 +1763,7 @@ impl NamedDotosTextWriting for NamedEnum {
                 output.push_str(variant);
                 output.push_str("(<");
                 output.push_str(&payload.as_str().rust_type_name());
-                output.push_str(" as EthosValueDecoding>::from_ethos_value(payload)?)),\n");
+                output.push_str(" as EthosValueDecoding>::from_ethos_value(_payload)?)),\n");
             }
         }
         output.push_str("            other => Err(::dotos::DotosDe");
