@@ -26,8 +26,12 @@ Signal binding. The generated module supplies `NameWire`, `NameRequest`,
 Interface documents, including exact empty documents when a component has no
 types there.
 
-Named structs and named scalar carriers retain their Ethos heads in their
-generated text: `PathLock.{...}` and `PathLockName.value`, respectively.
+Named structs and named scalar carriers retain their Ethos heads when used as
+concrete values: `PathLock.{...}` and `PathLockName.value`, respectively.
+Within a named record the schema already determines each field type, so the
+generated text recursively uses the underlying field values: a lock is
+`PathLock.{name [/absolute/path] (description)}`, rather than repeating every
+nominal field head.
 Consumers parse a concrete payload with `DotosSource::new(text).parse()`;
 the channel operation remains the internal wire envelope, not the command-line
 text surface.
