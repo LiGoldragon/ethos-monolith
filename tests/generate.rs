@@ -223,3 +223,32 @@ fn generation_emits_vector_aliases_and_empty_interface_modules() {
 
     fs::remove_dir_all(temporary).expect("remove isolated test directory");
 }
+
+#[test]
+fn generation_emits_struct_fields_in_rust_snake_case() {
+    let temporary = temporary_directory("snake-case-fields");
+    let source_directory = temporary.join("ethos");
+    let output_directory = temporary.join("rust");
+    write_component_sources(&source_directory);
+    fs::write(
+        source_directory.join("signal.ethos"),
+        "Interface.{0 1 0}\nChannel.{Fixture 7 3}\n[]\n{\n  [Configure.Configuration]\n  [Configured.Configuration]\n  []\n  []\n  [StorePath.String OrdinarySocketPath.String MetaSocketPath.String Configuration.{StorePath OrdinarySocketPath MetaSocketPath}]\n}\n",
+    )
+    .expect("write multiword-field signal source");
+
+    let generated = ComponentGeneration::new(&source_directory, &output_directory)
+        .generate()
+        .expect("generate multiword struct fields");
+
+    for field in ["store_path", "ordinary_socket_path", "meta_socket_path"] {
+        assert!(
+            generated
+                .signal()
+                .content()
+                .contains(&format!("pub {field}: ")),
+            "generated field uses Rust snake case: {field}"
+        );
+    }
+
+    fs::remove_dir_all(temporary).expect("remove isolated test directory");
+}

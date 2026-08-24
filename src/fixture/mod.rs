@@ -1391,12 +1391,32 @@ impl RustNameWriting for str {
     }
 
     fn rust_field_name(&self) -> String {
-        let mut characters = self.chars();
-        let first = characters
-            .next()
-            .map(|value| value.to_ascii_lowercase())
-            .unwrap_or('_');
-        std::iter::once(first).chain(characters).collect()
+        let characters = self.chars().collect::<Vec<_>>();
+        let mut output = String::new();
+        for (index, character) in characters.iter().copied().enumerate() {
+            if character == '_' {
+                if !output.ends_with('_') {
+                    output.push('_');
+                }
+                continue;
+            }
+            if character.is_ascii_uppercase() {
+                let previous_is_lowercase = index > 0 && characters[index - 1].is_ascii_lowercase();
+                let next_is_lowercase = characters
+                    .get(index + 1)
+                    .is_some_and(|next| next.is_ascii_lowercase());
+                if !output.is_empty()
+                    && !output.ends_with('_')
+                    && (previous_is_lowercase || next_is_lowercase)
+                {
+                    output.push('_');
+                }
+                output.push(character.to_ascii_lowercase());
+            } else {
+                output.push(character);
+            }
+        }
+        output
     }
 }
 
