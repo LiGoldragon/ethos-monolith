@@ -1792,9 +1792,18 @@ impl NamedDotosTextWriting for NamedEnum {
             " {\n    fn from_ethos_value(block: &::dotos::Block) -> Result<Self, ::dotos::DotosDe",
         );
         output.push_str("co");
-        output.push_str("deError> {\n        if let Some(variant) = block.atom().map(|atom| atom.text()) {\n            return match variant {\n");
+        output.push_str(
+            "deError> {\n        if let Some(variant) = block.atom().map(|atom| atom.text()) {\n",
+        );
+        let has_unit = self
+            .variants
+            .iter()
+            .any(|variant| matches!(variant, EnumVariantElement::Unit { .. }));
+        if has_unit {
+            output.push_str("            return match variant {\n");
+        }
         for variant in &self.variants {
-            if let EnumVariantElement::Unit { variant } = variant {
+            if has_unit && let EnumVariantElement::Unit { variant } = variant {
                 output.push_str("                \"");
                 output.push_str(variant);
                 output.push_str("\" => Ok(Self::");
@@ -1802,21 +1811,35 @@ impl NamedDotosTextWriting for NamedEnum {
                 output.push_str("),\n");
             }
         }
-        output.push_str("                other => Err(::dotos::DotosDe");
-        output.push_str("co");
-        output.push_str("deError::UnknownVariant { enum_name: \"");
-        output.push_str(&self.name);
-        output.push_str("\", variant: other.to_owned() }),\n            };\n        }\n        let (head, _payload) = block.as_application().ok_or(::dotos::DotosDe");
+        if has_unit {
+            output.push_str("                other => Err(::dotos::DotosDe");
+            output.push_str("co");
+            output.push_str("deError::UnknownVariant { enum_name: \"");
+            output.push_str(&self.name);
+            output.push_str("\", variant: other.to_owned() }),\n            };\n");
+        } else {
+            output.push_str("            return Err(::dotos::DotosDe");
+            output.push_str("co");
+            output.push_str("deError::UnknownVariant { enum_name: \"");
+            output.push_str(&self.name);
+            output.push_str("\", variant: variant.to_owned() });\n");
+        }
+        output.push_str("        }\n        let (head, _payload) = block.as_application().ok_or(::dotos::DotosDe");
         output.push_str("co");
         output.push_str("deError::ExpectedDelimited {\n            type_name: \"");
         output.push_str(&self.name);
         output.push_str("\",\n            delimiter: \"enum variant application\",\n        })?;\n        let variant = head.demote_to_string().ok_or(::dotos::DotosDe");
         output.push_str("co");
-        output.push_str(
-            "deError::ExpectedAtom { type_name: \"enum variant\" })?;\n        match variant {\n",
-        );
+        output.push_str("deError::ExpectedAtom { type_name: \"enum variant\" })?;\n");
+        let has_data = self
+            .variants
+            .iter()
+            .any(|variant| matches!(variant, EnumVariantElement::Data { .. }));
+        if has_data {
+            output.push_str("        match variant {\n");
+        }
         for variant in &self.variants {
-            if let EnumVariantElement::Data { variant, payload } = variant {
+            if has_data && let EnumVariantElement::Data { variant, payload } = variant {
                 output.push_str("            \"");
                 output.push_str(variant);
                 output.push_str("\" => Ok(Self::");
@@ -1826,11 +1849,20 @@ impl NamedDotosTextWriting for NamedEnum {
                 output.push_str(" as EthosValueDecoding>::from_ethos_value(_payload)?)),\n");
             }
         }
-        output.push_str("            other => Err(::dotos::DotosDe");
-        output.push_str("co");
-        output.push_str("deError::UnknownVariant { enum_name: \"");
-        output.push_str(&self.name);
-        output.push_str("\", variant: other.to_owned() }),\n        }\n    }\n}\n\n");
+        if has_data {
+            output.push_str("            other => Err(::dotos::DotosDe");
+            output.push_str("co");
+            output.push_str("deError::UnknownVariant { enum_name: \"");
+            output.push_str(&self.name);
+            output.push_str("\", variant: other.to_owned() }),\n        }\n");
+        } else {
+            output.push_str("        Err(::dotos::DotosDe");
+            output.push_str("co");
+            output.push_str("deError::UnknownVariant { enum_name: \"");
+            output.push_str(&self.name);
+            output.push_str("\", variant: variant.to_owned() })\n");
+        }
+        output.push_str("    }\n}\n\n");
         output.push_str("impl ::dotos::DotosEn");
         output.push_str("co");
         output.push_str("de for ");

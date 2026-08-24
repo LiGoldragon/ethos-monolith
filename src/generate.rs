@@ -11,7 +11,9 @@
 
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 
 use protos::{Realize, SourceText};
@@ -20,6 +22,38 @@ use crate::build::{GeneratedArtifact, GeneratedArtifactOperations};
 use crate::fixture::{
     InterfaceFault, InterfaceText, RustArtifactProjecting, SignalArtifactProjecting,
 };
+
+trait RustFormatting {
+    fn rustfmt(self) -> Result<Self, String>
+    where
+        Self: Sized;
+}
+
+impl RustFormatting for GeneratedArtifact {
+    fn rustfmt(self) -> Result<Self, String> {
+        let mut child = Command::new("rustfmt")
+            .args(["--edition", "2024", "--emit", "stdout"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|source| source.to_string())?;
+        child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "rustfmt did not open standard input".to_owned())?
+            .write_all(self.content().as_bytes())
+            .map_err(|source| source.to_string())?;
+        let output = child
+            .wait_with_output()
+            .map_err(|source| source.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        }
+        let content = String::from_utf8(output.stdout).map_err(|source| source.to_string())?;
+        Ok(GeneratedArtifact::new(self.path().to_path_buf(), content))
+    }
+}
 
 /// Marker placed as the first line of every Rust artifact emitted by
 /// ethos-monolith.
@@ -140,10 +174,15 @@ impl ComponentGenerationOperations for ComponentGeneration {
                 source,
             })?;
             syn::parse_file(artifact.content()).map_err(|source| GenerationError::InvalidRust {
-                path: output_path,
+                path: output_path.clone(),
                 detail: source.to_string(),
             })?;
-            Ok(artifact)
+            artifact
+                .rustfmt()
+                .map_err(|detail| GenerationError::FormatRust {
+                    path: output_path,
+                    detail,
+                })
         };
         let signal =
             artifact_from_source(self.signal_source_path(), self.signal_output_path(), true)?;
@@ -195,6 +234,9 @@ pub enum GenerationError {
     /// The complete projection is not syntactically valid Rust.
     #[error("generated Rust {path:?} is invalid: {detail}")]
     InvalidRust { path: PathBuf, detail: String },
+    /// The canonical Rust formatter rejected a complete projection.
+    #[error("format generated Rust {path:?}: {detail}")]
+    FormatRust { path: PathBuf, detail: String },
     /// A pending generated artifact could not be written.
     #[error("write pending generated artifact: {source}")]
     WriteArtifact { source: crate::build::BuildError },

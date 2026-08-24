@@ -131,6 +131,15 @@ fn generation_emits_the_three_checked_interface_modules() {
             "the output reflects the source declaration"
         );
         syn::parse_file(artifact.content()).expect("emitted text parses as Rust");
+        assert!(
+            std::process::Command::new("rustfmt")
+                .args(["--edition", "2024", "--check"])
+                .arg(artifact.path())
+                .status()
+                .expect("invoke rustfmt for generated artifact")
+                .success(),
+            "generated artifact is already rustfmt canonical"
+        );
     }
     assert!(
         generated
@@ -216,8 +225,8 @@ fn generation_emits_vector_aliases_and_empty_interface_modules() {
         "Vector<T> is a concrete Vec<T> carrier in emitted Rust"
     );
     for artifact in [generated.nexus(), generated.sema()] {
-        assert!(artifact.content().contains("pub enum Input {\n}"));
-        assert!(artifact.content().contains("pub enum Output {\n}"));
+        assert!(artifact.content().contains("pub enum Input {}"));
+        assert!(artifact.content().contains("pub enum Output {}"));
         syn::parse_file(artifact.content()).expect("empty interface emission is Rust");
     }
 
@@ -275,13 +284,13 @@ fn generation_emits_comparable_wire_marker_and_named_struct_textual_heads() {
         "the marker meets BoundExchangeFrame structural bounds"
     );
     assert!(
-        signal.contains("format!(\"PathLock.{}\", <Self as ::dotos::DotosBodyEncode>::to_dotos_body(self).to_delimited_dotos(::dotos::Delimiter::Brace))"),
+        signal.contains("\"PathLock.{}\"")
+            && signal.contains("<Self as ::dotos::DotosBodyEncode>::to_dotos_body(self)"),
         "a concrete named payload retains its ruled Type.{{...}} head"
     );
     assert!(
-        signal.contains(
-            "format!(\"PathLockName.{}\", <Self as EthosValueEncoding>::to_ethos_value(self))"
-        ),
+        signal.contains("\"PathLockName.{}\"")
+            && signal.contains("<Self as EthosValueEncoding>::to_ethos_value(self)"),
         "a concrete named scalar retains its ruled Type.value head"
     );
     assert!(
@@ -297,12 +306,18 @@ fn generation_emits_comparable_wire_marker_and_named_struct_textual_heads() {
         "a vector projects each nominal element as its underlying value"
     );
     assert!(
-        signal.contains("format!(\"PathLockRegistered.{}\", <PathLock as ::dotos::DotosBodyEncode>::to_dotos_body(&self.path_lock).to_delimited_dotos(::dotos::Delimiter::Brace))"),
+        signal.contains("\"PathLockRegistered.{}\"")
+            && signal
+                .contains("<PathLock as ::dotos::DotosBodyEncode>::to_dotos_body(&self.path_lock)"),
         "a one-field named wrapper flattens its nested record under one outer body"
     );
     assert!(
         signal.contains("<PathLockRegistrationRefusal as EthosValueDecoding>::from_ethos_value"),
         "an enum-bearing reply decodes its nested refusal without a nominal head"
+    );
+    assert!(
+        !signal.contains("return match variant {\n                other =>"),
+        "a data-only closed enum rejects an atom directly instead of emitting a single-binding match"
     );
 
     fs::remove_dir_all(temporary).expect("remove isolated test directory");
