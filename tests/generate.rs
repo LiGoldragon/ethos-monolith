@@ -261,7 +261,7 @@ fn generation_emits_comparable_wire_marker_and_named_struct_textual_heads() {
     write_component_sources(&source_directory);
     fs::write(
         source_directory.join("signal.ethos"),
-        "Interface.{0 1 0}\nChannel.{Fixture 7 3}\n[]\n{\n  [Register.PathLock]\n  [PathLockRegistered.PathLock]\n  []\n  []\n  [PathLockName.String PathLock.{PathLockName}]\n}\n",
+        "Interface.{0 1 0}\nChannel.{Fixture 7 3}\n[]\n{\n  [Register.PathLock]\n  [PathLockRegistered.PathLock]\n  []\n  []\n  [PathLockName.String PathLockRegistrationRefusal.[DuplicateActiveName.PathLockName] PathLock.{PathLockName PathLockRegistrationRefusal}]\n}\n",
     )
     .expect("write named-head signal source");
 
@@ -287,6 +287,10 @@ fn generation_emits_comparable_wire_marker_and_named_struct_textual_heads() {
     assert!(
         signal.contains("let (head, payload) = block.as_application()"),
         "a concrete named payload accepts only a dotted application"
+    );
+    assert!(
+        signal.contains("::dotos::DotosEncode, ::dotos::DotosDecode"),
+        "a closed enum nested in a named payload resolves its textual derives without imports"
     );
 
     fs::remove_dir_all(temporary).expect("remove isolated test directory");

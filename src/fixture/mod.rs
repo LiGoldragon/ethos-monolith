@@ -1369,9 +1369,9 @@ trait RustTypeWriting {
 
     fn write_rust_derived(&self, output: &mut String) -> Result<(), InterfaceFault> {
         output.push_str("#[derive(Archi");
-        output.push_str("ve, RkyvSerialize, RkyvDeserialize, DotosEn");
+        output.push_str("ve, RkyvSerialize, RkyvDeserialize, ::dotos::DotosEn");
         output.push_str("co");
-        output.push_str("de, DotosDe");
+        output.push_str("de, ::dotos::DotosDe");
         output.push_str("co");
         output.push_str("de, Debug, Clone, PartialEq, Eq)]\n");
         self.write_rust(output)
@@ -1755,9 +1755,9 @@ impl SignalArtifactProjecting for Interface {
         }
         if !self.refusals.0.is_empty() {
             output.push_str("#[derive(Archi");
-            output.push_str("ve, RkyvSerialize, RkyvDeserialize, DotosEn");
+            output.push_str("ve, RkyvSerialize, RkyvDeserialize, ::dotos::DotosEn");
             output.push_str("co");
-            output.push_str("de, DotosDe");
+            output.push_str("de, ::dotos::DotosDe");
             output.push_str("co");
             output.push_str("de, Debug, Clone, PartialEq, Eq)]\npub enum Refusal {\n");
             for value in &self.refusals.0 {
@@ -1767,9 +1767,9 @@ impl SignalArtifactProjecting for Interface {
         }
         if !self.streams.0.is_empty() {
             output.push_str("#[derive(Archi");
-            output.push_str("ve, RkyvSerialize, RkyvDeserialize, DotosEn");
+            output.push_str("ve, RkyvSerialize, RkyvDeserialize, ::dotos::DotosEn");
             output.push_str("co");
-            output.push_str("de, DotosDe");
+            output.push_str("de, ::dotos::DotosDe");
             output.push_str("co");
             output.push_str("de, Debug, Clone, PartialEq, Eq)]\npub enum Stream {\n");
             for value in &self.streams.0 {
