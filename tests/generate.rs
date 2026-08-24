@@ -252,3 +252,42 @@ fn generation_emits_struct_fields_in_rust_snake_case() {
 
     fs::remove_dir_all(temporary).expect("remove isolated test directory");
 }
+
+#[test]
+fn generation_emits_comparable_wire_marker_and_named_struct_textual_heads() {
+    let temporary = temporary_directory("wire-marker-and-struct-heads");
+    let source_directory = temporary.join("ethos");
+    let output_directory = temporary.join("rust");
+    write_component_sources(&source_directory);
+    fs::write(
+        source_directory.join("signal.ethos"),
+        "Interface.{0 1 0}\nChannel.{Fixture 7 3}\n[]\n{\n  [Register.PathLock]\n  [PathLockRegistered.PathLock]\n  []\n  []\n  [PathLockName.String PathLock.{PathLockName}]\n}\n",
+    )
+    .expect("write named-head signal source");
+
+    let generated = ComponentGeneration::new(&source_directory, &output_directory)
+        .generate()
+        .expect("generate named-head signal source");
+    let signal = generated.signal().content();
+
+    assert!(
+        signal.contains("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum FixtureWire {}"),
+        "the marker meets BoundExchangeFrame structural bounds"
+    );
+    assert!(
+        signal.contains("format!(\"PathLock.{}\", <Self as ::dotos::DotosBodyEncode>::to_dotos_body(self).to_delimited_dotos(::dotos::Delimiter::Brace))"),
+        "a concrete named payload retains its ruled Type.{{...}} head"
+    );
+    assert!(
+        signal.contains(
+            "format!(\"PathLockName.{}\", <String as ::dotos::DotosEncode>::to_dotos(&self.0))"
+        ),
+        "a concrete named scalar retains its ruled Type.value head"
+    );
+    assert!(
+        signal.contains("let (head, payload) = block.as_application()"),
+        "a concrete named payload accepts only a dotted application"
+    );
+
+    fs::remove_dir_all(temporary).expect("remove isolated test directory");
+}

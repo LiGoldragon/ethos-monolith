@@ -26,7 +26,7 @@ Interface.{0 1 0}
 Channel.{Orchestrate 1 4}
 []
 {
-  [Reserve.PathLock Release.PathLockRelease]
+  [Register.PathLock Release.PathLockRelease]
   [PathLockRegistered.PathLock PathLockReleased.PathLockRelease]
   []
   []
@@ -35,7 +35,7 @@ Channel.{Orchestrate 1 4}
 ```
 
 `Channel.{Name ContractId WireRevision}` emits the marker `NameWire`, its
-`WireContract` binding, derived structural textual carriers, and one
+`WireContract` binding, named payload textual carriers, and one
 `signal_channel!` declaration. Inputs become its operations; Outputs become
 the closed `NameReply`; `NameRequest` aliases its generated operation root.
 The binding integers are positive and an invalid or absent channel declaration

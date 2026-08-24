@@ -1361,6 +1361,12 @@ impl Textualize for Interface {
 trait RustTypeWriting {
     fn write_rust(&self, output: &mut String) -> Result<(), InterfaceFault>;
 
+    fn write_rust_structural(&self, output: &mut String) -> Result<(), InterfaceFault> {
+        output.push_str("#[derive(Archi");
+        output.push_str("ve, RkyvSerialize, RkyvDeserialize, Debug, Clone, PartialEq, Eq)]\n");
+        self.write_rust(output)
+    }
+
     fn write_rust_derived(&self, output: &mut String) -> Result<(), InterfaceFault> {
         output.push_str("#[derive(Archi");
         output.push_str("ve, RkyvSerialize, RkyvDeserialize, DotosEn");
@@ -1370,6 +1376,10 @@ trait RustTypeWriting {
         output.push_str("de, Debug, Clone, PartialEq, Eq)]\n");
         self.write_rust(output)
     }
+}
+
+trait NamedDotosTextWriting {
+    fn write_named_dotos_text(&self, output: &mut String) -> Result<(), InterfaceFault>;
 }
 
 trait RustNameWriting {
@@ -1473,6 +1483,11 @@ impl RustTypeWriting for NamedTypedef {
         output.push_str(");\n\n");
         Ok(())
     }
+
+    fn write_rust_derived(&self, output: &mut String) -> Result<(), InterfaceFault> {
+        self.write_rust_structural(output)?;
+        self.write_named_dotos_text(output)
+    }
 }
 
 impl RustTypeWriting for NamedStruct {
@@ -1488,6 +1503,154 @@ impl RustTypeWriting for NamedStruct {
             output.push_str(",\n");
         }
         output.push_str("}\n\n");
+        Ok(())
+    }
+
+    fn write_rust_derived(&self, output: &mut String) -> Result<(), InterfaceFault> {
+        self.write_rust_structural(output)?;
+        self.write_named_dotos_text(output)
+    }
+}
+
+impl NamedDotosTextWriting for NamedTypedef {
+    fn write_named_dotos_text(&self, output: &mut String) -> Result<(), InterfaceFault> {
+        let target = self.target.as_str().rust_type_name();
+        output.push_str("impl ::dotos::DotosEn");
+        output.push_str("co");
+        output.push_str("de for ");
+        output.push_str(&self.name);
+        output.push_str(" {\n    fn to_dotos(&self) -> String {\n        format!(\"");
+        output.push_str(&self.name);
+        output.push_str(".{}\", <");
+        output.push_str(&target);
+        output.push_str(" as ::dotos::DotosEn");
+        output.push_str("co");
+        output.push_str("de>::to_dotos(&self.0))\n    }\n}\n\n");
+        output.push_str("impl ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("de for ");
+        output.push_str(&self.name);
+        output.push_str(
+            " {\n    fn from_dotos_block(block: &::dotos::Block) -> Result<Self, ::dotos::DotosDe",
+        );
+        output.push_str("co");
+        output.push_str("deError> {\n        let (head, payload) = block.as_application().ok_or(::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError::ExpectedDelimited {\n            type_name: \"");
+        output.push_str(&self.name);
+        output.push_str("\",\n            delimiter: \"named dotted application\",\n        })?;\n        let head = head.demote_to_string().ok_or(::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str(
+            "deError::ExpectedAtom { type_name: \"named type head\" })?;\n        if head != \"",
+        );
+        output.push_str(&self.name);
+        output.push_str("\" {\n            return Err(::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError::UnknownVariant { enum_name: \"");
+        output.push_str(&self.name);
+        output.push_str("\", variant: head.to_owned() });\n        }\n        Ok(Self(<");
+        output.push_str(&target);
+        output.push_str(" as ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("de>::from_dotos_block(payload)?))\n    }\n}\n\n");
+        output.push_str("impl ::dotos::DotosBodyEn");
+        output.push_str("co");
+        output.push_str("de for ");
+        output.push_str(&self.name);
+        output.push_str(" {\n    fn to_dotos_body(&self) -> ::dotos::DotosBodyEncoding {\n        ::dotos::DotosBodyEncoding::new(vec![::dotos::DotosEn");
+        output.push_str("co");
+        output.push_str("de::to_dotos(self)])\n    }\n}\n\n");
+        output.push_str("impl ::dotos::DotosBodyDe");
+        output.push_str("co");
+        output.push_str("de for ");
+        output.push_str(&self.name);
+        output.push_str(" {\n    fn from_dotos_body(body: &::dotos::DotosBody<'_>) -> Result<Self, ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError> {\n        let fields = body.expect_fields(\"");
+        output.push_str(&self.name);
+        output.push_str("\", 1)?;\n        <Self as ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("de>::from_dotos_block(&fields[0])\n    }\n}\n\n");
+        Ok(())
+    }
+}
+
+impl NamedDotosTextWriting for NamedStruct {
+    fn write_named_dotos_text(&self, output: &mut String) -> Result<(), InterfaceFault> {
+        output.push_str("impl ::dotos::DotosBodyEn");
+        output.push_str("co");
+        output.push_str("de for ");
+        output.push_str(&self.name);
+        output.push_str(" {\n    fn to_dotos_body(&self) -> ::dotos::DotosBodyEncoding {\n        ::dotos::DotosBodyEncoding::new(vec![\n");
+        for field in &self.fields {
+            output.push_str("            ::dotos::DotosEn");
+            output.push_str("co");
+            output.push_str("de::to_dotos(&self.");
+            output.push_str(&field.as_str().rust_field_name());
+            output.push_str("),\n");
+        }
+        output.push_str("        ])\n    }\n}\n\n");
+        output.push_str("impl ::dotos::DotosEn");
+        output.push_str("co");
+        output.push_str("de for ");
+        output.push_str(&self.name);
+        output.push_str(" {\n    fn to_dotos(&self) -> String {\n        format!(\"");
+        output.push_str(&self.name);
+        output.push_str(".{}\", <Self as ::dotos::DotosBodyEn");
+        output.push_str("co");
+        output.push_str(
+            "de>::to_dotos_body(self).to_delimited_dotos(::dotos::Delimiter::Brace))\n    }\n}\n\n",
+        );
+        output.push_str("impl ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("de for ");
+        output.push_str(&self.name);
+        output.push_str(
+            " {\n    fn from_dotos_block(block: &::dotos::Block) -> Result<Self, ::dotos::DotosDe",
+        );
+        output.push_str("co");
+        output.push_str("deError> {\n        let (head, payload) = block.as_application().ok_or(::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError::ExpectedDelimited {\n            type_name: \"");
+        output.push_str(&self.name);
+        output.push_str("\",\n            delimiter: \"named dotted application\",\n        })?;\n        let head = head.demote_to_string().ok_or(::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str(
+            "deError::ExpectedAtom { type_name: \"named type head\" })?;\n        if head != \"",
+        );
+        output.push_str(&self.name);
+        output.push_str("\" {\n            return Err(::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError::UnknownVariant { enum_name: \"");
+        output.push_str(&self.name);
+        output.push_str("\", variant: head.to_owned() });\n        }\n        let body = ::dotos::DotosBlock::new(payload).expect_body(::dotos::Delimiter::Brace, \"");
+        output.push_str(&self.name);
+        output.push_str("\")?;\n        <Self as ::dotos::DotosBodyDe");
+        output.push_str("co");
+        output.push_str("de>::from_dotos_body(&body)\n    }\n}\n\n");
+        output.push_str("impl ::dotos::DotosBodyDe");
+        output.push_str("co");
+        output.push_str("de for ");
+        output.push_str(&self.name);
+        output.push_str(" {\n    fn from_dotos_body(body: &::dotos::DotosBody<'_>) -> Result<Self, ::dotos::DotosDe");
+        output.push_str("co");
+        output.push_str("deError> {\n        let fields = body.expect_fields(\"");
+        output.push_str(&self.name);
+        output.push_str("\", ");
+        output.push_str(&self.fields.len().to_string());
+        output.push_str(")?;\n        Ok(Self {\n");
+        for (index, field) in self.fields.iter().enumerate() {
+            output.push_str("            ");
+            output.push_str(&field.as_str().rust_field_name());
+            output.push_str(": <");
+            output.push_str(&field.as_str().rust_type_name());
+            output.push_str(" as ::dotos::DotosDe");
+            output.push_str("co");
+            output.push_str("de>::from_dotos_block(&fields[");
+            output.push_str(&index.to_string());
+            output.push_str("])?,\n");
+        }
+        output.push_str("        })\n    }\n}\n\n");
         Ok(())
     }
 }
@@ -1571,15 +1734,10 @@ impl SignalArtifactProjecting for Interface {
         let request_name = format!("{}Request", channel.name);
         let mut output = String::from("// @generated by ethos-monolith from Ethos source\n\n");
         output.push_str("use core::num::{NonZeroU16, NonZeroU32};\n");
-        output.push_str("use dotos::{DotosDe");
-        output.push_str("co");
-        output.push_str("de, DotosEn");
-        output.push_str("co");
-        output.push_str("de};\n");
         output.push_str("use rkyv::{Archi");
         output.push_str("ve, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};\n");
         output.push_str("use signal_frame::{signal_channel, ContractBinding, ContractId, WireContract, WireRevision};\n\n");
-        output.push_str("pub enum ");
+        output.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum ");
         output.push_str(&wire_name);
         output.push_str(" {}\n\nimpl WireContract for ");
         output.push_str(&wire_name);

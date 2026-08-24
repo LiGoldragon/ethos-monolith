@@ -21,10 +21,16 @@ ethos_directory/sema.ethos   -> rust_directory/sema.rs
 `signal.ethos` is channel-bearing. Its `Channel.{Name ContractId
 WireRevision}` declaration follows the `Interface` header and owns the public
 Signal binding. The generated module supplies `NameWire`, `NameRequest`,
-`NameReply`, frame aliases, structural textual traits, and the complete
+`NameReply`, frame aliases, named payload textual traits, and the complete
 `signal_channel!` declaration. `nexus.ethos` and `sema.ethos` are ordinary
 Interface documents, including exact empty documents when a component has no
 types there.
+
+Named structs and named scalar carriers retain their Ethos heads in their
+generated text: `PathLock.{...}` and `PathLockName.value`, respectively.
+Consumers parse a concrete payload with `DotosSource::new(text).parse()`;
+the channel operation remains the internal wire envelope, not the command-line
+text surface.
 
 The durable gate is:
 
