@@ -1,11 +1,11 @@
 [package]
 name         = "ethos-monolith"
-version      = "0.3.0"
+version      = "0.4.0"
 edition      = "2024"
 rust-version = "1.89"
 license      = "MIT OR Apache-2.0"
 repository   = "https://github.com/LiGoldragon/ethos-monolith"
-description  = "Reads Ethos text, emits Rust (signal.rs, nexus.rs, sema.rs) per component."
+description  = "Reads signal Ethos text and emits signal.rs for wire consumers."
 publish      = false
 autobins     = false
 autoexamples = false

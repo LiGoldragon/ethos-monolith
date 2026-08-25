@@ -1,8 +1,8 @@
-//! Reads Ethos text, emits Rust (signal.rs, nexus.rs, sema.rs) per component.
+//! Reads signal Ethos text and emits `signal.rs` for wire consumers.
 //!
 //! Consumers commit the emitted Rust; they never depend on this crate at
 //! runtime. The generator is invoked by an explicit update step that writes
-//! all three artifacts atomically before the component build checks them.
+//! the checked signal artifact before the consumer build checks it.
 
 pub mod build;
 pub mod fixture;

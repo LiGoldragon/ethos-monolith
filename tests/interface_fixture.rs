@@ -1,52 +1,12 @@
-use std::path::PathBuf;
-
-use ethos_monolith::build::GeneratedArtifactOperations;
 use ethos_monolith::fixture::{
-    EnumVariantElement, INTERFACE_SOURCE, InputElement, InterfaceEvidencedRealizing,
+    Channel, EnumVariantElement, INTERFACE_SOURCE, InputElement, InterfaceEvidencedRealizing,
     InterfaceEvidencedTextualizing, InterfaceText, NamedEnum, NamedStruct, NamedTypedef,
-    OutputElement, RefusalElement, RustArtifactProjecting, StreamElement, TypeElement, Version,
-    generated,
+    OutputElement, RefusalElement, SignalArtifactProjecting, StreamElement, TypeElement, Version,
 };
 use protos::{
     FrameObserving, ObservationViewing, ParentObserving, Realize, Textualize, TransitionObserving,
     WalkTransitionKind,
 };
-
-#[test]
-fn psyche_fixture_is_a_real_consumer_of_generated_types() {
-    let _record_input = generated::Input::Record(generated::Entry {
-        layer: generated::Layer::Spirit,
-        description: generated::Description("overnight".into()),
-    });
-    let _subscribe_input = generated::Input::Subscribe(generated::Layer::Intent);
-    let _unsubscribe_input = generated::Input::Unsubscribe(generated::SubscriptionHandle(7));
-    let _recorded_output = generated::Output::Recorded(generated::EntryIdentifier("entry".into()));
-    let _subscribed_output = generated::Output::Subscribed(generated::SubscriptionHandle(7));
-    let _unsubscribed_output = generated::Output::Unsubscribed(generated::SubscriptionHandle(7));
-    let _admission_refusal =
-        generated::Refusal::AdmissionRejected(generated::AdmissionRefusal::Duplicate);
-    let _unknown_subscription =
-        generated::Refusal::UnknownSubscription(generated::SubscriptionHandle(7));
-    let _record_change = generated::Stream::RecordChange(generated::RecordEvent::RecordRecorded(
-        generated::EntryIdentifier("entry".into()),
-    ));
-    let _all_layers = [
-        generated::Layer::Spirit,
-        generated::Layer::Intent,
-        generated::Layer::Vision,
-    ];
-    let _description = generated::Description("description".into());
-    let _entry_identifier = generated::EntryIdentifier("entry".into());
-    let _subscription_handle = generated::SubscriptionHandle(7);
-    let _entry = generated::Entry {
-        layer: generated::Layer::Vision,
-        description: generated::Description("description".into()),
-    };
-    let _duplicate = generated::AdmissionRefusal::Duplicate;
-    let _invalid_request = generated::AdmissionRefusal::InvalidRequest;
-    let _recorded =
-        generated::RecordEvent::RecordRecorded(generated::EntryIdentifier("entry".into()));
-}
 
 #[test]
 fn fixture_realizes_and_projects_with_walk_evidence() {
@@ -64,6 +24,14 @@ fn fixture_realizes_and_projects_with_walk_evidence() {
             major: 0,
             minor: 1,
             patch: 0,
+        }
+    );
+    assert_eq!(
+        realized.channel,
+        Channel {
+            name: "Psyche".into(),
+            contract_id: 1,
+            wire_revision: 1,
         }
     );
     assert_eq!(
@@ -242,25 +210,24 @@ fn fixture_walks_nested_sections_and_resumes_parents() {
 }
 
 #[test]
-fn committed_generated_fixture_matches_projection() {
+fn fixture_projects_a_signal_module() {
     let text = InterfaceText {
         source: protos::SourceText(INTERFACE_SOURCE.into()),
     };
     let interface = text.realize().expect("fixture realizes");
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/fixture/generated.rs");
-    interface
-        .rust_artifact(path)
-        .expect("projection succeeds")
-        .assert_matches_existing()
-        .expect("committed generated fixture is fresh");
+    let generated = interface.signal_rust_source().expect("projection succeeds");
+
+    assert!(generated.contains("pub enum PsycheWire {}"));
+    assert!(generated.contains("signal_channel!"));
+    syn::parse_file(&generated).expect("signal projection is Rust");
 }
 
 #[test]
 fn malformed_fixture_is_rejected_without_a_fake_tree() {
     for source in [
-        "Interface.{0 1 0} [] {[Bad.lower] [] [] [] []}",
-        "Interface.{0 1 0} [] {[Record.Entry<Integer>] [] [] [] []}",
-        "Interface.{0 1 0} [] {[Record.{Entry}] [] [] [] []}",
+        "Interface.{0 1 0} Channel.{Fixture 1 1} [] {[Bad.lower] [] [] [] []}",
+        "Interface.{0 1 0} Channel.{Fixture 1 1} [] {[Record.Entry<Integer>] [] [] [] []}",
+        "Interface.{0 1 0} Channel.{Fixture 1 1} [] {[Record.{Entry}] [] [] [] []}",
     ] {
         let text = InterfaceText {
             source: protos::SourceText(source.into()),

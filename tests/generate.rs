@@ -7,8 +7,8 @@ use std::{
 use ethos_monolith::{
     build::{BuildError, GeneratedArtifact, GeneratedArtifactOperations},
     generate::{
-        ComponentGeneration, ComponentGenerationOperations, ETHOS_GENERATED_MARKER,
-        GeneratedComponent, GeneratedComponentOperations, GenerationError,
+        ETHOS_GENERATED_MARKER, GeneratedSignal, GeneratedSignalOperations, GenerationError,
+        SignalGeneration, SignalGenerationOperations,
     },
 };
 
@@ -24,25 +24,15 @@ fn temporary_directory(test_name: &str) -> PathBuf {
     path
 }
 
-fn interface_source(type_name: &str) -> String {
+fn signal_interface_source(type_name: &str) -> String {
     format!(
-        "Interface.{{0 1 0}}\n[]\n{{\n  [Accept.{type_name}]\n  [Accepted.{type_name}]\n  [Rejected.{type_name}]\n  [Changed.{type_name}]\n  [{type_name}.String]\n}}\n"
+        "Interface.{{0 1 0}}\nChannel.{{Fixture 7 3}}\n[]\n{{\n  [Accept.{type_name}]\n  [Accepted.{type_name}]\n  [Rejected.{type_name}]\n  [Changed.{type_name}]\n  [{type_name}.String]\n}}\n"
     )
 }
 
-fn signal_interface_source(type_name: &str) -> String {
-    interface_source(type_name).replacen("[]\n", "Channel.{Fixture 7 3}\n[]\n", 1)
-}
-
-fn write_component_sources(source_directory: &Path) {
+fn write_signal_source(source_directory: &Path, source: &str) {
     fs::create_dir_all(source_directory).expect("create source directory");
-    for (file_name, source) in [
-        ("signal.ethos", signal_interface_source("SignalMessage")),
-        ("nexus.ethos", interface_source("NexusMessage")),
-        ("sema.ethos", interface_source("SemaMessage")),
-    ] {
-        fs::write(source_directory.join(file_name), source).expect("write Interface source");
-    }
+    fs::write(source_directory.join("signal.ethos"), source).expect("write signal source");
 }
 
 #[test]
@@ -56,44 +46,24 @@ fn missing_artifact_is_stale() {
 }
 
 #[test]
-fn generated_component_exposes_three_artifacts() {
+fn generated_signal_exposes_its_artifact() {
     let signal = GeneratedArtifact::new("signal.rs", "// signal");
-    let nexus = GeneratedArtifact::new("nexus.rs", "// nexus");
-    let sema = GeneratedArtifact::new("sema.rs", "// sema");
-    let component = GeneratedComponent::new(signal.clone(), nexus.clone(), sema.clone());
+    let generated = GeneratedSignal::new(signal.clone());
 
-    assert_eq!(component.signal(), &signal);
-    assert_eq!(component.nexus(), &nexus);
-    assert_eq!(component.sema(), &sema);
+    assert_eq!(generated.signal(), &signal);
 }
 
 #[test]
-fn component_generation_derives_expected_paths() {
-    let generation = ComponentGeneration::new("/src/my-component", "/out/my-component");
+fn signal_generation_derives_expected_paths() {
+    let generation = SignalGeneration::new("/src/my-signal", "/out/my-signal");
 
     assert_eq!(
         generation.signal_source_path(),
-        PathBuf::from("/src/my-component/signal.ethos")
-    );
-    assert_eq!(
-        generation.nexus_source_path(),
-        PathBuf::from("/src/my-component/nexus.ethos")
-    );
-    assert_eq!(
-        generation.sema_source_path(),
-        PathBuf::from("/src/my-component/sema.ethos")
+        PathBuf::from("/src/my-signal/signal.ethos")
     );
     assert_eq!(
         generation.signal_output_path(),
-        PathBuf::from("/out/my-component/signal.rs")
-    );
-    assert_eq!(
-        generation.nexus_output_path(),
-        PathBuf::from("/out/my-component/nexus.rs")
-    );
-    assert_eq!(
-        generation.sema_output_path(),
-        PathBuf::from("/out/my-component/sema.rs")
+        PathBuf::from("/out/my-signal/signal.rs")
     );
 }
 
@@ -103,132 +73,94 @@ fn ethos_generated_marker_is_present() {
 }
 
 #[test]
-fn generation_emits_the_three_checked_interface_modules() {
-    let temporary = temporary_directory("emits-three-modules");
+fn generation_emits_a_checked_signal_module() {
+    let temporary = temporary_directory("emits-signal-module");
     let source_directory = temporary.join("ethos");
     let output_directory = temporary.join("rust");
-    write_component_sources(&source_directory);
+    write_signal_source(&source_directory, &signal_interface_source("SignalMessage"));
 
-    let generation = ComponentGeneration::new(&source_directory, &output_directory);
-    let generated = generation.generate().expect("generate component modules");
+    let generated = SignalGeneration::new(&source_directory, &output_directory)
+        .generate()
+        .expect("generate signal module");
+    let artifact = generated.signal();
 
-    for (artifact, type_name) in [
-        (generated.signal(), "SignalMessage"),
-        (generated.nexus(), "NexusMessage"),
-        (generated.sema(), "SemaMessage"),
-    ] {
+    artifact
+        .assert_matches_existing()
+        .expect("generated artifact is installed");
+    assert!(artifact.content().starts_with(ETHOS_GENERATED_MARKER));
+    assert!(
         artifact
-            .assert_matches_existing()
-            .expect("generated artifact is installed");
-        assert!(
-            artifact.content().starts_with(ETHOS_GENERATED_MARKER),
-            "every generated artifact is marked"
-        );
-        assert!(
-            artifact
-                .content()
-                .contains(&format!("pub struct {type_name}(pub String);")),
-            "the output reflects the source declaration"
-        );
-        syn::parse_file(artifact.content()).expect("emitted text parses as Rust");
-        assert!(
-            std::process::Command::new("rustfmt")
-                .args(["--edition", "2024", "--check"])
-                .arg(artifact.path())
-                .status()
-                .expect("invoke rustfmt for generated artifact")
-                .success(),
-            "generated artifact is already rustfmt canonical"
-        );
-    }
-    assert!(
-        generated
-            .signal()
             .content()
-            .contains("pub enum FixtureWire {}")
+            .contains("pub struct SignalMessage(pub String);")
     );
+    assert!(artifact.content().contains("pub enum FixtureWire {}"));
     assert!(
-        generated
-            .signal()
+        artifact
             .content()
             .contains("pub type FixtureRequest = Operation;")
     );
+    syn::parse_file(artifact.content()).expect("emitted text parses as Rust");
+    assert!(
+        std::process::Command::new("rustfmt")
+            .args(["--edition", "2024", "--check"])
+            .arg(artifact.path())
+            .status()
+            .expect("invoke rustfmt for generated artifact")
+            .success(),
+        "generated artifact is already rustfmt canonical"
+    );
 
     fs::remove_dir_all(temporary).expect("remove isolated test directory");
 }
 
 #[test]
-fn invalid_source_fails_before_any_output_is_installed() {
-    let temporary = temporary_directory("invalid-source-preserves-output");
+fn channel_is_required_and_an_invalid_source_preserves_existing_output() {
+    let temporary = temporary_directory("missing-channel-preserves-output");
     let source_directory = temporary.join("ethos");
     let output_directory = temporary.join("rust");
-    write_component_sources(&source_directory);
-    fs::write(
-        source_directory.join("nexus.ethos"),
-        "Interface.{0 1 0} [] {}",
-    )
-    .expect("write malformed nexus source");
+    write_signal_source(
+        &source_directory,
+        "Interface.{0 1 0}\n[]\n{\n  []\n  []\n  []\n  []\n  []\n}\n",
+    );
     fs::create_dir_all(&output_directory).expect("create output directory");
-    for file_name in ["signal.rs", "nexus.rs", "sema.rs"] {
-        fs::write(
-            output_directory.join(file_name),
-            "// existing committed artifact\n",
-        )
-        .expect("seed existing output");
-    }
+    let output_path = output_directory.join("signal.rs");
+    fs::write(&output_path, "// existing committed artifact\n").expect("seed existing output");
 
-    let generation = ComponentGeneration::new(&source_directory, &output_directory);
-    let error = generation
+    let error = SignalGeneration::new(&source_directory, &output_directory)
         .generate()
-        .expect_err("invalid source is rejected");
+        .expect_err("signal without its channel is rejected");
 
     assert!(
-        matches!(error, GenerationError::Interface { path, .. } if path == source_directory.join("nexus.ethos"))
+        matches!(error, GenerationError::Interface { path, .. } if path == source_directory.join("signal.ethos"))
     );
-    for file_name in ["signal.rs", "nexus.rs", "sema.rs"] {
-        assert_eq!(
-            fs::read_to_string(output_directory.join(file_name)).expect("read existing output"),
-            "// existing committed artifact\n",
-            "invalid input must not partially install output"
-        );
-    }
+    assert_eq!(
+        fs::read_to_string(&output_path).expect("read existing output"),
+        "// existing committed artifact\n"
+    );
 
     fs::remove_dir_all(temporary).expect("remove isolated test directory");
 }
 
 #[test]
-fn generation_emits_vector_aliases_and_empty_interface_modules() {
-    let temporary = temporary_directory("vector-and-empty-interface");
+fn generation_emits_vector_aliases() {
+    let temporary = temporary_directory("vector-alias");
     let source_directory = temporary.join("ethos");
     let output_directory = temporary.join("rust");
-    write_component_sources(&source_directory);
-    fs::write(
-        source_directory.join("signal.ethos"),
+    write_signal_source(
+        &source_directory,
         "Interface.{0 1 0}\nChannel.{Fixture 7 3}\n[]\n{\n  []\n  []\n  []\n  []\n  [Path.String PathSet.Vector<Path>]\n}\n",
-    )
-    .expect("write vector-bearing signal source");
-    let empty_interface = "Interface.{0 1 0}\n[]\n{\n  []\n  []\n  []\n  []\n  []\n}\n";
-    fs::write(source_directory.join("nexus.ethos"), empty_interface)
-        .expect("write empty nexus source");
-    fs::write(source_directory.join("sema.ethos"), empty_interface)
-        .expect("write empty sema source");
+    );
 
-    let generated = ComponentGeneration::new(&source_directory, &output_directory)
+    let generated = SignalGeneration::new(&source_directory, &output_directory)
         .generate()
-        .expect("generate vector and empty interfaces");
+        .expect("generate vector-bearing signal");
 
     assert!(
         generated
             .signal()
             .content()
-            .contains("pub struct PathSet(pub Vec<Path>);"),
-        "Vector<T> is a concrete Vec<T> carrier in emitted Rust"
+            .contains("pub struct PathSet(pub Vec<Path>);")
     );
-    for artifact in [generated.nexus(), generated.sema()] {
-        assert!(artifact.content().contains("pub enum Input {}"));
-        assert!(artifact.content().contains("pub enum Output {}"));
-        syn::parse_file(artifact.content()).expect("empty interface emission is Rust");
-    }
 
     fs::remove_dir_all(temporary).expect("remove isolated test directory");
 }
@@ -238,14 +170,12 @@ fn generation_emits_struct_fields_in_rust_snake_case() {
     let temporary = temporary_directory("snake-case-fields");
     let source_directory = temporary.join("ethos");
     let output_directory = temporary.join("rust");
-    write_component_sources(&source_directory);
-    fs::write(
-        source_directory.join("signal.ethos"),
+    write_signal_source(
+        &source_directory,
         "Interface.{0 1 0}\nChannel.{Fixture 7 3}\n[]\n{\n  [Configure.Configuration]\n  [Configured.Configuration]\n  []\n  []\n  [StorePath.String OrdinarySocketPath.String MetaSocketPath.String Configuration.{StorePath OrdinarySocketPath MetaSocketPath}]\n}\n",
-    )
-    .expect("write multiword-field signal source");
+    );
 
-    let generated = ComponentGeneration::new(&source_directory, &output_directory)
+    let generated = SignalGeneration::new(&source_directory, &output_directory)
         .generate()
         .expect("generate multiword struct fields");
 
@@ -267,58 +197,39 @@ fn generation_emits_comparable_wire_marker_and_named_struct_textual_heads() {
     let temporary = temporary_directory("wire-marker-and-struct-heads");
     let source_directory = temporary.join("ethos");
     let output_directory = temporary.join("rust");
-    write_component_sources(&source_directory);
-    fs::write(
-        source_directory.join("signal.ethos"),
+    write_signal_source(
+        &source_directory,
         "Interface.{0 1 0}\nChannel.{Fixture 7 3}\n[]\n{\n  [Register.PathLock]\n  [PathLockRegistered.PathLockRegistered PathLockRegistrationRejected.PathLockRegistrationRejected]\n  []\n  []\n  [PathLockName.String PathLockPath.String PathLockPaths.Vector<PathLockPath> PathLockDescription.String PathLockRegistrationRefusal.[DuplicateActiveName.PathLockName] PathLock.{PathLockName PathLockPaths PathLockDescription} PathLockRegistered.{PathLock} PathLockRegistrationRejected.{PathLock PathLockRegistrationRefusal}]\n}\n",
-    )
-    .expect("write named-head signal source");
+    );
 
-    let generated = ComponentGeneration::new(&source_directory, &output_directory)
+    let generated = SignalGeneration::new(&source_directory, &output_directory)
         .generate()
         .expect("generate named-head signal source");
     let signal = generated.signal().content();
 
     assert!(
-        signal.contains("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum FixtureWire {}"),
-        "the marker meets BoundExchangeFrame structural bounds"
+        signal.contains("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum FixtureWire {}")
     );
     assert!(
         signal.contains("\"PathLock.{}\"")
-            && signal.contains("<Self as ::dotos::DotosBodyEncode>::to_dotos_body(self)"),
-        "a concrete named payload retains its ruled Type.{{...}} head"
+            && signal.contains("<Self as ::dotos::DotosBodyEncode>::to_dotos_body(self)")
     );
     assert!(
         signal.contains("\"PathLockName.{}\"")
-            && signal.contains("<Self as EthosValueEncoding>::to_ethos_value(self)"),
-        "a concrete named scalar retains its ruled Type.value head"
+            && signal.contains("<Self as EthosValueEncoding>::to_ethos_value(self)")
     );
-    assert!(
-        signal.contains("EthosValueEncoding::to_ethos_value(&self.path_lock_name)"),
-        "a named struct omits a nested nominal scalar head"
-    );
-    assert!(
-        signal.contains("EthosValueEncoding::to_ethos_value(&self.path_lock_paths)"),
-        "a named vector field emits its elements without nominal heads"
-    );
-    assert!(
-        signal.contains("::dotos::Delimiter::SquareBracket.wrap(self.iter().map(EthosValueEncoding::to_ethos_value))"),
-        "a vector projects each nominal element as its underlying value"
-    );
+    assert!(signal.contains("EthosValueEncoding::to_ethos_value(&self.path_lock_name)"));
+    assert!(signal.contains("EthosValueEncoding::to_ethos_value(&self.path_lock_paths)"));
+    assert!(signal.contains("::dotos::Delimiter::SquareBracket.wrap(self.iter().map(EthosValueEncoding::to_ethos_value))"));
     assert!(
         signal.contains("\"PathLockRegistered.{}\"")
             && signal
-                .contains("<PathLock as ::dotos::DotosBodyEncode>::to_dotos_body(&self.path_lock)"),
-        "a one-field named wrapper flattens its nested record under one outer body"
+                .contains("<PathLock as ::dotos::DotosBodyEncode>::to_dotos_body(&self.path_lock)")
     );
     assert!(
-        signal.contains("<PathLockRegistrationRefusal as EthosValueDecoding>::from_ethos_value"),
-        "an enum-bearing reply decodes its nested refusal without a nominal head"
+        signal.contains("<PathLockRegistrationRefusal as EthosValueDecoding>::from_ethos_value")
     );
-    assert!(
-        !signal.contains("return match variant {\n                other =>"),
-        "a data-only closed enum rejects an atom directly instead of emitting a single-binding match"
-    );
+    assert!(!signal.contains("return match variant {\n                other =>"));
 
     fs::remove_dir_all(temporary).expect("remove isolated test directory");
 }
