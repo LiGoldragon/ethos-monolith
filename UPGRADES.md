@@ -1,5 +1,15 @@
 # Upgrades
 
+## 0.5.0 — generated Datom projections
+
+Generated Signal modules now implement typed Datom realization and
+textualization instead of legacy Dotos codecs. Deploy this producer before any
+consumer: update the generator revision, add the matching Datom dependency to
+each signal crate, regenerate `signal.rs`, and replace Dotos text fixtures
+with Datom round trips against the generated request root. This is a clean
+break: Dotos traits, parser entry points, and old command fixtures are absent
+from the regenerated module.
+
 ## 0.4.0 — signal-only wire generation
 
 This release removes the three-artifact `ComponentGeneration` API and the

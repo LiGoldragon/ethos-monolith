@@ -193,7 +193,7 @@ fn generation_emits_struct_fields_in_rust_snake_case() {
 }
 
 #[test]
-fn generation_emits_comparable_wire_marker_and_named_struct_textual_heads() {
+fn generation_emits_datom_structural_projection_without_legacy_dotos_codecs() {
     let temporary = temporary_directory("wire-marker-and-struct-heads");
     let source_directory = temporary.join("ethos");
     let output_directory = temporary.join("rust");
@@ -210,26 +210,64 @@ fn generation_emits_comparable_wire_marker_and_named_struct_textual_heads() {
     assert!(
         signal.contains("#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum FixtureWire {}")
     );
-    assert!(
-        signal.contains("\"PathLock.{}\"")
-            && signal.contains("<Self as ::dotos::DotosBodyEncode>::to_dotos_body(self)")
+    assert!(signal.contains("trait EthosDatomRecord"));
+    assert!(signal.contains("impl ::datom::DatomRealizing for PathLock"));
+    assert!(signal.contains("impl ::datom::DatomTextualizing for PathLock"));
+    assert!(signal.contains("impl DatomRoot for Operation {}"));
+    assert!(signal.contains("Shape::DottedBraced"));
+    assert!(!signal.contains("::dotos::"));
+
+    fs::remove_dir_all(temporary).expect("remove isolated test directory");
+}
+
+#[test]
+fn generation_realizes_the_approved_orchestrate_contract_tree() {
+    let temporary = temporary_directory("orchestrate-contract");
+    let source_directory = temporary.join("ethos");
+    let output_directory = temporary.join("rust");
+    write_signal_source(
+        &source_directory,
+        "Interface.{0 2 0}\nChannel.{Orchestrate 1 5}\n[]\n{\n  [Lock.LockRequest Release.LockId Observe.ObserveSelection]\n  [Locked.Lock LockRejected.LockRejection Released.Lock ReleaseRejected.ReleaseRejection Observed.Observation]\n  []\n  []\n  [LockName.String FlowId.String LockPath.String LockPaths.Vector<LockPath> LockReason.String LockRequest.{LockName FlowId LockPaths LockReason} LockId.Integer Lock.{LockId LockName FlowId LockPaths LockReason} DuplicateName.Lock LockOverlap.{LockPath Lock} LockRejection.[DuplicateName.Lock PathOverlap.LockOverlap] ReleaseRejection.[UnknownLockId] ObserveSelection.[Locks.LocksSelection] LocksSelection.[Current] Locks.Vector<Lock> LockSnapshot.{Locks} Observation.[Locks.LockSnapshot]]\n}\n",
     );
-    assert!(
-        signal.contains("\"PathLockName.{}\"")
-            && signal.contains("<Self as EthosValueEncoding>::to_ethos_value(self)")
-    );
-    assert!(signal.contains("EthosValueEncoding::to_ethos_value(&self.path_lock_name)"));
-    assert!(signal.contains("EthosValueEncoding::to_ethos_value(&self.path_lock_paths)"));
-    assert!(signal.contains("::dotos::Delimiter::SquareBracket.wrap(self.iter().map(EthosValueEncoding::to_ethos_value))"));
-    assert!(
-        signal.contains("\"PathLockRegistered.{}\"")
-            && signal
-                .contains("<PathLock as ::dotos::DotosBodyEncode>::to_dotos_body(&self.path_lock)")
-    );
-    assert!(
-        signal.contains("<PathLockRegistrationRefusal as EthosValueDecoding>::from_ethos_value")
-    );
-    assert!(!signal.contains("return match variant {\n                other =>"));
+
+    let generated = SignalGeneration::new(&source_directory, &output_directory)
+        .generate()
+        .expect("approved contract generates");
+    let signal = generated.signal().content();
+
+    for type_name in [
+        "LockRequest",
+        "Lock",
+        "LockRejection",
+        "ReleaseRejection",
+        "ObserveSelection",
+        "LocksSelection",
+        "LockSnapshot",
+        "Observation",
+    ] {
+        assert!(
+            signal.contains(&format!(
+                "pub {} {type_name}",
+                if type_name.ends_with("Request")
+                    || type_name == "Lock"
+                    || type_name.ends_with("Snapshot")
+                {
+                    "struct"
+                } else {
+                    "enum"
+                }
+            )),
+            "generated {type_name}"
+        );
+    }
+    assert!(signal.contains("operation Lock(LockRequest)"));
+    assert!(signal.contains("operation Release(LockId)"));
+    assert!(signal.contains("operation Observe(ObserveSelection)"));
+    assert!(signal.contains("Locked(Lock)"));
+    assert!(signal.contains("Observed(Observation)"));
+    assert!(signal.contains("WireRevision::new(NonZeroU16::new(5)"));
+    assert!(!signal.contains("PathLock"));
+    assert!(!signal.contains("Register("));
 
     fs::remove_dir_all(temporary).expect("remove isolated test directory");
 }

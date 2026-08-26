@@ -19,18 +19,15 @@ ethos_directory/signal.ethos -> rust_directory/signal.rs
 `signal.ethos` is channel-bearing. Its `Channel.{Name ContractId
 WireRevision}` declaration follows the `Interface` header and owns the public
 Signal binding. The generated module supplies `NameWire`, `NameRequest`,
-`NameReply`, frame aliases, named payload textual traits, and the complete
+`NameReply`, frame aliases, typed Datom projection traits, and the complete
 `signal_channel!` declaration. The Channel declaration is required.
 
-Named structs and named scalar carriers retain their Ethos heads when used as
-concrete values: `PathLock.{...}` and `PathLockName.value`, respectively.
-Within a named record the schema already determines each field type, so the
-generated text recursively uses the underlying field values: a lock is
-`PathLock.{name [/absolute/path] (description)}`, rather than repeating every
-nominal field head.
-Consumers parse a concrete payload with `DotosSource::new(text).parse()`;
-the channel operation remains the internal wire envelope, not the command-line
-text surface.
+Datom uses the expected type to select its root. The generated request root is
+the channel's `Operation`, so command text starts at the selected operation
+variant; fixed records remain positional structural values, and nominal Rust
+wrappers carry no ad hoc textual heads. Consumers use `DatomText<Operation>`
+and `DatomRoot` to realize and textualize the generated contract. The channel
+operation remains the internal wire envelope, not a second text shape.
 
 The durable gate is:
 

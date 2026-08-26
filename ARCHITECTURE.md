@@ -37,7 +37,8 @@ Channel.{Orchestrate 1 4}
 ```
 
 `Channel.{Name ContractId WireRevision}` emits the marker `NameWire`, its
-`WireContract` binding, named payload textual carriers, and one
+`WireContract` binding, typed Datom realization/textualization implementations,
+and one
 `signal_channel!` declaration. Inputs become its operations; Outputs become
 the closed `NameReply`; `NameRequest` aliases its generated operation root.
 The binding integers are positive, and an invalid or absent channel declaration
