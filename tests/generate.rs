@@ -213,6 +213,8 @@ fn generation_emits_datom_structural_projection_without_legacy_dotos_codecs() {
     assert!(signal.contains("trait EthosDatomRecord"));
     assert!(signal.contains("impl ::datom::DatomRealizing for PathLock"));
     assert!(signal.contains("impl ::datom::DatomTextualizing for PathLock"));
+    assert!(signal.contains("impl ::datom::DatomRealizing for Operation"));
+    assert!(signal.contains("impl ::datom::DatomTextualizing for Operation"));
     assert!(signal.contains("impl DatomRoot for Operation {}"));
     assert!(signal.contains("Shape::DottedBraced"));
     assert!(!signal.contains("::dotos::"));

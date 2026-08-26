@@ -1,5 +1,11 @@
 # Upgrades
 
+## 0.5.2 — Datom operation root
+
+Generated request roots now implement Datom realization and textualization.
+Regenerate every signal module after this update; `DatomText::<Operation>` can
+then own the operation's dotted head and payload projection.
+
 ## 0.5.1 — Datom Protos alignment
 
 The generator now builds against the Protos revision used by Datom 0.4.0.
