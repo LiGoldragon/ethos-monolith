@@ -1,6 +1,6 @@
 [package]
 name         = "ethos-monolith"
-version      = "0.5.2"
+version      = "0.5.3"
 edition      = "2024"
 rust-version = "1.89"
 license      = "MIT OR Apache-2.0"
@@ -16,7 +16,7 @@ name = "ethos_monolith"
 path = "src/lib.rs"
 
 [dependencies]
-protos = { git = "https://github.com/LiGoldragon/protos", rev = "1e0890175319" }
+protos = { git = "https://github.com/LiGoldragon/protos", rev = "3b190f9fc2c2a074ceeb6ababfea89e3dd504996" }
 syn = { version = "3", features = ["full"] }
 thiserror = "2"
 

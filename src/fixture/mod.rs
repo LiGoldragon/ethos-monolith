@@ -3,7 +3,10 @@
 //! This module gives each Interface section its own carrier and parsing
 //! context.  The only structural machinery used here is the Protos walk.
 
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 use protos::{
     Block, CursorObserving, Head, Headed, Realize, RealizeDriving, RealizeScope, RealizeScoping,
@@ -373,11 +376,11 @@ impl ShapeDefined for InputElement {
     type Selection = ();
 
     fn shapes() -> &'static [Shape] {
-        &[Shape::Bare]
+        &[Shape::DottedBare]
     }
 
     fn select(shape: Shape, head: Option<&Head>) -> Option<Self::Selection> {
-        (shape == Shape::Bare && head.is_none()).then_some(())
+        (shape == Shape::DottedBare && head.is_some()).then_some(())
     }
 }
 
@@ -385,11 +388,11 @@ impl ShapeDefined for OutputElement {
     type Selection = ();
 
     fn shapes() -> &'static [Shape] {
-        &[Shape::Bare]
+        &[Shape::DottedBare]
     }
 
     fn select(shape: Shape, head: Option<&Head>) -> Option<Self::Selection> {
-        (shape == Shape::Bare && head.is_none()).then_some(())
+        (shape == Shape::DottedBare && head.is_some()).then_some(())
     }
 }
 
@@ -397,11 +400,11 @@ impl ShapeDefined for RefusalElement {
     type Selection = ();
 
     fn shapes() -> &'static [Shape] {
-        &[Shape::Bare]
+        &[Shape::DottedBare]
     }
 
     fn select(shape: Shape, head: Option<&Head>) -> Option<Self::Selection> {
-        (shape == Shape::Bare && head.is_none()).then_some(())
+        (shape == Shape::DottedBare && head.is_some()).then_some(())
     }
 }
 
@@ -409,11 +412,11 @@ impl ShapeDefined for StreamElement {
     type Selection = ();
 
     fn shapes() -> &'static [Shape] {
-        &[Shape::Bare]
+        &[Shape::DottedBare]
     }
 
     fn select(shape: Shape, head: Option<&Head>) -> Option<Self::Selection> {
-        (shape == Shape::Bare && head.is_none()).then_some(())
+        (shape == Shape::DottedBare && head.is_some()).then_some(())
     }
 }
 
@@ -430,6 +433,7 @@ impl ShapeDefined for TypeElement {
     fn shapes() -> &'static [Shape] {
         &[
             Shape::Bare,
+            Shape::DottedBare,
             Shape::DottedBraced,
             Shape::DottedSquareBracketed,
         ]
@@ -438,6 +442,7 @@ impl ShapeDefined for TypeElement {
     fn select(shape: Shape, head: Option<&Head>) -> Option<Self::Selection> {
         match (shape, head) {
             (Shape::Bare, None) => Some(TypeSelection::Typedef),
+            (Shape::DottedBare, Some(_)) => Some(TypeSelection::Typedef),
             (Shape::DottedBraced, Some(_)) => Some(TypeSelection::Struct),
             (Shape::DottedSquareBracketed, Some(_)) => Some(TypeSelection::Enum),
             _ => None,
@@ -449,11 +454,12 @@ impl ShapeDefined for EnumVariantElement {
     type Selection = ();
 
     fn shapes() -> &'static [Shape] {
-        &[Shape::Bare]
+        &[Shape::Bare, Shape::DottedBare]
     }
 
     fn select(shape: Shape, head: Option<&Head>) -> Option<Self::Selection> {
-        (shape == Shape::Bare && head.is_none()).then_some(())
+        ((shape == Shape::Bare && head.is_none()) || (shape == Shape::DottedBare && head.is_some()))
+            .then_some(())
     }
 }
 
@@ -497,13 +503,8 @@ trait SymbolReading {
 
     fn head_symbol<T: ShapeDefined>(block: &Block) -> Result<(String, String), InterfaceFault> {
         T::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)?;
-        let Some((head, symbol)) = block.body.0.split_once('.') else {
-            return Err(InterfaceFault::Member);
-        };
-        if symbol.contains('.') {
-            return Err(InterfaceFault::Member);
-        }
-        Ok((Self::symbol(head)?, Self::symbol(symbol)?))
+        let head = block.head().ok_or(InterfaceFault::Head)?;
+        Ok((Self::symbol(&head.0)?, Self::symbol(&block.body.0)?))
     }
 
     fn type_reference(value: &str) -> Result<String, InterfaceFault> {
@@ -796,8 +797,9 @@ impl OperationElementReading for InputElement {
     }
 
     fn textualize_operation(&self, scope: &mut TextualizeScope<'_>) -> Result<(), InterfaceFault> {
-        scope.textualize_block(Shape::Bare, None, |body| {
-            body.emit_scalar(&format!("{}.{}", self.operation, self.payload));
+        let head = Head(self.operation.clone());
+        scope.textualize_block(Shape::DottedBare, Some(&head), |body| {
+            body.emit_scalar(&self.payload);
             Ok(())
         })
     }
@@ -828,8 +830,9 @@ impl OperationElementReading for OutputElement {
     }
 
     fn textualize_operation(&self, scope: &mut TextualizeScope<'_>) -> Result<(), InterfaceFault> {
-        scope.textualize_block(Shape::Bare, None, |body| {
-            body.emit_scalar(&format!("{}.{}", self.operation, self.payload));
+        let head = Head(self.operation.clone());
+        scope.textualize_block(Shape::DottedBare, Some(&head), |body| {
+            body.emit_scalar(&self.payload);
             Ok(())
         })
     }
@@ -860,8 +863,9 @@ impl OperationElementReading for RefusalElement {
     }
 
     fn textualize_operation(&self, scope: &mut TextualizeScope<'_>) -> Result<(), InterfaceFault> {
-        scope.textualize_block(Shape::Bare, None, |body| {
-            body.emit_scalar(&format!("{}.{}", self.operation, self.payload));
+        let head = Head(self.operation.clone());
+        scope.textualize_block(Shape::DottedBare, Some(&head), |body| {
+            body.emit_scalar(&self.payload);
             Ok(())
         })
     }
@@ -895,8 +899,9 @@ impl OperationElementReading for StreamElement {
     }
 
     fn textualize_operation(&self, scope: &mut TextualizeScope<'_>) -> Result<(), InterfaceFault> {
-        scope.textualize_block(Shape::Bare, None, |body| {
-            body.emit_scalar(&format!("{}.{}", self.operation, self.payload));
+        let head = Head(self.operation.clone());
+        scope.textualize_block(Shape::DottedBare, Some(&head), |body| {
+            body.emit_scalar(&self.payload);
             Ok(())
         })
     }
@@ -935,12 +940,8 @@ impl TypeElementReading for TypeElement {
     ) -> Result<TypeElement, InterfaceFault> {
         match Self::select(block.shape, block.head()).ok_or(InterfaceFault::Shape)? {
             TypeSelection::Typedef => {
-                let (name, target) = block.body.0.split_once('.').ok_or(InterfaceFault::Member)?;
-                if target.contains('.') {
-                    return Err(InterfaceFault::Member);
-                }
-                let name = String::symbol(name)?;
-                let target = String::type_reference(target)?;
+                let name = String::symbol(&block.head().ok_or(InterfaceFault::Head)?.0)?;
+                let target = String::type_reference(&block.body.0)?;
                 Ok(TypeElement::Typedef(NamedTypedef { name, target }))
             }
             TypeSelection::Struct => {
@@ -961,10 +962,13 @@ impl TypeElementReading for TypeElement {
 
     fn textualize_type(&self, scope: &mut TextualizeScope<'_>) -> Result<(), InterfaceFault> {
         match self {
-            TypeElement::Typedef(value) => scope.textualize_block(Shape::Bare, None, |body| {
-                body.emit_scalar(&format!("{}.{}", value.name, value.target));
-                Ok(())
-            }),
+            TypeElement::Typedef(value) => {
+                let head = Head(value.name.clone());
+                scope.textualize_block(Shape::DottedBare, Some(&head), |body| {
+                    body.emit_scalar(&value.target);
+                    Ok(())
+                })
+            }
             TypeElement::Struct(value) => {
                 let head = Head(value.name.clone());
                 scope.textualize_block(Shape::DottedBraced, Some(&head), |body| {
@@ -1010,7 +1014,7 @@ impl EnumVariantReading for EnumVariantElement {
         if Self::select(block.shape, block.head()).is_none() {
             return Err(InterfaceFault::Shape);
         }
-        if block.body.0.contains('.') {
+        if block.shape == Shape::DottedBare {
             let (variant, payload) = String::head_symbol::<EnumVariantElement>(block)?;
             Ok(EnumVariantElement::Data { variant, payload })
         } else {
@@ -1021,14 +1025,21 @@ impl EnumVariantReading for EnumVariantElement {
     }
 
     fn textualize_variant(&self, scope: &mut TextualizeScope<'_>) -> Result<(), InterfaceFault> {
-        let value = match self {
-            EnumVariantElement::Data { variant, payload } => format!("{}.{}", variant, payload),
-            EnumVariantElement::Unit { variant } => variant.clone(),
-        };
-        scope.textualize_block(Shape::Bare, None, |body| {
-            body.emit_scalar(&value);
-            Ok(())
-        })
+        match self {
+            EnumVariantElement::Data { variant, payload } => {
+                let head = Head(variant.clone());
+                scope.textualize_block(Shape::DottedBare, Some(&head), |body| {
+                    body.emit_scalar(payload);
+                    Ok(())
+                })
+            }
+            EnumVariantElement::Unit { variant } => {
+                scope.textualize_block(Shape::Bare, None, |body| {
+                    body.emit_scalar(variant);
+                    Ok(())
+                })
+            }
+        }
     }
 }
 
@@ -1855,48 +1866,91 @@ impl NamedDatomTextWriting for NamedEnum {
 }
 
 trait OperationDatomWriting {
-    fn write_operation_datom(&self, output: &mut String, nested_structs: &BTreeSet<String>);
+    fn write_operation_datom(
+        &self,
+        output: &mut String,
+        nested_structs: &BTreeSet<String>,
+        unit_enums: &BTreeMap<String, BTreeSet<String>>,
+    );
 }
 
 impl OperationDatomWriting for [InputElement] {
-    fn write_operation_datom(&self, output: &mut String, nested_structs: &BTreeSet<String>) {
+    fn write_operation_datom(
+        &self,
+        output: &mut String,
+        nested_structs: &BTreeSet<String>,
+        unit_enums: &BTreeMap<String, BTreeSet<String>>,
+    ) {
         output.push_str("impl ::datom::DatomRealizing for Operation {\n    fn realize_block(scope: &mut RealizeScope<'_>, block: &Block) -> Result<Self, ::datom::DatomFault> {\n        match (block.shape, block.head()) {\n");
         for input in self {
-            output.push_str("            (Shape::DottedBraced, Some(head)) if head.0 == \"");
-            output.push_str(&input.operation);
-            output.push_str("\" => ");
-            if nested_structs.contains(&input.payload) {
-                output.push_str("Ok(Self::");
-                output.push_str(&input.operation);
-                output.push_str("(<");
-                output.push_str(&input.payload.as_str().rust_type_name());
-                output.push_str(" as EthosDatomRecord>::realize_fields(scope)?)),\n");
+            if let Some(variants) = unit_enums.get(&input.payload) {
+                for variant in variants {
+                    output.push_str("            (Shape::DottedBare, Some(head)) if head.0 == \"");
+                    output.push_str(&input.operation);
+                    output.push_str("\" && block.body.0 == \"");
+                    output.push_str(variant);
+                    output.push_str("\" => Ok(Self::");
+                    output.push_str(&input.operation);
+                    output.push('(');
+                    output.push_str(&input.payload.as_str().rust_type_name());
+                    output.push_str("::");
+                    output.push_str(variant);
+                    output.push_str(")),\n");
+                }
             } else {
-                output
-                    .push_str("{ let mut values = scope.realize_body(&mut |child_scope, child| <");
-                output.push_str(&input.payload.as_str().rust_type_name());
-                output.push_str(" as ::datom::DatomRealizing>::realize_block(child_scope, child))?; if values.len() != 1 { return Err(::datom::DatomFault { problem: ::datom::DatomProblem::Position }); } Ok(Self::");
+                output.push_str("            (Shape::DottedBraced, Some(head)) if head.0 == \"");
                 output.push_str(&input.operation);
-                output.push_str("(values.remove(0))) },\n");
+                output.push_str("\" => ");
+                if nested_structs.contains(&input.payload) {
+                    output.push_str("Ok(Self::");
+                    output.push_str(&input.operation);
+                    output.push_str("(<");
+                    output.push_str(&input.payload.as_str().rust_type_name());
+                    output.push_str(" as EthosDatomRecord>::realize_fields(scope)?)),\n");
+                } else {
+                    output.push_str(
+                        "{ let mut values = scope.realize_body(&mut |child_scope, child| <",
+                    );
+                    output.push_str(&input.payload.as_str().rust_type_name());
+                    output.push_str(" as ::datom::DatomRealizing>::realize_block(child_scope, child))?; if values.len() != 1 { return Err(::datom::DatomFault { problem: ::datom::DatomProblem::Position }); } Ok(Self::");
+                    output.push_str(&input.operation);
+                    output.push_str("(values.remove(0))) },\n");
+                }
             }
         }
         output.push_str("            _ => Err(::datom::DatomFault { problem: ::datom::DatomProblem::Shape }),\n        }\n    }\n}\n\nimpl ::datom::DatomTextualizing for Operation {\n    fn textualize_in(&self, scope: &mut TextualizeScope<'_>) -> Result<(), ::datom::DatomFault> {\n        match self {\n");
         for input in self {
-            output.push_str("            Self::");
-            output.push_str(&input.operation);
-            output.push_str("(payload) => { let head = Head(\"");
-            output.push_str(&input.operation);
-            output.push_str(
-                "\".into()); scope.textualize_block(Shape::DottedBraced, Some(&head), |body| ",
-            );
-            if nested_structs.contains(&input.payload) {
-                output.push('<');
-                output.push_str(&input.payload.as_str().rust_type_name());
-                output.push_str(" as EthosDatomRecord>::textualize_fields(payload, body)");
+            if let Some(variants) = unit_enums.get(&input.payload) {
+                for variant in variants {
+                    output.push_str("            Self::");
+                    output.push_str(&input.operation);
+                    output.push('(');
+                    output.push_str(&input.payload.as_str().rust_type_name());
+                    output.push_str("::");
+                    output.push_str(variant);
+                    output.push_str(") => { let head = Head(\"");
+                    output.push_str(&input.operation);
+                    output.push_str("\".into()); scope.textualize_block(Shape::DottedBare, Some(&head), |body| { body.emit_scalar(\"");
+                    output.push_str(variant);
+                    output.push_str("\"); Ok(()) }) },\n");
+                }
             } else {
-                output.push_str("::datom::DatomTextualizing::textualize_in(payload, body)");
+                output.push_str("            Self::");
+                output.push_str(&input.operation);
+                output.push_str("(payload) => { let head = Head(\"");
+                output.push_str(&input.operation);
+                output.push_str(
+                    "\".into()); scope.textualize_block(Shape::DottedBraced, Some(&head), |body| ",
+                );
+                if nested_structs.contains(&input.payload) {
+                    output.push('<');
+                    output.push_str(&input.payload.as_str().rust_type_name());
+                    output.push_str(" as EthosDatomRecord>::textualize_fields(payload, body)");
+                } else {
+                    output.push_str("::datom::DatomTextualizing::textualize_in(payload, body)");
+                }
+                output.push_str(") },\n");
             }
-            output.push_str(") },\n");
         }
         output.push_str("        }\n    }\n}\n\n");
     }
@@ -1936,6 +1990,32 @@ impl SignalArtifactProjecting for Interface {
                 TypeElement::Typedef(_) | TypeElement::Enum(_) => None,
             })
             .collect::<BTreeSet<_>>();
+        let unit_enums = self
+            .types
+            .0
+            .iter()
+            .filter_map(|declaration| match declaration {
+                TypeElement::Enum(value)
+                    if value
+                        .variants
+                        .iter()
+                        .all(|variant| matches!(variant, EnumVariantElement::Unit { .. })) =>
+                {
+                    Some((
+                        value.name.clone(),
+                        value
+                            .variants
+                            .iter()
+                            .filter_map(|variant| match variant {
+                                EnumVariantElement::Unit { variant } => Some(variant.clone()),
+                                EnumVariantElement::Data { .. } => None,
+                            })
+                            .collect::<BTreeSet<_>>(),
+                    ))
+                }
+                TypeElement::Typedef(_) | TypeElement::Struct(_) | TypeElement::Enum(_) => None,
+            })
+            .collect::<BTreeMap<_, _>>();
         for declaration in &self.types.0 {
             match declaration {
                 TypeElement::Typedef(value) => value.write_rust_derived(&mut output)?,
@@ -1998,7 +2078,7 @@ impl SignalArtifactProjecting for Interface {
         self.inputs
             .0
             .as_slice()
-            .write_operation_datom(&mut output, &nested_structs);
+            .write_operation_datom(&mut output, &nested_structs, &unit_enums);
         output.push_str("pub type ");
         output.push_str(&request_name);
         output.push_str(" = Operation;\n\nimpl DatomRoot for Operation {}\n");

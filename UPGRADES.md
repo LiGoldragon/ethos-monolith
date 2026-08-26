@@ -1,5 +1,14 @@
 # Upgrades
 
+## 0.5.3 — headed operation units
+
+An operation whose payload is an all-unit enum now projects as a headed Datom
+unit, such as `Observe.Locks`, instead of wrapping an inner bare enum in a
+dotted record. This release is built against Protos 0.8.0
+(`3b190f9fc2c2a074ceeb6ababfea89e3dd504996`), whose headed-bare blocks are
+the canonical substrate. Update Datom to 0.5.0 and regenerate every affected
+signal module.
+
 ## 0.5.2 — Datom operation root
 
 Generated request roots now implement Datom realization and textualization.

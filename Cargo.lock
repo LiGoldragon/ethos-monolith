@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ethos-monolith"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "protos",
  "syn",
@@ -23,8 +23,8 @@ dependencies = [
 
 [[package]]
 name = "protos"
-version = "0.7.0"
-source = "git+https://github.com/LiGoldragon/protos?rev=1e0890175319#1e089017531985e11bda46814cab1bb7601d23f2"
+version = "0.8.0"
+source = "git+https://github.com/LiGoldragon/protos?rev=3b190f9fc2c2a074ceeb6ababfea89e3dd504996#3b190f9fc2c2a074ceeb6ababfea89e3dd504996"
 
 [[package]]
 name = "quote"

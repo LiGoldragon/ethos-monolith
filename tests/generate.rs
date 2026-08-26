@@ -229,7 +229,7 @@ fn generation_realizes_the_approved_orchestrate_contract_tree() {
     let output_directory = temporary.join("rust");
     write_signal_source(
         &source_directory,
-        "Interface.{0 2 0}\nChannel.{Orchestrate 1 5}\n[]\n{\n  [Lock.LockRequest Release.LockId Observe.ObserveSelection]\n  [Locked.Lock LockRejected.LockRejection Released.Lock ReleaseRejected.ReleaseRejection Observed.Observation]\n  []\n  []\n  [LockName.String FlowId.String LockPath.String LockPaths.Vector<LockPath> LockReason.String LockRequest.{LockName FlowId LockPaths LockReason} LockId.Integer Lock.{LockId LockName FlowId LockPaths LockReason} DuplicateName.Lock LockOverlap.{LockPath Lock} LockRejection.[DuplicateName.Lock PathOverlap.LockOverlap] ReleaseRejection.[UnknownLockId] ObserveSelection.[Locks.LocksSelection] LocksSelection.[Current] Locks.Vector<Lock> LockSnapshot.{Locks} Observation.[Locks.LockSnapshot]]\n}\n",
+        "Interface.{0 2 0}\nChannel.{Orchestrate 1 5}\n[]\n{\n  [Lock.LockRequest Release.LockId Observe.ObserveSelection]\n  [Locked.Lock LockRejected.LockRejection Released.Lock ReleaseRejected.ReleaseRejection Observed.Observation]\n  []\n  []\n  [LockName.String FlowId.String LockPath.String LockPaths.Vector<LockPath> LockReason.String LockRequest.{LockName FlowId LockPaths LockReason} LockId.Integer Lock.{LockId LockName FlowId LockPaths LockReason} DuplicateName.Lock LockOverlap.{LockPath Lock} LockRejection.[DuplicateName.Lock PathOverlap.LockOverlap] ReleaseRejection.[UnknownLockId] ObserveSelection.[Locks] Locks.Vector<Lock> LockSnapshot.{Locks} Observation.[Locks.LockSnapshot]]\n}\n",
     );
 
     let generated = SignalGeneration::new(&source_directory, &output_directory)
@@ -243,7 +243,6 @@ fn generation_realizes_the_approved_orchestrate_contract_tree() {
         "LockRejection",
         "ReleaseRejection",
         "ObserveSelection",
-        "LocksSelection",
         "LockSnapshot",
         "Observation",
     ] {
@@ -268,6 +267,10 @@ fn generation_realizes_the_approved_orchestrate_contract_tree() {
     assert!(signal.contains("Locked(Lock)"));
     assert!(signal.contains("Observed(Observation)"));
     assert!(signal.contains("WireRevision::new(NonZeroU16::new(5)"));
+    assert!(signal.contains("(Shape::DottedBare, Some(head)) if head.0 == \"Observe\""));
+    assert!(signal.contains("body.emit_scalar(\"Locks\")"));
+    assert!(!signal.contains("LocksSelection"));
+    assert!(!signal.contains("Current"));
     assert!(!signal.contains("PathLock"));
     assert!(!signal.contains("Register("));
 
