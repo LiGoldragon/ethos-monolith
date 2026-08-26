@@ -1,5 +1,13 @@
 # Upgrades
 
+## 0.5.1 — Datom Protos alignment
+
+The generator now builds against the Protos revision used by Datom 0.4.0.
+Update the generator and generated consumer's direct `protos` dependency
+together, preserving Datom's `rev = "1e0890175319"` source identity. This
+prevents Cargo from retaining incompatible Protos types from duplicate Git
+sources.
+
 ## 0.5.0 — generated Datom projections
 
 Generated Signal modules now implement typed Datom realization and
