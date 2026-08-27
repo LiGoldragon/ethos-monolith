@@ -1871,80 +1871,109 @@ trait OperationDatomWriting {
         output: &mut String,
         nested_structs: &BTreeSet<String>,
         unit_enums: &BTreeMap<String, BTreeSet<String>>,
+        type_name: &str,
     );
 }
 
-impl OperationDatomWriting for [InputElement] {
+trait OperationElement {
+    fn operation(&self) -> &str;
+    fn payload(&self) -> &str;
+}
+
+impl OperationElement for InputElement {
+    fn operation(&self) -> &str {
+        &self.operation
+    }
+    fn payload(&self) -> &str {
+        &self.payload
+    }
+}
+
+impl OperationElement for OutputElement {
+    fn operation(&self) -> &str {
+        &self.operation
+    }
+    fn payload(&self) -> &str {
+        &self.payload
+    }
+}
+
+impl<T: OperationElement> OperationDatomWriting for [T] {
     fn write_operation_datom(
         &self,
         output: &mut String,
         nested_structs: &BTreeSet<String>,
         unit_enums: &BTreeMap<String, BTreeSet<String>>,
+        type_name: &str,
     ) {
-        output.push_str("impl ::datom::DatomRealizing for Operation {\n    fn realize_block(scope: &mut RealizeScope<'_>, block: &Block) -> Result<Self, ::datom::DatomFault> {\n        match (block.shape, block.head()) {\n");
+        output.push_str("impl ::datom::DatomRealizing for ");
+        output.push_str(type_name);
+        output.push_str(" {\n    fn realize_block(scope: &mut RealizeScope<'_>, block: &Block) -> Result<Self, ::datom::DatomFault> {\n        match (block.shape, block.head()) {\n");
         for input in self {
-            if let Some(variants) = unit_enums.get(&input.payload) {
+            if let Some(variants) = unit_enums.get(input.payload()) {
                 for variant in variants {
                     output.push_str("            (Shape::DottedBare, Some(head)) if head.0 == \"");
-                    output.push_str(&input.operation);
+                    output.push_str(input.operation());
                     output.push_str("\" && block.body.0 == \"");
                     output.push_str(variant);
                     output.push_str("\" => Ok(Self::");
-                    output.push_str(&input.operation);
+                    output.push_str(input.operation());
                     output.push('(');
-                    output.push_str(&input.payload.as_str().rust_type_name());
+                    output.push_str(&input.payload().rust_type_name());
                     output.push_str("::");
                     output.push_str(variant);
                     output.push_str(")),\n");
                 }
             } else {
                 output.push_str("            (Shape::DottedBraced, Some(head)) if head.0 == \"");
-                output.push_str(&input.operation);
+                output.push_str(input.operation());
                 output.push_str("\" => ");
-                if nested_structs.contains(&input.payload) {
+                if nested_structs.contains(input.payload()) {
                     output.push_str("Ok(Self::");
-                    output.push_str(&input.operation);
+                    output.push_str(input.operation());
                     output.push_str("(<");
-                    output.push_str(&input.payload.as_str().rust_type_name());
+                    output.push_str(&input.payload().rust_type_name());
                     output.push_str(" as EthosDatomRecord>::realize_fields(scope)?)),\n");
                 } else {
                     output.push_str(
                         "{ let mut values = scope.realize_body(&mut |child_scope, child| <",
                     );
-                    output.push_str(&input.payload.as_str().rust_type_name());
+                    output.push_str(&input.payload().rust_type_name());
                     output.push_str(" as ::datom::DatomRealizing>::realize_block(child_scope, child))?; if values.len() != 1 { return Err(::datom::DatomFault { problem: ::datom::DatomProblem::Position }); } Ok(Self::");
-                    output.push_str(&input.operation);
+                    output.push_str(input.operation());
                     output.push_str("(values.remove(0))) },\n");
                 }
             }
         }
-        output.push_str("            _ => Err(::datom::DatomFault { problem: ::datom::DatomProblem::Shape }),\n        }\n    }\n}\n\nimpl ::datom::DatomTextualizing for Operation {\n    fn textualize_in(&self, scope: &mut TextualizeScope<'_>) -> Result<(), ::datom::DatomFault> {\n        match self {\n");
+        output.push_str("            _ => Err(::datom::DatomFault { problem: ::datom::DatomProblem::Shape }),\n        }\n    }\n}\n\nimpl ::datom::DatomTextualizing for ");
+        output.push_str(type_name);
+        output.push_str(" {\n    fn textualize_in(&self, scope: &mut TextualizeScope<'_>) -> Result<(), ::datom::DatomFault> {\n        match self {\n");
         for input in self {
-            if let Some(variants) = unit_enums.get(&input.payload) {
+            if let Some(variants) = unit_enums.get(input.payload()) {
                 for variant in variants {
                     output.push_str("            Self::");
-                    output.push_str(&input.operation);
+                    output.push_str(input.operation());
                     output.push('(');
-                    output.push_str(&input.payload.as_str().rust_type_name());
+                    output.push_str(&input.payload().rust_type_name());
                     output.push_str("::");
                     output.push_str(variant);
                     output.push_str(") => { let head = Head(\"");
-                    output.push_str(&input.operation);
+                    output.push_str(input.operation());
                     output.push_str("\".into()); scope.textualize_block(Shape::DottedBare, Some(&head), |body| { body.emit_scalar(\"");
                     output.push_str(variant);
                     output.push_str("\"); Ok(()) }) },\n");
                 }
             } else {
                 output.push_str("            Self::");
-                output.push_str(&input.operation);
+                output.push_str(input.operation());
                 output.push_str("(payload) => { let head = Head(\"");
-                output.push_str(&input.operation);
+                output.push_str(input.operation());
                 output.push_str(
                     "\".into()); scope.textualize_block(Shape::DottedBraced, Some(&head), |body| ",
                 );
-                if nested_structs.contains(&input.payload) {
+                if nested_structs.contains(input.payload()) {
                     output.push('<');
-                    output.push_str(&input.payload.as_str().rust_type_name());
+                    output.push_str(&input.payload().rust_type_name());
                     output.push_str(" as EthosDatomRecord>::textualize_fields(payload, body)");
                 } else {
                     output.push_str("::datom::DatomTextualizing::textualize_in(payload, body)");
@@ -2075,13 +2104,24 @@ impl SignalArtifactProjecting for Interface {
             output.push_str("),\n");
         }
         output.push_str("    }\n}\n\n");
-        self.inputs
-            .0
-            .as_slice()
-            .write_operation_datom(&mut output, &nested_structs, &unit_enums);
+        self.inputs.0.as_slice().write_operation_datom(
+            &mut output,
+            &nested_structs,
+            &unit_enums,
+            "Operation",
+        );
         output.push_str("pub type ");
         output.push_str(&request_name);
-        output.push_str(" = Operation;\n\nimpl DatomRoot for Operation {}\n");
+        output.push_str(" = Operation;\n\nimpl DatomRoot for Operation {}\n\n");
+        self.outputs.0.as_slice().write_operation_datom(
+            &mut output,
+            &nested_structs,
+            &unit_enums,
+            &reply_name,
+        );
+        output.push_str("impl DatomRoot for ");
+        output.push_str(&reply_name);
+        output.push_str(" {}\n");
         Ok(output)
     }
 
