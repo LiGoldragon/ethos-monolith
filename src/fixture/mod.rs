@@ -1871,6 +1871,7 @@ trait OperationDatomWriting {
         output: &mut String,
         nested_structs: &BTreeSet<String>,
         unit_enums: &BTreeMap<String, BTreeSet<String>>,
+        single_record_data_enums: &BTreeMap<String, (String, String)>,
         type_name: &str,
     );
 }
@@ -1904,13 +1905,28 @@ impl<T: OperationElement> OperationDatomWriting for [T] {
         output: &mut String,
         nested_structs: &BTreeSet<String>,
         unit_enums: &BTreeMap<String, BTreeSet<String>>,
+        single_record_data_enums: &BTreeMap<String, (String, String)>,
         type_name: &str,
     ) {
         output.push_str("impl ::datom::DatomRealizing for ");
         output.push_str(type_name);
         output.push_str(" {\n    fn realize_block(scope: &mut RealizeScope<'_>, block: &Block) -> Result<Self, ::datom::DatomFault> {\n        match (block.shape, block.head()) {\n");
         for input in self {
-            if let Some(variants) = unit_enums.get(input.payload()) {
+            if let Some((variant, payload)) = single_record_data_enums.get(input.payload()) {
+                output.push_str("            (Shape::DottedBraced, Some(head)) if head.0 == \"");
+                output.push_str(input.operation());
+                output.push('.');
+                output.push_str(variant);
+                output.push_str("\" => Ok(Self::");
+                output.push_str(input.operation());
+                output.push_str("(");
+                output.push_str(&input.payload().rust_type_name());
+                output.push_str("::");
+                output.push_str(variant);
+                output.push_str("(<");
+                output.push_str(&payload.rust_type_name());
+                output.push_str(" as EthosDatomRecord>::realize_fields(scope)?))),\n");
+            } else if let Some(variants) = unit_enums.get(input.payload()) {
                 for variant in variants {
                     output.push_str("            (Shape::DottedBare, Some(head)) if head.0 == \"");
                     output.push_str(input.operation());
@@ -1949,7 +1965,23 @@ impl<T: OperationElement> OperationDatomWriting for [T] {
         output.push_str(type_name);
         output.push_str(" {\n    fn textualize_in(&self, scope: &mut TextualizeScope<'_>) -> Result<(), ::datom::DatomFault> {\n        match self {\n");
         for input in self {
-            if let Some(variants) = unit_enums.get(input.payload()) {
+            if let Some((variant, payload)) = single_record_data_enums.get(input.payload()) {
+                output.push_str("            Self::");
+                output.push_str(input.operation());
+                output.push_str("(");
+                output.push_str(&input.payload().rust_type_name());
+                output.push_str("::");
+                output.push_str(variant);
+                output.push_str("(payload)) => { let head = Head(\"");
+                output.push_str(input.operation());
+                output.push('.');
+                output.push_str(variant);
+                output.push_str(
+                    "\".into()); scope.textualize_block(Shape::DottedBraced, Some(&head), |body| <",
+                );
+                output.push_str(&payload.rust_type_name());
+                output.push_str(" as EthosDatomRecord>::textualize_fields(payload, body)) },\n");
+            } else if let Some(variants) = unit_enums.get(input.payload()) {
                 for variant in variants {
                     output.push_str("            Self::");
                     output.push_str(input.operation());
@@ -2045,6 +2077,22 @@ impl SignalArtifactProjecting for Interface {
                 TypeElement::Typedef(_) | TypeElement::Struct(_) | TypeElement::Enum(_) => None,
             })
             .collect::<BTreeMap<_, _>>();
+        let single_record_data_enums = self
+            .types
+            .0
+            .iter()
+            .filter_map(|declaration| match declaration {
+                TypeElement::Enum(value) => match value.variants.as_slice() {
+                    [EnumVariantElement::Data { variant, payload }]
+                        if nested_structs.contains(payload) =>
+                    {
+                        Some((value.name.clone(), (variant.clone(), payload.clone())))
+                    }
+                    _ => None,
+                },
+                TypeElement::Typedef(_) | TypeElement::Struct(_) => None,
+            })
+            .collect::<BTreeMap<_, _>>();
         for declaration in &self.types.0 {
             match declaration {
                 TypeElement::Typedef(value) => value.write_rust_derived(&mut output)?,
@@ -2108,6 +2156,7 @@ impl SignalArtifactProjecting for Interface {
             &mut output,
             &nested_structs,
             &unit_enums,
+            &single_record_data_enums,
             "Operation",
         );
         output.push_str("pub type ");
@@ -2117,6 +2166,7 @@ impl SignalArtifactProjecting for Interface {
             &mut output,
             &nested_structs,
             &unit_enums,
+            &single_record_data_enums,
             &reply_name,
         );
         output.push_str("impl DatomRoot for ");
