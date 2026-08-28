@@ -3,13 +3,23 @@
 version = 4
 
 [[package]]
-name = "ethos-monolith"
-version = "0.5.5"
+name = "datomic"
+version = "0.7.0"
+source = "git+https://github.com/LiGoldragon/datomic?rev=ffb0ffa316285ab56e50fbc035cb8c14380f4665#ffb0ffa316285ab56e50fbc035cb8c14380f4665"
 dependencies = [
  "protos",
+]
+
+[[package]]
+name = "ethos-zero"
+version = "0.1.0"
+dependencies = [
+ "datomic",
+ "proc-macro2",
+ "protos",
+ "quote",
  "syn",
  "thiserror",
- "unicode-ident",
 ]
 
 [[package]]
@@ -23,8 +33,8 @@ dependencies = [
 
 [[package]]
 name = "protos"
-version = "0.8.0"
-source = "git+https://github.com/LiGoldragon/protos?rev=3b190f9fc2c2a074ceeb6ababfea89e3dd504996#3b190f9fc2c2a074ceeb6ababfea89e3dd504996"
+version = "0.14.0"
+source = "git+https://github.com/LiGoldragon/protos?rev=7e2bba7d48c62de53b3f93cb6053a490bbd6cf3b#7e2bba7d48c62de53b3f93cb6053a490bbd6cf3b"
 
 [[package]]
 name = "quote"

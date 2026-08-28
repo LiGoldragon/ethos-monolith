@@ -1,39 +1,31 @@
 [package]
-name         = "ethos-monolith"
-version      = "0.5.5"
+name         = "ethos-zero"
+version      = "0.1.0"
 edition      = "2024"
 rust-version = "1.89"
 license      = "MIT OR Apache-2.0"
-repository   = "https://github.com/LiGoldragon/ethos-monolith"
-description  = "Reads signal Ethos text and emits signal.rs for wire consumers."
+repository   = "https://github.com/LiGoldragon/ethos-zero"
+description  = "Ethos File anatomy and structural Rust emission."
 publish      = false
 autobins     = false
 autoexamples = false
 autotests    = false
 
 [lib]
-name = "ethos_monolith"
+name = "ethos_zero"
 path = "src/lib.rs"
 
 [dependencies]
-protos = { git = "https://github.com/LiGoldragon/protos", rev = "3b190f9fc2c2a074ceeb6ababfea89e3dd504996" }
+protos = { git = "https://github.com/LiGoldragon/protos", rev = "7e2bba7d48c62de53b3f93cb6053a490bbd6cf3b" }
+datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "ffb0ffa316285ab56e50fbc035cb8c14380f4665" }
+quote = "1"
+proc-macro2 = "1"
 syn = { version = "3", features = ["full"] }
 thiserror = "2"
 
-[dev-dependencies]
-unicode-ident = "1"
-
 [[test]]
-name = "generate"
-path = "tests/generate.rs"
-
-[[test]]
-name = "interface_fixture"
-path = "tests/interface_fixture.rs"
-
-[[test]]
-name = "architecture_guards"
-path = "tests/architecture_guards.rs"
+name = "file_contract"
+path = "tests/file_contract.rs"
 
 [lints.rust]
 unsafe_code = "forbid"

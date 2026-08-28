@@ -1,0 +1,10 @@
+Interface.{0 1 0}
+Channel.{EthosZero 1 0}
+[]
+{
+  [Generate.File Observe.Files]
+  [Generated.RustGeneration Observed.Files]
+  [Refused.FileFault]
+  []
+  [File.[InterfaceFile SchemaFile] RustGeneration.{File Syntax}]
+}
