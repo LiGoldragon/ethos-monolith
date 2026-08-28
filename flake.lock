@@ -15,6 +15,33 @@
         "type": "github"
       }
     },
+    "datomic-map": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-build": [
+          "rust-build"
+        ]
+      },
+      "locked": {
+        "lastModified": 1787959403,
+        "narHash": "sha256-6UKrE9v2ya57mv/bKLawP/QfNceX1miXhdGzdV7Xzf4=",
+        "owner": "LiGoldragon",
+        "repo": "datomic",
+        "rev": "6f0354dfc23468a10e01da12469070389dec78f6",
+        "type": "github"
+      },
+      "original": {
+        "owner": "LiGoldragon",
+        "repo": "datomic",
+        "rev": "6f0354dfc23468a10e01da12469070389dec78f6",
+        "type": "github"
+      }
+    },
     "fenix": {
       "inputs": {
         "nixpkgs": [
@@ -89,10 +116,39 @@
         "type": "github"
       }
     },
+    "protos-map": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-build": [
+          "rust-build"
+        ]
+      },
+      "locked": {
+        "lastModified": 1787959403,
+        "narHash": "sha256-soJVH1+/3Uq4hA+siRZJjfRGxp+7WK0A/qmbmykAwfw=",
+        "owner": "LiGoldragon",
+        "repo": "protos",
+        "rev": "f9eadcdd7bd80020727f58a2f6e32d94e6e62ea3",
+        "type": "github"
+      },
+      "original": {
+        "owner": "LiGoldragon",
+        "repo": "protos",
+        "rev": "f9eadcdd7bd80020727f58a2f6e32d94e6e62ea3",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
+        "datomic-map": "datomic-map",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
+        "protos-map": "protos-map",
         "rust-build": "rust-build"
       }
     },

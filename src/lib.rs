@@ -4,24 +4,16 @@
 //! `Portion`; this reader matches that anatomy, and the emitter constructs a
 //! `syn::File` through `quote` before formatting it.
 
-use std::{
-    fmt,
-    io::Write,
-    process::{Command, Stdio},
-};
+use std::{collections::BTreeMap, fmt, path::Path};
 
-use protos::{Delineatable, EnclosedAnatomy, Portion, Separator, StructuralEnclosure, Text};
+use protos::{
+    Delineatable, EnclosedAnatomy, Extent, Portion, Separator, StructuralEnclosure, Text,
+};
 use quote::{ToTokens, format_ident, quote};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct FileFault {
-    pub extent: Span,
+    pub extent: Extent,
     pub reason: FileFaultReason,
 }
 
@@ -46,6 +38,19 @@ impl fmt::Display for FileFault {
             "{:?} at {}..{}",
             self.reason, self.extent.start, self.extent.end
         )
+    }
+}
+
+impl fmt::Debug for FileFault {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FileFault")
+            .field(
+                "extent",
+                &format_args!("{}..{}", self.extent.start, self.extent.end),
+            )
+            .field("reason", &self.reason)
+            .finish()
     }
 }
 
@@ -98,6 +103,35 @@ pub trait Manifest {
     fn resolve(&self, source: &str) -> Option<FileLocation>;
 }
 
+/// A manifest embodied as a Datomic map from source name to relative file path.
+pub struct DatomicManifest {
+    sources: BTreeMap<datomic::DatomicString, datomic::DatomicString>,
+}
+
+impl DatomicManifest {
+    pub fn embody(source: &str) -> Result<Self, datomic::Fault> {
+        use datomic::TextEdge;
+        let text = Text::<BTreeMap<datomic::DatomicString, datomic::DatomicString>>::from(source);
+        Ok(Self {
+            sources: text.embody()?,
+        })
+    }
+}
+
+impl Manifest for DatomicManifest {
+    fn resolve(&self, source: &str) -> Option<FileLocation> {
+        let key = datomic::DatomicString::try_from(source.to_owned()).ok()?;
+        let value = self.sources.get(&key)?;
+        let path = Path::new(value.as_ref());
+        let file = path.file_name()?.to_string_lossy().into_owned();
+        let directory = path
+            .parent()
+            .map(|parent| parent.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Some(FileLocation { directory, file })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TypeExpression {
     Reference(String),
@@ -145,9 +179,18 @@ pub enum TypeDeclaration {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Capability {
-    Yield(Vec<TypeExpression>),
-    MutableYield(Vec<TypeExpression>),
-    Standard,
+    Yield {
+        name: String,
+        outputs: Vec<TypeExpression>,
+    },
+    MutableYield {
+        name: String,
+        outputs: Vec<TypeExpression>,
+    },
+    Standard {
+        name: String,
+        outputs: Vec<TypeExpression>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -192,7 +235,7 @@ pub enum File {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceIndex {
-    pub sources: Vec<String>,
+    pub sources: Vec<FileLocation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -218,10 +261,7 @@ impl<'manifest> FileReader<'manifest> {
     pub fn read(&self, source: &str) -> Result<File, FileFault> {
         let text = Text::<()>::from(source);
         let delineation = text.delineate().map_err(|fault| FileFault {
-            extent: Span {
-                start: fault.extent.start,
-                end: fault.extent.end,
-            },
+            extent: fault.extent,
             reason: FileFaultReason::Protos,
         })?;
         let portions = delineation.portions;
@@ -268,6 +308,12 @@ impl<'manifest> FileReader<'manifest> {
         let [imports, types, kinds, associations] = rest else {
             return Err(fault(version, FileFaultReason::Header));
         };
+        let types = headed(types, "Types", Separator::Period)
+            .ok_or_else(|| fault(types, FileFaultReason::Section))?;
+        let kinds = headed(kinds, "Kinds", Separator::Period)
+            .ok_or_else(|| fault(kinds, FileFaultReason::Section))?;
+        let associations = headed(associations, "Associations", Separator::Period)
+            .ok_or_else(|| fault(associations, FileFaultReason::Section))?;
         Ok(File::Schema(SchemaFile {
             header: Header {
                 version: version_of(version)?,
@@ -318,7 +364,7 @@ impl RustEmitter {
 
     pub fn emit(&self, file: &File) -> Result<String, FileFault> {
         let generation = self.generate(file)?;
-        format_rust(generation.syntax.into_token_stream().to_string())
+        Ok(generation.syntax.into_token_stream().to_string())
     }
 
     pub fn generate(&self, file: &File) -> Result<RustGeneration, FileFault> {
@@ -354,6 +400,9 @@ impl RustEmitter {
             tokens.extend(section_root);
         }
         if let File::Schema(schema) = file {
+            if schema.kinds.iter().any(|kind| kind.name == "Datomic") {
+                return Err(root_fault(0, FileFaultReason::UnsupportedApplication));
+            }
             for kind in &schema.kinds {
                 tokens.extend(kind_tokens(kind)?);
             }
@@ -362,29 +411,6 @@ impl RustEmitter {
             }
         }
         syn::parse2(tokens).map_err(|_| root_fault(0, FileFaultReason::Declaration))
-    }
-}
-
-fn format_rust(source: String) -> Result<String, FileFault> {
-    let mut rustfmt = Command::new("rustfmt")
-        .args(["--edition", "2024", "--emit", "stdout"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|_| root_fault(0, FileFaultReason::Rust))?;
-    rustfmt
-        .stdin
-        .as_mut()
-        .ok_or_else(|| root_fault(0, FileFaultReason::Rust))?
-        .write_all(source.as_bytes())
-        .map_err(|_| root_fault(0, FileFaultReason::Rust))?;
-    let output = rustfmt
-        .wait_with_output()
-        .map_err(|_| root_fault(0, FileFaultReason::Rust))?;
-    if output.status.success() {
-        String::from_utf8(output.stdout).map_err(|_| root_fault(0, FileFaultReason::Rust))
-    } else {
-        Err(root_fault(0, FileFaultReason::Rust))
     }
 }
 
@@ -436,38 +462,47 @@ fn declaration_tokens(
         }
         TypeDeclaration::Enum { name, variants } => {
             let name = identifier(name)?;
-            let variants = variants
-                .iter()
-                .map(variant_tokens)
-                .collect::<Result<Vec<_>, _>>()?;
-            quote! { #[derive(Clone, Debug, PartialEq, Eq)] pub enum #name { #( #variants, )* } }
+            enum_tokens(&name, variants)?
         }
     })
 }
 
-fn variant_tokens(variant: &Variant) -> Result<proc_macro2::TokenStream, FileFault> {
-    let name = identifier(&variant.name)?;
-    Ok(match &variant.payload {
-        VariantPayload::Unit => quote! { #name },
-        VariantPayload::Type(ty) => {
-            let ty = type_tokens(ty)?;
-            quote! { #name(#ty) }
+fn enum_tokens(
+    parent: &proc_macro2::Ident,
+    variants: &[Variant],
+) -> Result<proc_macro2::TokenStream, FileFault> {
+    let mut derived = proc_macro2::TokenStream::new();
+    let mut emitted_variants = Vec::new();
+    for variant in variants {
+        let name = identifier(&variant.name)?;
+        match &variant.payload {
+            VariantPayload::Unit => emitted_variants.push(quote! { #name }),
+            VariantPayload::Type(ty) => {
+                let ty = type_tokens(ty)?;
+                emitted_variants.push(quote! { #name(#ty) });
+            }
+            VariantPayload::InlineStruct(fields) => {
+                let derived_name = format_ident!("{}{}", parent, name);
+                let fields = fields
+                    .iter()
+                    .map(|field| {
+                        let name = field_identifier(&field.name)?;
+                        let ty = type_tokens(&field.ty)?;
+                        Ok(quote! { pub #name: #ty })
+                    })
+                    .collect::<Result<Vec<_>, FileFault>>()?;
+                derived.extend(quote! { #[derive(Clone, Debug, PartialEq, Eq)] pub struct #derived_name { #( #fields, )* } });
+                emitted_variants.push(quote! { #name(#derived_name) });
+            }
+            VariantPayload::InlineEnum(members) => {
+                let derived_name = format_ident!("{}{}", parent, name);
+                derived.extend(enum_tokens(&derived_name, members)?);
+                emitted_variants.push(quote! { #name(#derived_name) });
+            }
         }
-        VariantPayload::InlineStruct(fields) => {
-            let fields = fields
-                .iter()
-                .map(|field| {
-                    let name = field_identifier(&field.name)?;
-                    let ty = type_tokens(&field.ty)?;
-                    Ok(quote! { #name: #ty })
-                })
-                .collect::<Result<Vec<_>, FileFault>>()?;
-            quote! { #name { #( #fields, )* } }
-        }
-        VariantPayload::InlineEnum(_) => {
-            return Err(root_fault(0, FileFaultReason::UnsupportedApplication));
-        }
-    })
+    }
+    derived.extend(quote! { #[derive(Clone, Debug, PartialEq, Eq)] pub enum #parent { #( #emitted_variants, )* } });
+    Ok(derived)
 }
 
 fn kind_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenStream, FileFault> {
@@ -481,21 +516,46 @@ fn kind_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenStream, FileF
         .capabilities
         .iter()
         .map(|capability| match capability {
-            Capability::Yield(types) => {
-                let [ty] = types.as_slice() else {
+            Capability::Yield { name, outputs } => {
+                let [ty] = outputs.as_slice() else {
                     return Err(root_fault(0, FileFaultReason::Declaration));
                 };
+                let name = field_identifier(name)?;
                 let ty = type_tokens(ty)?;
-                Ok(quote! { fn yield_(&self) -> #ty; })
+                Ok(quote! { fn #name(&self) -> #ty; })
             }
-            Capability::MutableYield(types) => {
-                let [ty] = types.as_slice() else {
+            Capability::MutableYield { name, outputs } => {
+                let [ty] = outputs.as_slice() else {
                     return Err(root_fault(0, FileFaultReason::Declaration));
                 };
+                let name = field_identifier(name)?;
                 let ty = type_tokens(ty)?;
-                Ok(quote! { fn yield_mut(&mut self) -> #ty; })
+                Ok(quote! { fn #name(&mut self) -> #ty; })
             }
-            Capability::Standard => Ok(quote! {}),
+            Capability::Standard { name, outputs } => {
+                let name = field_identifier(name)?;
+                match outputs.as_slice() {
+                    [] => Ok(quote! { fn #name(&self); }),
+                    [ty] => {
+                        let ty = type_tokens(ty)?;
+                        Ok(quote! { fn #name(&self) -> #ty; })
+                    }
+                    values => {
+                        let (inputs, output) = values.split_at(values.len() - 1);
+                        let inputs = inputs
+                            .iter()
+                            .enumerate()
+                            .map(|(index, ty)| {
+                                let name = format_ident!("input_{index}");
+                                let ty = type_tokens(ty)?;
+                                Ok(quote! { #name: #ty })
+                            })
+                            .collect::<Result<Vec<_>, FileFault>>()?;
+                        let output = type_tokens(&output[0])?;
+                        Ok(quote! { fn #name(&self, #( #inputs ),*) -> #output; })
+                    }
+                }
+            }
         })
         .collect::<Result<Vec<_>, FileFault>>()?;
     Ok(if constraints.is_empty() {
@@ -539,6 +599,35 @@ fn type_tokens(expression: &TypeExpression) -> Result<proc_macro2::TokenStream, 
             let error = type_tokens(&arguments[1])?;
             Ok(quote! { Result<#ok, #error> })
         }
+        TypeExpression::Application {
+            constructor,
+            arguments,
+        } if matches!(constructor.as_str(), "Option" | "Optional") && arguments.len() == 1 => {
+            let inner = type_tokens(&arguments[0])?;
+            Ok(quote! { Option<#inner> })
+        }
+        TypeExpression::Application {
+            constructor,
+            arguments,
+        } if constructor == "Text" && arguments.len() == 1 => {
+            let target = type_tokens(&arguments[0])?;
+            Ok(quote! { protos::Text<#target> })
+        }
+        TypeExpression::Application {
+            constructor,
+            arguments,
+        } if constructor == "Prospective" && arguments.len() == 1 => {
+            let target = type_tokens(&arguments[0])?;
+            Ok(quote! { protos::Prospective<#target> })
+        }
+        TypeExpression::Application {
+            constructor,
+            arguments,
+        } if constructor == "Map" && arguments.len() == 2 => {
+            let key = type_tokens(&arguments[0])?;
+            let value = type_tokens(&arguments[1])?;
+            Ok(quote! { std::collections::BTreeMap<#key, #value> })
+        }
         TypeExpression::Application { .. } => {
             Err(root_fault(0, FileFaultReason::UnsupportedApplication))
         }
@@ -561,7 +650,10 @@ fn field_identifier(value: &str) -> Result<proc_macro2::Ident, FileFault> {
         }
         output.extend(character.to_lowercase());
     }
-    if matches!(output.as_str(), "type" | "ref" | "self" | "crate" | "super") {
+    if matches!(
+        output.as_str(),
+        "type" | "ref" | "self" | "crate" | "super" | "yield"
+    ) {
         output.push('_');
     }
     identifier(&output)
@@ -625,6 +717,13 @@ fn declaration_of(
             },
             false,
         )),
+        Some((StructuralEnclosure::Guillemets, values)) => Ok((
+            TypeDeclaration::Struct {
+                name: name.to_owned(),
+                fields: fields(values)?,
+            },
+            false,
+        )),
         _ => {
             let (target, consumed) = type_expression_with_following(body, following)?;
             Ok((
@@ -653,7 +752,7 @@ fn fields(portions: &[Portion]) -> Result<Vec<Field>, FileFault> {
         }
         let (name, body) =
             any_headed(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
-        let (ty, consumed) = type_expression_with_following(body, portions.get(index + 1))?;
+        let (ty, consumed) = field_type_expression(body, portions.get(index + 1))?;
         fields.push(Field {
             name: name.to_owned(),
             ty,
@@ -696,13 +795,32 @@ fn variants(portions: &[Portion]) -> Result<Vec<Variant>, FileFault> {
                     )
                 }
             },
-            None => (
-                Variant {
-                    name: bare(portion)?.to_owned(),
-                    payload: VariantPayload::Unit,
-                },
-                false,
-            ),
+            None => {
+                let (ty, consumed) =
+                    type_expression_with_following(portion, portions.get(index + 1))?;
+                match ty {
+                    TypeExpression::Reference(name) => (
+                        Variant {
+                            name,
+                            payload: VariantPayload::Unit,
+                        },
+                        consumed,
+                    ),
+                    TypeExpression::Application {
+                        constructor,
+                        arguments,
+                    } => (
+                        Variant {
+                            name: constructor.clone(),
+                            payload: VariantPayload::Type(TypeExpression::Application {
+                                constructor,
+                                arguments,
+                            }),
+                        },
+                        consumed,
+                    ),
+                }
+            }
         };
         parsed_variants.push(variant);
         index += 1 + usize::from(consumed);
@@ -716,19 +834,42 @@ fn kinds_of(portion: &Portion) -> Result<Vec<KindDeclaration>, FileFault> {
         .map(|portion| {
             let (name, body) =
                 any_headed(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
-            let values = bracket_contents(body)?;
+            let values = structural(body)
+                .and_then(|(enclosure, values)| {
+                    matches!(
+                        enclosure,
+                        StructuralEnclosure::Bracketed | StructuralEnclosure::Braced
+                    )
+                    .then_some(values)
+                })
+                .ok_or_else(|| fault(body, FileFaultReason::Declaration))?;
             let mut constraints = Vec::new();
             let mut capabilities = Vec::new();
             for value in values {
                 match headed_full(value) {
-                    Some(("Yield", Separator::Period, body)) => capabilities.push(
-                        Capability::Yield(type_expressions(bracket_contents(body)?)?),
-                    ),
-                    Some(("MutableYield", Separator::Exclamation, body)) => capabilities.push(
-                        Capability::MutableYield(type_expressions(bracket_contents(body)?)?),
-                    ),
+                    Some(("Yield", Separator::Period, body)) => {
+                        capabilities.push(Capability::Yield {
+                            name: "yield".to_owned(),
+                            outputs: capability_outputs(body)?,
+                        })
+                    }
+                    Some(("MutableYield", Separator::Exclamation, body)) => {
+                        capabilities.push(Capability::MutableYield {
+                            name: "yield".to_owned(),
+                            outputs: capability_outputs(body)?,
+                        })
+                    }
+                    Some((name, Separator::Period, body)) => {
+                        capabilities.push(Capability::Standard {
+                            name: name.to_owned(),
+                            outputs: capability_outputs(body)?,
+                        })
+                    }
                     Some(_) => return Err(fault(value, FileFaultReason::Declaration)),
-                    None if bare(value)? == "Standard" => capabilities.push(Capability::Standard),
+                    None if bare(value)? == "Standard" => capabilities.push(Capability::Standard {
+                        name: "standard".to_owned(),
+                        outputs: Vec::new(),
+                    }),
                     None => constraints.push(bare(value)?.to_owned()),
                 }
             }
@@ -739,6 +880,25 @@ fn kinds_of(portion: &Portion) -> Result<Vec<KindDeclaration>, FileFault> {
             })
         })
         .collect()
+}
+
+fn capability_outputs(portion: &Portion) -> Result<Vec<TypeExpression>, FileFault> {
+    let values = bracket_contents(portion)?;
+    let mut outputs = Vec::new();
+    let mut index = 0;
+    while index < values.len() {
+        match field_type_expression(&values[index], values.get(index + 1)) {
+            Ok((output, consumed)) => {
+                outputs.push(output);
+                index += 1 + usize::from(consumed);
+            }
+            Err(_) => {
+                outputs.push(TypeExpression::Reference("Self".to_owned()));
+                index += 1;
+            }
+        }
+    }
+    Ok(outputs)
 }
 
 fn associations_of(portion: &Portion) -> Result<Vec<Association>, FileFault> {
@@ -760,6 +920,9 @@ fn associations_of(portion: &Portion) -> Result<Vec<Association>, FileFault> {
 
 fn type_expression(portion: &Portion) -> Result<TypeExpression, FileFault> {
     if let Ok(name) = bare(portion) {
+        return Ok(TypeExpression::Reference(name.to_owned()));
+    }
+    if let Some((name, _)) = any_headed(portion) {
         return Ok(TypeExpression::Reference(name.to_owned()));
     }
     Err(fault(portion, FileFaultReason::TypeExpression))
@@ -788,6 +951,30 @@ fn type_expression_with_following(
     ))
 }
 
+fn field_type_expression(
+    portion: &Portion,
+    following: Option<&Portion>,
+) -> Result<(TypeExpression, bool), FileFault> {
+    match structural(portion) {
+        Some((StructuralEnclosure::Bracketed, members)) => Ok((
+            TypeExpression::Application {
+                constructor: "Vector".to_owned(),
+                arguments: type_expressions(members)?,
+            },
+            false,
+        )),
+        Some((StructuralEnclosure::Guillemets, members)) => Ok((
+            TypeExpression::Application {
+                constructor: "Map".to_owned(),
+                arguments: type_expressions(members)?,
+            },
+            false,
+        )),
+        _ if any_headed(portion).is_some() => Ok((type_expression(portion)?, false)),
+        _ => type_expression_with_following(portion, following),
+    }
+}
+
 fn type_expressions(portions: &[Portion]) -> Result<Vec<TypeExpression>, FileFault> {
     let mut expressions = Vec::new();
     let mut index = 0;
@@ -801,9 +988,7 @@ fn type_expressions(portions: &[Portion]) -> Result<Vec<TypeExpression>, FileFau
 }
 
 fn import_of(portion: &Portion) -> Result<ImportReference, FileFault> {
-    if let Some((file, body)) = any_headed(portion)
-        && file == "file"
-    {
+    if let Some((file, body)) = any_headed(portion) {
         return Ok(ImportReference::Local {
             file: file.to_owned(),
             objects: bracket_contents(body)?
@@ -890,7 +1075,7 @@ fn braced_contents(portion: &Portion) -> Result<&[Portion], FileFault> {
 fn fault(portion: &Portion, reason: FileFaultReason) -> FileFault {
     let extent = portion.as_ref();
     FileFault {
-        extent: Span {
+        extent: Extent {
             start: extent.start,
             end: extent.end,
         },
@@ -899,7 +1084,7 @@ fn fault(portion: &Portion, reason: FileFaultReason) -> FileFault {
 }
 fn root_fault(end: usize, reason: FileFaultReason) -> FileFault {
     FileFault {
-        extent: Span { start: 0, end },
+        extent: Extent { start: 0, end },
         reason,
     }
 }
