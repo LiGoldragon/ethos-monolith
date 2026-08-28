@@ -9,7 +9,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     protos-map = {
-      url = "github:LiGoldragon/protos/f9eadcdd7bd80020727f58a2f6e32d94e6e62ea3";
+      url = "github:LiGoldragon/protos/589c039a8eb8cf9f9860b083ed4d2c6cfe82c31a";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
       inputs.rust-build.follows = "rust-build";
@@ -41,6 +41,8 @@
           ETHOS_DATOMIC_MAP = "${datomic-map}/datomic.ethos";
           ETHOS_PROTOS_RUST = "${protos-map}/src/lib.rs";
           ETHOS_DATOMIC_RUST = "${datomic-map}/src/lib.rs";
+          ETHOS_PROTOS_CRATE = "${protos-map}";
+          ETHOS_DATOMIC_CRATE = "${datomic-map}";
         };
         cargoArtifacts = craneLib.buildDepsOnly commonArguments;
       in {
