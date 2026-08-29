@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+WireContract 0.3.1 makes generated `String` aliases invariant-bearing: their
+fields are private and construction validates Datomic representability through
+`TryFrom`. Unsupported tuple-struct declarations now return a typed
+`FileFault` instead of emitting an empty Datomic implementation.
+
 E2 now checks the complete map-owned public declaration contract for Protos
 and Datomic through syntax projection. The map pins advance to the complete
 contract revisions. This does not change Ethos-zero's public runtime API.

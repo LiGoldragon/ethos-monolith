@@ -610,7 +610,10 @@ fn wire_datomic_tokens(
                             Ok(Self(<datomic::DatomicString as datomic::Datomic>::embody(portion)?.as_ref().to_owned()))
                         }
                         fn portion(&self) -> protos::Portion {
-                            datomic::Datomic::portion(&datomic::DatomicString::try_from(self.0.clone()).expect("wire strings were embodied"))
+                            datomic::DatomicString::try_from(self.0.clone()).map_or_else(
+                                |_| datomic::PortionBuilding::bare("wire-invalid"),
+                                |value| datomic::Datomic::portion(&value),
+                            )
                         }
                     }
                 }),
@@ -638,7 +641,7 @@ fn wire_datomic_tokens(
         TypeDeclaration::Struct { .. } | TypeDeclaration::Enum { .. } => {
             datomic_anatomy_tokens(declaration)
         }
-        TypeDeclaration::TupleStruct { .. } => Ok(proc_macro2::TokenStream::new()),
+        TypeDeclaration::TupleStruct { .. } => Err(root_fault(0, FileFaultReason::Declaration)),
     }
 }
 
@@ -650,8 +653,43 @@ fn wire_declaration_tokens(
     match declaration {
         TypeDeclaration::Alias { name, target, .. } => {
             let name = identifier(name)?;
-            let target = wire_type_tokens(target)?;
-            Ok(quote! { #derive pub struct #name(pub #target); })
+            if matches!(target, TypeExpression::Reference(value) if value == "String") {
+                Ok(quote! {
+                    #derive pub struct #name(String);
+
+                    impl #name {
+                        pub fn try_from_string(value: String) -> std::result::Result<Self, datomic::UnrepresentableString> {
+                            datomic::DatomicString::try_from(value)
+                                .map(|value| Self(value.as_ref().to_owned()))
+                        }
+                    }
+
+                    impl std::convert::TryFrom<String> for #name {
+                        type Error = datomic::UnrepresentableString;
+
+                        fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+                            Self::try_from_string(value)
+                        }
+                    }
+
+                    impl<'a> std::convert::TryFrom<&'a str> for #name {
+                        type Error = datomic::UnrepresentableString;
+
+                        fn try_from(value: &'a str) -> std::result::Result<Self, Self::Error> {
+                            Self::try_from_string(value.to_owned())
+                        }
+                    }
+
+                    impl AsRef<str> for #name {
+                        fn as_ref(&self) -> &str {
+                            &self.0
+                        }
+                    }
+                })
+            } else {
+                let target = wire_type_tokens(target)?;
+                Ok(quote! { #derive pub struct #name(pub #target); })
+            }
         }
         TypeDeclaration::Struct { name, fields, .. } => {
             let name = identifier(name)?;
@@ -665,14 +703,7 @@ fn wire_declaration_tokens(
                 .collect::<Result<Vec<_>, FileFault>>()?;
             Ok(quote! { #derive pub struct #name { #( #fields, )* } })
         }
-        TypeDeclaration::TupleStruct { name, fields, .. } => {
-            let name = identifier(name)?;
-            let fields = fields
-                .iter()
-                .map(|(_, ty)| wire_type_tokens(ty))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(quote! { #derive pub struct #name( #( pub #fields, )* ); })
-        }
+        TypeDeclaration::TupleStruct { .. } => Err(root_fault(0, FileFaultReason::Declaration)),
         TypeDeclaration::Enum { name, variants, .. } => {
             let name = identifier(name)?;
             let variants = wire_variants(variants)?;

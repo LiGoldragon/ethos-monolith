@@ -938,6 +938,18 @@ fn wire_contract_emission_generates_only_the_signal_module() {
     assert!(emitted.contains("enum FrameBody"));
     assert!(!emitted.contains("unimplemented"));
     assert!(!emitted.contains("Codec"));
+    let name = syntax
+        .items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Struct(item) if item.ident == "Name" => Some(item),
+            _ => None,
+        })
+        .expect("wire string alias declaration");
+    let syn::Fields::Unnamed(fields) = &name.fields else {
+        panic!("wire string alias stays a tuple newtype");
+    };
+    assert!(matches!(fields.unnamed[0].vis, syn::Visibility::Inherited));
     assert!(
         syntax
             .items
@@ -1002,7 +1014,7 @@ use ethos_zero_wire_contract::{
 #[test]
 fn generated_signal_and_hand_owned_codec_meet_at_the_frame() {
     let frame = HandOwnedCodec::envelope(FrameBody::Request(Request::Submit(Submission {
-        name: Name("ready".to_owned()),
+        name: Name::try_from("ready").expect("representable fixture string"),
     })));
     assert_eq!(frame.channel_contract_id, ChannelContractId(7));
     assert_eq!(frame.channel_wire_revision, ChannelWireRevision(3));
@@ -1027,6 +1039,77 @@ fn generated_signal_and_hand_owned_codec_meet_at_the_frame() {
         "generated Signal module and hand-owned codec must compile together"
     );
     fs::remove_dir_all(directory).expect("wire fixture cleanup");
+}
+
+#[test]
+fn wire_contract_rejects_tuple_structs_with_a_typed_fault() {
+    let source = "Interface.{0 2 0} Channel.{Example 7 3} [] {[] [] [] [] [Token.Tuple.[Visibility.Public String]]}";
+    let file = FileReader::new(&EmptyManifest)
+        .read(source)
+        .expect("wire tuple map");
+    let error = RustEmitter::wire_contract()
+        .emit(&file)
+        .expect_err("tuple-struct wire declarations are unsupported");
+    assert_eq!(error.reason, ethos_zero::FileFaultReason::Declaration);
+}
+
+#[test]
+fn nonrepresentable_wire_string_is_rejected_before_projection() {
+    let source = "Interface.{0 2 0} Channel.{Example 7 3} [] {[Submit.Submission] [Submitted.Result] [] [] [Name.String Submission.{Name} Result.{Name}]}";
+    let file = FileReader::new(&EmptyManifest)
+        .read(source)
+        .expect("wire string map");
+    let emitted = RustEmitter::wire_contract()
+        .emit(&file)
+        .expect("wire string emission");
+    let directory = std::env::temp_dir().join(format!(
+        "ethos-zero-wire-string-invariant-{}",
+        std::process::id()
+    ));
+    let source_directory = directory.join("src");
+    let test_directory = directory.join("tests");
+    fs::create_dir_all(&source_directory).expect("wire string source directory");
+    fs::create_dir_all(&test_directory).expect("wire string test directory");
+    fs::write(
+        directory.join("Cargo.toml"),
+        wire_contract_manifest("ethos-zero-wire-string-invariant"),
+    )
+    .expect("wire string fixture manifest");
+    fs::write(source_directory.join("generated.rs"), emitted).expect("generated wire module");
+    fs::write(source_directory.join("lib.rs"), "pub mod generated;\n")
+        .expect("wire string crate boundary");
+    fs::write(
+        test_directory.join("string_invariant.rs"),
+        r#"
+use ethos_zero_wire_string_invariant::generated::Name;
+use datomic::Datomic;
+use protos::PortionText;
+
+#[test]
+fn invalid_string_construction_is_rejected_without_projection() {
+    assert!(Name::try_from("unbalanced “").is_err());
+    let valid = Name::try_from("ready").expect("representable fixture string");
+    assert_eq!(Datomic::portion(&valid).canonical_text().as_ref(), "ready");
+}
+"#,
+    )
+    .expect("wire string invariant witness");
+    fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock"),
+        directory.join("Cargo.lock"),
+    )
+    .expect("wire string fixture lockfile");
+    assert!(
+        Command::new("cargo")
+            .args(["test", "--offline"])
+            .env("CARGO_TARGET_DIR", directory.join("target"))
+            .current_dir(&directory)
+            .status()
+            .expect("wire string fixture compile")
+            .success(),
+        "non-representable wire string must be rejected without a panic"
+    );
+    fs::remove_dir_all(directory).expect("wire string fixture cleanup");
 }
 
 #[test]
