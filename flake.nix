@@ -15,7 +15,7 @@
       inputs.rust-build.follows = "rust-build";
     };
     datomic-map = {
-      url = "github:LiGoldragon/datomic/4baeaac79de265bfeb019e8dcdf7124daa9ecac5";
+      url = "github:LiGoldragon/datomic/8b17abc5296e0d41b6a4adf45f71eb9a90f7241b";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
       inputs.rust-build.follows = "rust-build";

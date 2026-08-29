@@ -288,15 +288,22 @@ pub struct Association {
     pub kinds: Vec<String>,
 }
 
+/// A named operation case refers to a declaration owned by the interface's type section.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SectionReference {
+    pub name: String,
+    pub ty: TypeExpression,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InterfaceFile {
     pub header: Header,
     pub channel: Channel,
     pub imports: Vec<ResolvedImport>,
-    pub input: Vec<TypeDeclaration>,
-    pub output: Vec<TypeDeclaration>,
-    pub refusal: Vec<TypeDeclaration>,
-    pub stream: Vec<TypeDeclaration>,
+    pub input: Vec<SectionReference>,
+    pub output: Vec<SectionReference>,
+    pub refusal: Vec<SectionReference>,
+    pub stream: Vec<SectionReference>,
     pub types: Vec<TypeDeclaration>,
 }
 
@@ -378,10 +385,10 @@ impl<'manifest> FileReader<'manifest> {
             header,
             channel,
             imports,
-            input: declarations(&sections[0])?,
-            output: declarations(&sections[1])?,
-            refusal: declarations(&sections[2])?,
-            stream: declarations(&sections[3])?,
+            input: section_references(&sections[0])?,
+            output: section_references(&sections[1])?,
+            refusal: section_references(&sections[2])?,
+            stream: section_references(&sections[3])?,
             types: declarations(&sections[4])?,
         }))
     }
@@ -431,7 +438,17 @@ impl<'manifest> FileReader<'manifest> {
     }
 }
 
-pub struct RustEmitter;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RustEmission {
+    /// Emit consumer anatomy, including executable Datomic implementations.
+    D3Consumer,
+    /// Emit only the schema library's declarations, kinds, and association checks.
+    SchemaLibrary,
+}
+
+pub struct RustEmitter {
+    emission: RustEmission,
+}
 
 impl Default for RustEmitter {
     fn default() -> Self {
@@ -441,7 +458,15 @@ impl Default for RustEmitter {
 
 impl RustEmitter {
     pub fn new() -> Self {
-        Self
+        Self {
+            emission: RustEmission::D3Consumer,
+        }
+    }
+
+    pub fn schema_library() -> Self {
+        Self {
+            emission: RustEmission::SchemaLibrary,
+        }
     }
 
     pub fn emit(&self, file: &File) -> Result<String, FileFault> {
@@ -462,13 +487,9 @@ impl RustEmitter {
         let mut section_roots = Vec::new();
         match file {
             File::Interface(interface) => {
-                definitions.extend(interface.input.iter());
-                definitions.extend(interface.output.iter());
-                definitions.extend(interface.refusal.iter());
-                definitions.extend(interface.stream.iter());
                 definitions.extend(interface.types.iter());
-                section_roots.push(section_root_tokens("Input", &interface.input)?);
-                section_roots.push(section_root_tokens("Output", &interface.output)?);
+                section_roots.push(section_root_tokens("Request", &interface.input)?);
+                section_roots.push(section_root_tokens("Reply", &interface.output)?);
                 section_roots.push(section_root_tokens("Refusal", &interface.refusal)?);
                 section_roots.push(section_root_tokens("Stream", &interface.stream)?);
             }
@@ -477,8 +498,15 @@ impl RustEmitter {
         let mut tokens = quote! { #![allow(dead_code)] };
         for declaration in definitions {
             let datomic = is_datomic_file(file);
-            tokens.extend(declaration_tokens(declaration, datomic)?);
-            if datomic && !matches!(declaration, TypeDeclaration::Alias { .. }) {
+            tokens.extend(declaration_tokens(
+                declaration,
+                datomic,
+                self.emission == RustEmission::SchemaLibrary,
+            )?);
+            if datomic
+                && self.emission == RustEmission::D3Consumer
+                && !matches!(declaration, TypeDeclaration::Alias { .. })
+            {
                 tokens.extend(datomic_anatomy_tokens(declaration)?);
             }
         }
@@ -487,10 +515,14 @@ impl RustEmitter {
         }
         if let File::Schema(schema) = file {
             for kind in &schema.kinds {
-                tokens.extend(kind_tokens(kind)?);
+                tokens.extend(kind_tokens(
+                    kind,
+                    is_datomic_file(file),
+                    self.emission == RustEmission::SchemaLibrary,
+                )?);
             }
             for association in &schema.associations {
-                tokens.extend(association_tokens(association)?);
+                tokens.extend(association_tokens(association, &schema.types)?);
             }
         }
         syn::parse2(tokens).map_err(|_| root_fault(0, FileFaultReason::Declaration))
@@ -510,7 +542,7 @@ fn datomic_anatomy_tokens(
                 .enumerate()
                 .map(|(index, field)| {
                     let field_name = field_identifier(&field.name)?;
-                    let ty = type_tokens_with_datomic(&field.ty, true)?;
+                    let ty = type_tokens_with_datomic(&field.ty, true, false)?;
                     Ok(quote! { #field_name: <#ty as datomic::Datomic>::embody(&parts[#index])? })
                 })
                 .collect::<Result<Vec<_>, FileFault>>()?;
@@ -609,7 +641,7 @@ fn enum_anatomy_tokens(
                 VariantPayload::Tuple(types) => {
                     let types = types
                         .iter()
-                        .map(|ty| type_tokens_with_datomic(ty, true))
+                        .map(|ty| type_tokens_with_datomic(ty, true, false))
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(quote! {
                         if let Some(headed) = datomic::PortionViewing::headed(portion)
@@ -673,7 +705,7 @@ fn variant_payload_type(
     payload: &VariantPayload,
 ) -> Result<proc_macro2::TokenStream, FileFault> {
     match payload {
-        VariantPayload::Type(ty) => type_tokens_with_datomic(ty, true),
+        VariantPayload::Type(ty) => type_tokens_with_datomic(ty, true, false),
         VariantPayload::InlineStruct(_) | VariantPayload::InlineEnum(_) => {
             let name = format_ident!("{}{}", parent, variant);
             Ok(quote! { #name })
@@ -691,15 +723,14 @@ fn is_datomic_file(file: &File) -> bool {
 
 fn section_root_tokens(
     name: &str,
-    declarations: &[TypeDeclaration],
+    references: &[SectionReference],
 ) -> Result<proc_macro2::TokenStream, FileFault> {
     let root = identifier(name)?;
-    let variants = declarations
+    let variants = references
         .iter()
-        .map(|declaration| {
-            let name = declaration_name(declaration);
-            let variant = identifier(name)?;
-            let ty = identifier(name)?;
+        .map(|reference| {
+            let variant = identifier(&reference.name)?;
+            let ty = type_tokens_with_datomic(&reference.ty, true, false)?;
             Ok(quote! { #variant(#ty) })
         })
         .collect::<Result<Vec<_>, FileFault>>()?;
@@ -726,6 +757,7 @@ fn visibility_tokens(visibility: &Visibility) -> proc_macro2::TokenStream {
 fn generic_tokens(
     generics: &[GenericParameter],
     datomic: bool,
+    schema_library: bool,
 ) -> Result<proc_macro2::TokenStream, FileFault> {
     if generics.is_empty() {
         return Ok(proc_macro2::TokenStream::new());
@@ -742,7 +774,7 @@ fn generic_tokens(
             let default = parameter
                 .default
                 .as_ref()
-                .map(|default| type_tokens_with_datomic(default, datomic))
+                .map(|default| type_tokens_with_datomic(default, datomic, schema_library))
                 .transpose()?;
             Ok(match (bounds.is_empty(), default) {
                 (true, None) => quote! { #name },
@@ -758,6 +790,7 @@ fn generic_tokens(
 fn declaration_tokens(
     declaration: &TypeDeclaration,
     datomic: bool,
+    schema_library: bool,
 ) -> Result<proc_macro2::TokenStream, FileFault> {
     Ok(match declaration {
         TypeDeclaration::Alias {
@@ -768,8 +801,8 @@ fn declaration_tokens(
         } => {
             let name = identifier(name)?;
             let visibility = visibility_tokens(visibility);
-            let generics = generic_tokens(generics, datomic)?;
-            let target = type_tokens_with_datomic(target, datomic)?;
+            let generics = generic_tokens(generics, datomic, schema_library)?;
+            let target = type_tokens_with_datomic(target, datomic, schema_library)?;
             quote! { #visibility type #name #generics = #target; }
         }
         TypeDeclaration::Struct {
@@ -780,13 +813,13 @@ fn declaration_tokens(
         } => {
             let name = identifier(name)?;
             let visibility = visibility_tokens(visibility);
-            let generics = generic_tokens(generics, datomic)?;
+            let generics = generic_tokens(generics, datomic, schema_library)?;
             let fields = fields
                 .iter()
                 .map(|field| {
                     let name = field_identifier(&field.name)?;
                     let visibility = visibility_tokens(&field.visibility);
-                    let ty = type_tokens_with_datomic(&field.ty, datomic)?;
+                    let ty = type_tokens_with_datomic(&field.ty, datomic, schema_library)?;
                     Ok(quote! { #visibility #name: #ty })
                 })
                 .collect::<Result<Vec<_>, FileFault>>()?;
@@ -800,12 +833,12 @@ fn declaration_tokens(
         } => {
             let name = identifier(name)?;
             let visibility = visibility_tokens(visibility);
-            let generics = generic_tokens(generics, datomic)?;
+            let generics = generic_tokens(generics, datomic, schema_library)?;
             let fields = fields
                 .iter()
                 .map(|(visibility, ty)| {
                     let visibility = visibility_tokens(visibility);
-                    let ty = type_tokens_with_datomic(ty, datomic)?;
+                    let ty = type_tokens_with_datomic(ty, datomic, schema_library)?;
                     Ok(quote! { #visibility #ty })
                 })
                 .collect::<Result<Vec<_>, FileFault>>()?;
@@ -820,7 +853,7 @@ fn declaration_tokens(
         } => {
             let name = identifier(name)?;
             let visibility = visibility_tokens(visibility);
-            let generics = generic_tokens(generics, datomic)?;
+            let generics = generic_tokens(generics, datomic, schema_library)?;
             enum_tokens(
                 &visibility,
                 &name,
@@ -828,6 +861,7 @@ fn declaration_tokens(
                 *non_exhaustive,
                 variants,
                 datomic,
+                schema_library,
             )?
         }
     })
@@ -840,6 +874,7 @@ fn enum_tokens(
     non_exhaustive: bool,
     variants: &[Variant],
     datomic: bool,
+    schema_library: bool,
 ) -> Result<proc_macro2::TokenStream, FileFault> {
     let mut derived = proc_macro2::TokenStream::new();
     let mut emitted_variants = Vec::new();
@@ -848,7 +883,7 @@ fn enum_tokens(
         match &variant.payload {
             VariantPayload::Unit => emitted_variants.push(quote! { #name }),
             VariantPayload::Type(ty) => {
-                let ty = type_tokens_with_datomic(ty, datomic)?;
+                let ty = type_tokens_with_datomic(ty, datomic, schema_library)?;
                 emitted_variants.push(quote! { #name(#ty) });
             }
             VariantPayload::InlineStruct(fields) => {
@@ -857,7 +892,7 @@ fn enum_tokens(
                     .iter()
                     .map(|field| {
                         let name = field_identifier(&field.name)?;
-                        let ty = type_tokens_with_datomic(&field.ty, datomic)?;
+                        let ty = type_tokens_with_datomic(&field.ty, datomic, schema_library)?;
                         Ok(quote! { pub #name: #ty })
                     })
                     .collect::<Result<Vec<_>, FileFault>>()?;
@@ -867,7 +902,7 @@ fn enum_tokens(
             VariantPayload::Tuple(types) => {
                 let types = types
                     .iter()
-                    .map(|ty| type_tokens_with_datomic(ty, datomic))
+                    .map(|ty| type_tokens_with_datomic(ty, datomic, schema_library))
                     .collect::<Result<Vec<_>, _>>()?;
                 emitted_variants.push(quote! { #name( #( #types, )* ) });
             }
@@ -880,6 +915,7 @@ fn enum_tokens(
                     false,
                     members,
                     datomic,
+                    schema_library,
                 )?);
                 emitted_variants.push(quote! { #name(#derived_name) });
             }
@@ -892,10 +928,14 @@ fn enum_tokens(
     Ok(derived)
 }
 
-fn kind_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenStream, FileFault> {
+fn kind_tokens(
+    kind: &KindDeclaration,
+    datomic: bool,
+    schema_library: bool,
+) -> Result<proc_macro2::TokenStream, FileFault> {
     let name = identifier(&kind.name)?;
     let visibility = visibility_tokens(&kind.visibility);
-    let generics = generic_tokens(&kind.generics, false)?;
+    let generics = generic_tokens(&kind.generics, false, false)?;
     let constraints = kind
         .constraints
         .iter()
@@ -910,7 +950,7 @@ fn kind_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenStream, FileF
                     return Err(root_fault(0, FileFaultReason::Declaration));
                 };
                 let name = field_identifier(name)?;
-                let ty = type_tokens(ty)?;
+                let ty = type_tokens_with_datomic(ty, datomic, schema_library)?;
                 Ok(quote! { fn #name(&self) -> #ty; })
             }
             Capability::Mutable { name, outputs } => {
@@ -918,7 +958,7 @@ fn kind_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenStream, FileF
                     return Err(root_fault(0, FileFaultReason::Declaration));
                 };
                 let name = field_identifier(name)?;
-                let ty = type_tokens(ty)?;
+                let ty = type_tokens_with_datomic(ty, datomic, schema_library)?;
                 Ok(quote! { fn #name(&mut self) -> #ty; })
             }
             Capability::Standard {
@@ -935,11 +975,11 @@ fn kind_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenStream, FileF
                     .enumerate()
                     .map(|(index, ty)| {
                         let name = format_ident!("input_{index}");
-                        let ty = type_tokens(ty)?;
+                        let ty = type_tokens_with_datomic(ty, datomic, schema_library)?;
                         Ok(quote! { #name: #ty })
                     })
                     .collect::<Result<Vec<_>, FileFault>>()?;
-                let output = type_tokens(output)?;
+                let output = type_tokens_with_datomic(output, datomic, schema_library)?;
                 Ok(quote! { fn #name(&self, #( #inputs ),*) -> #output; })
             }
         })
@@ -974,7 +1014,7 @@ fn kind_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenStream, FileF
         let methods = kind
             .methods
             .iter()
-            .map(method_tokens)
+            .map(|method| method_tokens(method, datomic, schema_library))
             .collect::<Result<Vec<_>, _>>()?;
         quote! { #( #methods )* }
     } else if kind.name == "Delineatable" {
@@ -1000,9 +1040,13 @@ fn kind_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenStream, FileF
     })
 }
 
-fn method_tokens(method: &Method) -> Result<proc_macro2::TokenStream, FileFault> {
+fn method_tokens(
+    method: &Method,
+    datomic: bool,
+    schema_library: bool,
+) -> Result<proc_macro2::TokenStream, FileFault> {
     let name = field_identifier(&method.name)?;
-    let generics = generic_tokens(&method.generics, false)?;
+    let generics = generic_tokens(&method.generics, false, false)?;
     let receiver = match method.receiver {
         Receiver::Shared => quote! { &self },
         Receiver::Mutable => quote! { &mut self },
@@ -1014,11 +1058,11 @@ fn method_tokens(method: &Method) -> Result<proc_macro2::TokenStream, FileFault>
         .iter()
         .map(|input| {
             let name = field_identifier(&input.name)?;
-            let ty = type_tokens(&input.ty)?;
+            let ty = type_tokens_with_datomic(&input.ty, datomic, schema_library)?;
             Ok(quote! { #name: #ty })
         })
         .collect::<Result<Vec<_>, FileFault>>()?;
-    let output = type_tokens(&method.output)?;
+    let output = type_tokens_with_datomic(&method.output, datomic, schema_library)?;
     let where_bounds = method
         .where_bounds
         .iter()
@@ -1055,28 +1099,57 @@ fn method_tokens(method: &Method) -> Result<proc_macro2::TokenStream, FileFault>
     }
 }
 
-fn association_tokens(association: &Association) -> Result<proc_macro2::TokenStream, FileFault> {
+fn association_tokens(
+    association: &Association,
+    declarations: &[TypeDeclaration],
+) -> Result<proc_macro2::TokenStream, FileFault> {
     let ty = identifier(&association.ty)?;
     let kinds = association
         .kinds
         .iter()
         .map(|kind| identifier(kind))
         .collect::<Result<Vec<_>, _>>()?;
+    let generics = declarations
+        .iter()
+        .find(|declaration| declaration_name(declaration) == association.ty)
+        .map(|declaration| match declaration {
+            TypeDeclaration::Alias { generics, .. }
+            | TypeDeclaration::Struct { generics, .. }
+            | TypeDeclaration::TupleStruct { generics, .. }
+            | TypeDeclaration::Enum { generics, .. } => generics,
+        })
+        .ok_or_else(|| root_fault(0, FileFaultReason::Declaration))?;
+    if generics.is_empty() {
+        return Ok(quote! {
+            const _: fn() = || {
+                fn carries<T>() where T: #( #kinds + )* {}
+                carries::<#ty>();
+            };
+        });
+    }
+    let parameters = generics
+        .iter()
+        .map(|generic| identifier(&generic.name))
+        .collect::<Result<Vec<_>, _>>()?;
+    let bounds = if association.kinds.iter().any(|kind| kind == "Embodiable") {
+        quote! { : Embodied }
+    } else {
+        proc_macro2::TokenStream::new()
+    };
     Ok(quote! {
         const _: fn() = || {
-            fn carries<T>() where T: #( #kinds + )* {}
-            carries::<#ty>();
+            fn carries<#( #parameters #bounds ),*>() {
+                fn checked<U>() where U: #( #kinds + )* {}
+                checked::<#ty<#( #parameters ),*>>();
+            }
         };
     })
-}
-
-fn type_tokens(expression: &TypeExpression) -> Result<proc_macro2::TokenStream, FileFault> {
-    type_tokens_with_datomic(expression, false)
 }
 
 fn type_tokens_with_datomic(
     expression: &TypeExpression,
     datomic: bool,
+    schema_library: bool,
 ) -> Result<proc_macro2::TokenStream, FileFault> {
     match expression {
         TypeExpression::Unit => Ok(quote! { () }),
@@ -1130,79 +1203,83 @@ fn type_tokens_with_datomic(
             constructor,
             arguments,
         } if constructor == "Vector" && arguments.len() == 1 => {
-            let inner = type_tokens_with_datomic(&arguments[0], datomic)?;
+            let inner = type_tokens_with_datomic(&arguments[0], datomic, schema_library)?;
             Ok(quote! { Vec<#inner> })
         }
         TypeExpression::Application {
             constructor,
             arguments,
         } if constructor == "Result" && arguments.len() == 2 => {
-            let ok = type_tokens_with_datomic(&arguments[0], datomic)?;
-            let error = type_tokens_with_datomic(&arguments[1], datomic)?;
+            let ok = type_tokens_with_datomic(&arguments[0], datomic, schema_library)?;
+            let error = type_tokens_with_datomic(&arguments[1], datomic, schema_library)?;
             Ok(quote! { Result<#ok, #error> })
         }
         TypeExpression::Application {
             constructor,
             arguments,
         } if matches!(constructor.as_str(), "Option" | "Optional") && arguments.len() == 1 => {
-            let inner = type_tokens_with_datomic(&arguments[0], datomic)?;
+            let inner = type_tokens_with_datomic(&arguments[0], datomic, schema_library)?;
             Ok(quote! { Option<#inner> })
         }
         TypeExpression::Application {
             constructor,
             arguments,
         } if constructor == "Text" && arguments.len() == 1 => {
-            let target = type_tokens_with_datomic(&arguments[0], datomic)?;
-            Ok(quote! { protos::Text<#target> })
+            let target = type_tokens_with_datomic(&arguments[0], datomic, schema_library)?;
+            if schema_library && !datomic {
+                Ok(quote! { Text<#target> })
+            } else {
+                Ok(quote! { protos::Text<#target> })
+            }
         }
         TypeExpression::Application {
             constructor,
             arguments,
         } if constructor == "Box" && arguments.len() == 1 => {
-            let inner = type_tokens_with_datomic(&arguments[0], datomic)?;
+            let inner = type_tokens_with_datomic(&arguments[0], datomic, schema_library)?;
             Ok(quote! { Box<#inner> })
         }
         TypeExpression::Application {
             constructor,
             arguments,
         } if constructor == "Phantom" && arguments.len() == 1 => {
-            let inner = type_tokens_with_datomic(&arguments[0], datomic)?;
+            let inner = type_tokens_with_datomic(&arguments[0], datomic, schema_library)?;
             Ok(quote! { std::marker::PhantomData<fn() -> #inner> })
         }
         TypeExpression::Application {
             constructor,
             arguments,
         } if constructor == "Borrowed" && arguments.len() == 1 => {
-            let inner = type_tokens_with_datomic(&arguments[0], datomic)?;
+            let inner = type_tokens_with_datomic(&arguments[0], datomic, schema_library)?;
             Ok(quote! { &#inner })
         }
         TypeExpression::Application {
             constructor,
             arguments,
         } if constructor == "BorrowedMut" && arguments.len() == 1 => {
-            let inner = type_tokens_with_datomic(&arguments[0], datomic)?;
+            let inner = type_tokens_with_datomic(&arguments[0], datomic, schema_library)?;
             Ok(quote! { &mut #inner })
         }
         TypeExpression::Application {
             constructor,
             arguments,
         } if constructor == "Slice" && arguments.len() == 1 => {
-            let inner = type_tokens_with_datomic(&arguments[0], datomic)?;
+            let inner = type_tokens_with_datomic(&arguments[0], datomic, schema_library)?;
             Ok(quote! { [#inner] })
         }
         TypeExpression::Application {
             constructor,
             arguments,
         } if constructor == "Prospective" && arguments.len() == 1 => {
-            let target = type_tokens_with_datomic(&arguments[0], datomic)?;
+            let target = type_tokens_with_datomic(&arguments[0], datomic, schema_library)?;
             Ok(quote! { protos::Prospective<#target> })
         }
         TypeExpression::Application {
             constructor,
             arguments,
         } if constructor == "Map" && arguments.len() == 2 => {
-            let key = type_tokens_with_datomic(&arguments[0], datomic)?;
-            let value = type_tokens_with_datomic(&arguments[1], datomic)?;
+            let key = type_tokens_with_datomic(&arguments[0], datomic, schema_library)?;
+            let value = type_tokens_with_datomic(&arguments[1], datomic, schema_library)?;
             Ok(quote! { std::collections::BTreeMap<#key, #value> })
         }
         TypeExpression::Application { .. } => {
@@ -1271,6 +1348,20 @@ fn declarations(portion: &Portion) -> Result<Vec<TypeDeclaration>, FileFault> {
         index += 1 + usize::from(consumed);
     }
     Ok(declarations)
+}
+
+fn section_references(portion: &Portion) -> Result<Vec<SectionReference>, FileFault> {
+    bracket_contents(portion)?
+        .iter()
+        .map(|portion| {
+            let (name, body) =
+                any_headed(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+            Ok(SectionReference {
+                name: name.to_owned(),
+                ty: type_expression(body)?,
+            })
+        })
+        .collect()
 }
 
 fn declaration_of(

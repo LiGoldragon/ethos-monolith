@@ -17,11 +17,14 @@ path = "src/lib.rs"
 
 [dependencies]
 protos = { git = "https://github.com/LiGoldragon/protos", rev = "2f605fd689679a24e4ef83a643a2cd066cb12186" }
-datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "4baeaac79de265bfeb019e8dcdf7124daa9ecac5" }
+datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "8b17abc5296e0d41b6a4adf45f71eb9a90f7241b" }
 quote = "1"
 proc-macro2 = "1"
 syn = { version = "3", features = ["full"] }
 thiserror = "2"
+
+[dev-dependencies]
+proptest = "1.6"
 
 [[test]]
 name = "file_contract"

@@ -153,7 +153,7 @@ fn map_owned_public_contracts_match_handwritten_sources() {
     for (map_variable, rust_variable, names) in scopes {
         let map = fs::read_to_string(std::env::var(map_variable).expect("pinned map"))
             .expect("map source");
-        let generated = RustEmitter::new()
+        let generated = RustEmitter::schema_library()
             .emit(&reader.read(&map).expect("map embodiment"))
             .expect("map emission");
         let handwritten = fs::read_to_string(std::env::var(rust_variable).expect("pinned Rust"))
@@ -170,6 +170,167 @@ fn map_owned_public_contracts_match_handwritten_sources() {
             );
         }
     }
+}
+
+#[test]
+fn complete_map_owned_declarations_splice_into_the_real_engines() {
+    let reader = FileReader::new(&EmptyManifest);
+    for (map_variable, rust_variable) in [
+        ("ETHOS_PROTOS_MAP", "ETHOS_PROTOS_RUST"),
+        ("ETHOS_DATOMIC_MAP", "ETHOS_DATOMIC_RUST"),
+    ] {
+        let map = fs::read_to_string(std::env::var(map_variable).expect("pinned map"))
+            .expect("map source");
+        let file = reader.read(&map).expect("map embodiment");
+        let generated = RustEmitter::schema_library()
+            .generate(&file)
+            .expect("map emission");
+        let names = map_owned_names(&file);
+        let rust_path = std::path::PathBuf::from(std::env::var(rust_variable).expect("engine"));
+        let mut engine = syn::parse_file(&fs::read_to_string(&rust_path).expect("engine source"))
+            .expect("engine syntax");
+        engine
+            .items
+            .retain(|item| !is_map_owned_declaration(item, &names));
+        engine.items.extend(generated.syntax.items);
+
+        let directory = std::env::temp_dir().join(format!(
+            "ethos-zero-map-splice-{}-{}",
+            std::process::id(),
+            rust_path.parent().expect("source directory").display()
+        ));
+        let source_directory = directory.join("src");
+        fs::create_dir_all(&source_directory).expect("splice source directory");
+        fs::write(
+            directory.join("Cargo.toml"),
+            engine_manifest(rust_variable == "ETHOS_DATOMIC_RUST"),
+        )
+        .expect("splice manifest");
+        fs::write(
+            source_directory.join("lib.rs"),
+            engine.into_token_stream().to_string(),
+        )
+        .expect("spliced engine source");
+        assert!(
+            Command::new("cargo")
+                .args(["check", "--offline"])
+                .current_dir(&directory)
+                .status()
+                .expect("spliced engine cargo invocation")
+                .success(),
+            "all map-owned declarations must compile when spliced into the real engine"
+        );
+        fs::remove_dir_all(directory).expect("splice cleanup");
+    }
+}
+
+#[test]
+fn removing_the_real_text_content_hashable_impl_fails_the_emitted_association() {
+    let reader = FileReader::new(&EmptyManifest);
+    let map = fs::read_to_string(std::env::var("ETHOS_PROTOS_MAP").expect("pinned map"))
+        .expect("map source");
+    let file = reader.read(&map).expect("map embodiment");
+    let generated = RustEmitter::schema_library()
+        .generate(&file)
+        .expect("map emission");
+    let names = map_owned_names(&file);
+    let rust_path = std::path::PathBuf::from(std::env::var("ETHOS_PROTOS_RUST").expect("engine"));
+    let mut engine = syn::parse_file(&fs::read_to_string(&rust_path).expect("engine source"))
+        .expect("engine syntax");
+    engine.items.retain(|item| {
+        !is_map_owned_declaration(item, &names) && !is_text_content_hashable_impl(item)
+    });
+    engine.items.extend(generated.syntax.items);
+
+    let directory = std::env::temp_dir().join(format!(
+        "ethos-zero-negative-content-hashable-{}",
+        std::process::id()
+    ));
+    let source_directory = directory.join("src");
+    fs::create_dir_all(&source_directory).expect("negative source directory");
+    fs::write(directory.join("Cargo.toml"), engine_manifest(false)).expect("negative manifest");
+    fs::write(
+        source_directory.join("lib.rs"),
+        engine.into_token_stream().to_string(),
+    )
+    .expect("negative spliced source");
+    let output = Command::new("cargo")
+        .args(["check", "--offline"])
+        .current_dir(&directory)
+        .output()
+        .expect("negative cargo invocation");
+    assert!(
+        !output.status.success(),
+        "removing impl<T> ContentHashable for Text<T> must fail an emitted map association"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("ContentHashable"),
+        "the emitted ContentHashable association must be the failing contract"
+    );
+    fs::remove_dir_all(directory).expect("negative cleanup");
+}
+
+fn map_owned_names(file: &ethos_zero::File) -> Vec<String> {
+    let ethos_zero::File::Schema(schema) = file else {
+        panic!("map must be a schema");
+    };
+    schema
+        .types
+        .iter()
+        .map(declaration_name)
+        .chain(schema.kinds.iter().map(|kind| kind.name.clone()))
+        .collect()
+}
+
+fn declaration_name(declaration: &ethos_zero::TypeDeclaration) -> String {
+    match declaration {
+        ethos_zero::TypeDeclaration::Alias { name, .. }
+        | ethos_zero::TypeDeclaration::Struct { name, .. }
+        | ethos_zero::TypeDeclaration::TupleStruct { name, .. }
+        | ethos_zero::TypeDeclaration::Enum { name, .. } => name.clone(),
+    }
+}
+
+fn is_map_owned_declaration(item: &syn::Item, names: &[String]) -> bool {
+    let name = match item {
+        syn::Item::Struct(item) => &item.ident,
+        syn::Item::Enum(item) => &item.ident,
+        syn::Item::Trait(item) => &item.ident,
+        syn::Item::Type(item) => &item.ident,
+        _ => return false,
+    };
+    names.iter().any(|candidate| name == candidate)
+}
+
+fn is_text_content_hashable_impl(item: &syn::Item) -> bool {
+    let syn::Item::Impl(item) = item else {
+        return false;
+    };
+    let Some((trait_path, _)) = &item.trait_ else {
+        return false;
+    };
+    let syn::Type::Path(self_type) = item.self_ty.as_ref() else {
+        return false;
+    };
+    trait_path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "ContentHashable")
+        && self_type
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Text")
+}
+
+fn engine_manifest(needs_datomic: bool) -> String {
+    let protos = std::env::var("ETHOS_PROTOS_CRATE").expect("pinned Protos crate path");
+    let datomic = std::env::var("ETHOS_DATOMIC_CRATE").expect("pinned Datomic crate path");
+    let datomic = needs_datomic.then(|| format!("datomic = {{ path = {datomic:?} }}\n"));
+    format!(
+        "[package]\nname = \"ethos-zero-map-witness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nprotos = {{ path = {protos:?} }}\n{}[patch.\"https://github.com/LiGoldragon/protos\"]\nprotos = {{ path = {protos:?} }}\n",
+        datomic.unwrap_or_default()
+    )
 }
 
 fn rustfmt_for_comparison(source: &str) -> String {
@@ -212,9 +373,6 @@ fn contract_projection(file: &syn::File, name: &str) -> String {
         syn::Item::Struct(item) => {
             item.attrs
                 .retain(|attribute| attribute.path().is_ident("non_exhaustive"));
-            if matches!(name, "FiniteDecimal" | "DatomicString") {
-                item.fields = syn::Fields::Named(syn::parse_quote!({}));
-            }
         }
         syn::Item::Enum(item) => item
             .attrs
@@ -223,6 +381,7 @@ fn contract_projection(file: &syn::File, name: &str) -> String {
             item.attrs.clear();
             for trait_item in &mut item.items {
                 if let syn::TraitItem::Fn(method) = trait_item {
+                    method.sig.inputs.pop_punct();
                     if method.default.is_some() {
                         method.default = Some(syn::parse_quote!({}));
                     }
@@ -336,79 +495,6 @@ fn false_kind_association_fails_generated_rust_compilation() {
 }
 
 #[test]
-fn pinned_public_associations_compile_only_with_actual_implementations() {
-    let directory = std::env::temp_dir().join(format!(
-        "ethos-zero-pinned-associations-{}",
-        std::process::id()
-    ));
-    fs::create_dir_all(directory.join("src")).expect("association harness directory");
-    fs::write(
-        directory.join("Cargo.toml"),
-        "[package]\nname = \"ethos-zero-association-witness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nprotos = { git = \"https://github.com/LiGoldragon/protos\", rev = \"2f605fd689679a24e4ef83a643a2cd066cb12186\" }\ndatomic = { git = \"https://github.com/LiGoldragon/datomic\", rev = \"4baeaac79de265bfeb019e8dcdf7124daa9ecac5\" }\n",
-    )
-    .expect("association harness manifest");
-    fs::write(
-        directory.join("src/main.rs"),
-        r#"
-use datomic::{Datomic, DatomicString, DecimalViewing, FiniteDecimal};
-use protos::{
-    BareSafe, ContentHashable, Delineatable, DelineatedText, Embodiable, Embodied, Fault, Portion,
-    PortionText, Printing, Prospective, ScalarAnatomy, Text,
-};
-
-fn text<T: Delineatable + Embodiable + ContentHashable + BareSafe + DelineatedText>() {}
-fn portion<T: Printing + PortionText + ScalarAnatomy>() {}
-fn datomic<T: Datomic>() {}
-fn decimal<T: Datomic + DecimalViewing>() {}
-
-struct EmbodiedValue;
-
-impl Embodied for EmbodiedValue {
-    fn from_portion(_: &Portion) -> Result<Self, Fault> { loop {} }
-}
-
-fn main() {
-    text::<Text<EmbodiedValue>>();
-    text::<Prospective<EmbodiedValue>>();
-    portion::<Portion>();
-    datomic::<DatomicString>();
-    decimal::<FiniteDecimal>();
-}
-"#,
-    )
-    .expect("positive association witness");
-    fs::copy(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock"),
-        directory.join("Cargo.lock"),
-    )
-    .expect("association harness lockfile");
-    assert!(
-        Command::new("cargo")
-            .arg("check")
-            .current_dir(&directory)
-            .status()
-            .expect("positive association compile")
-            .success(),
-        "map associations must compile against the pinned implementations"
-    );
-    fs::write(
-        directory.join("src/main.rs"),
-        "trait Required {}\nstruct Missing;\nfn need<T: Required>() {}\nfn main() { need::<Missing>(); }\n",
-    )
-    .expect("negative association witness");
-    assert!(
-        !Command::new("cargo")
-            .arg("check")
-            .current_dir(&directory)
-            .status()
-            .expect("negative association compile")
-            .success(),
-        "a missing required association must fail"
-    );
-    fs::remove_dir_all(directory).expect("association harness cleanup");
-}
-
-#[test]
 fn own_and_orchestrate_interfaces_are_read_as_portion_files() {
     let reader = FileReader::new(&EmptyManifest);
     for source in [
@@ -419,6 +505,34 @@ fn own_and_orchestrate_interfaces_are_read_as_portion_files() {
     ] {
         reader.read(source).expect("complete headed interface");
     }
+}
+
+#[test]
+fn interface_sections_lower_references_without_redeclaring_payload_types() {
+    let reader = FileReader::new(&EmptyManifest);
+    let ordinary = "Interface.{0 2 0} Channel.{Orchestrate 1 5} [] {[Lock.LockRequest] [] [] [] [LockRequest.{Name.String}]}";
+    let rust = RustEmitter::new()
+        .emit(&reader.read(ordinary).expect("ordinary interface"))
+        .expect("ordinary emission");
+    assert!(rust.contains("enum Request { Lock (LockRequest)"));
+    assert!(!rust.contains("type Lock = LockRequest"));
+
+    let meta = RustEmitter::new()
+        .generate(
+            &reader
+                .read("Interface.{0 1 0} Channel.{Meta 1 0} [] {[Configure.Configure] [] [] [] [Configure.{Path.String}]}")
+                .expect("meta interface"),
+        )
+        .expect("meta emission")
+        .syntax;
+    assert_eq!(
+        meta.items
+            .iter()
+            .filter(|item| matches!(item, syn::Item::Struct(item) if item.ident == "Configure"))
+            .count(),
+        1,
+        "Configure.Configure is a section reference, not a second declaration"
+    );
 }
 
 #[test]
@@ -484,7 +598,7 @@ fn generated_orchestrate_anatomies_compile_and_round_trip_through_datomic() {
     fs::create_dir_all(&test_directory).expect("generated test directory");
     fs::write(
         directory.join("Cargo.toml"),
-        "[package]\nname = \"generated-orchestrate\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nprotos = { git = \"https://github.com/LiGoldragon/protos\", rev = \"2f605fd689679a24e4ef83a643a2cd066cb12186\" }\ndatomic = { git = \"https://github.com/LiGoldragon/datomic\", rev = \"4baeaac79de265bfeb019e8dcdf7124daa9ecac5\" }\n",
+        engine_manifest(true).replace("ethos-zero-map-witness", "generated-orchestrate"),
     )
     .expect("fixture manifest");
     fs::write(source_directory.join("lib.rs"), generated).expect("generated Rust");
@@ -540,15 +654,11 @@ fn containers_and_headed_payloads_round_trip() {
 "#,
     )
     .expect("fixture tests");
-    fs::copy(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock"),
-        directory.join("Cargo.lock"),
-    )
-    .expect("fixture lockfile");
     let target = directory.join("target");
     assert!(
         Command::new("cargo")
             .arg("test")
+            .arg("--offline")
             .env("CARGO_TARGET_DIR", &target)
             .current_dir(&directory)
             .status()
