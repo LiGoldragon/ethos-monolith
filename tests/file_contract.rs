@@ -33,6 +33,80 @@ fn schema_root_is_distinct_and_legacy_headerless_text_is_rejected() {
 }
 
 #[test]
+fn named_record_fields_preserve_semantic_names_and_declaration_order() {
+    let source = "Schema.{0 1 0} [] Types.[Horizon.{node_size.Magnitude cluster_floor.Magnitude cache_urls.Option<Vector<String>> routes.«NodeName NodeProposal»}] Kinds.[Datomic.{embody.[Result<Self Fault>] portion.[Portion] textualize.[Text<Self>]}] Associations.[]";
+    let file = FileReader::new(&EmptyManifest)
+        .read(source)
+        .expect("named fields read");
+    let rust = RustEmitter::new().emit(&file).expect("named fields emit");
+    let syntax = syn::parse_file(&rust).expect("named field Rust syntax");
+    let horizon = syntax
+        .items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Struct(item) if item.ident == "Horizon" => Some(item),
+            _ => None,
+        })
+        .expect("Horizon declaration");
+    let names = horizon
+        .fields
+        .iter()
+        .map(|field| field.ident.as_ref().expect("named field").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        ["node_size", "cluster_floor", "cache_urls", "routes"]
+    );
+    assert!(rust.contains("parts [0usize]"));
+    assert!(rust.contains("parts [1usize]"));
+    assert!(rust.contains("parts [2usize]"));
+    assert!(rust.contains("parts [3usize]"));
+
+    assert!(
+        FileReader::new(&EmptyManifest)
+            .read(
+                "Schema.{0 1 0} [] Types.[Horizon.{node_size:Magnitude}] Kinds.[] Associations.[]"
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn named_interface_fields_compile_and_round_trip_in_declaration_order() {
+    let source = "Interface.{0 6 0} Channel.{Horizon 4 0} [] {[] [] [] [] [Name.String Magnitude.[Zero Min] NodeRecord.{node_size.Magnitude cluster_floor.Magnitude routes.«Name Magnitude»}]}";
+    let file = FileReader::new(&EmptyManifest)
+        .read(source)
+        .expect("named interface fields read");
+    let generated = RustEmitter::new()
+        .emit(&file)
+        .expect("named interface fields emit");
+    compile_generated_interface(
+        "named-fields",
+        &generated,
+        r#"
+use datomic::{Datomic, DatomicString, Text, TextEdge};
+use generated_named_fields::*;
+use std::collections::BTreeMap;
+
+#[test]
+fn repeated_magnitude_fields_keep_their_semantic_positions() {
+    let node = NodeRecord {
+        node_size: Magnitude::Min,
+        cluster_floor: Magnitude::Zero,
+        routes: BTreeMap::from([(
+            DatomicString::try_from("edge".to_owned()).expect("name"),
+            Magnitude::Min,
+        )]),
+    };
+    let text = node.textualize();
+    assert_eq!(text.as_ref(), "{Min Zero «edge Min»}");
+    assert_eq!(Text::<NodeRecord>::from(text.as_ref()).embody().expect("embody").textualize().as_ref(), text.as_ref());
+}
+"#,
+    );
+}
+
+#[test]
 fn unresolvable_source_import_faults_without_a_local_fallback() {
     let source = "Interface.{0 1 0} Channel.{Example 1 0} [outside:Thing] {[] [] [] [] []}";
     let error = FileReader::new(&EmptyManifest)
@@ -421,13 +495,45 @@ fn is_text_content_hashable_impl(item: &syn::Item) -> bool {
 }
 
 fn engine_manifest(needs_datomic: bool) -> String {
-    let protos = std::env::var("ETHOS_PROTOS_CRATE").expect("pinned Protos crate path");
-    let datomic = std::env::var("ETHOS_DATOMIC_CRATE").expect("pinned Datomic crate path");
-    let datomic = needs_datomic.then(|| format!("datomic = {{ path = {datomic:?} }}\n"));
+    let protos_path = std::env::var("ETHOS_PROTOS_CRATE").ok();
+    let protos = pinned_crate(
+        "ETHOS_PROTOS_CRATE",
+        "https://github.com/LiGoldragon/protos",
+        "bfde3b878dd3de2991d7f605b59f57a13ef8f20b",
+    );
+    let datomic = needs_datomic.then(|| {
+        pinned_crate(
+            "ETHOS_DATOMIC_CRATE",
+            "https://github.com/LiGoldragon/datomic",
+            "b670c72d0c2cb94ad1e39b372271f6569d91e214",
+        )
+    });
+    let protos_patch = protos_path
+        .as_ref()
+        .map(|path| {
+            format!(
+                "[patch.\"https://github.com/LiGoldragon/protos\"]\nprotos = {{ path = {path:?} }}\n"
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "[package]\nname = \"ethos-zero-map-witness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nprotos = {{ path = {protos:?} }}\n{}[patch.\"https://github.com/LiGoldragon/protos\"]\nprotos = {{ path = {protos:?} }}\n",
-        datomic.unwrap_or_default()
+        "[package]\nname = \"ethos-zero-map-witness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nprotos = {}\n{}{}",
+        protos,
+        datomic
+            .map(|dependency| format!("datomic = {dependency}\n"))
+            .unwrap_or_default(),
+        protos_patch,
     )
+}
+
+fn pinned_crate(variable: &str, source: &str, revision: &str) -> String {
+    match std::env::var(variable) {
+        Ok(path) => format!("{{ path = {path:?} }}"),
+        Err(std::env::VarError::NotPresent) => {
+            format!("{{ git = {source:?}, rev = {revision:?} }}")
+        }
+        Err(error) => panic!("read {variable}: {error}"),
+    }
 }
 
 fn wire_contract_manifest(name: &str) -> String {

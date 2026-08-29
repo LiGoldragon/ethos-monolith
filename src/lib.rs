@@ -1890,17 +1890,23 @@ fn fields(portions: &[Portion]) -> Result<Vec<Field>, FileFault> {
             index += 1;
             continue;
         }
-        let (name, body) =
-            any_headed(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+        let (name, separator, body) =
+            headed_full(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
         if matches!(name, "Public" | "Crate" | "Private") {
+            if separator != Separator::Period {
+                return Err(fault(portion, FileFaultReason::Declaration));
+            }
             let visibility = match name {
                 "Public" => Visibility::Public,
                 "Crate" => Visibility::Crate,
                 "Private" => Visibility::Private,
                 _ => unreachable!(),
             };
-            let (name, body) =
-                any_headed(body).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+            let (name, separator, body) =
+                headed_full(body).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+            if separator != Separator::Period {
+                return Err(fault(portion, FileFaultReason::Declaration));
+            }
             let (ty, consumed) = field_type_expression(body, portions.get(index + 1))?;
             fields.push(Field {
                 visibility,
@@ -1909,6 +1915,9 @@ fn fields(portions: &[Portion]) -> Result<Vec<Field>, FileFault> {
             });
             index += 1 + usize::from(consumed);
             continue;
+        }
+        if separator != Separator::Period {
+            return Err(fault(portion, FileFaultReason::Declaration));
         }
         let (ty, consumed) = field_type_expression(body, portions.get(index + 1))?;
         fields.push(Field {

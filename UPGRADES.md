@@ -1,5 +1,14 @@
 # Upgrades
 
+## 0.6.0 — named record fields
+
+Ethos record declarations now accept `Name.Type` field portions. The name is
+the generated Rust field name; the type is the field's Datomic anatomy; and
+the written declaration order remains the positional Datomic record order.
+Use this form whenever a record repeats a type or needs a semantic name that
+does not equal its type. Other head separators are rejected, so a source must
+use the ruled period form rather than relying on an accidental parse.
+
 ## 0.7.2 — ordered Nexus subscription activation
 
 Nexus now sequences each subscription's initial `Observed` reply before any
