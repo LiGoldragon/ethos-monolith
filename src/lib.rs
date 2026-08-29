@@ -537,12 +537,19 @@ impl RustEmitter {
             File::Schema(schema) => definitions.extend(schema.types.iter()),
         }
         let mut tokens = quote! { #![allow(dead_code)] };
+        let declaration_emission = match self.emission {
+            RustEmission::SchemaLibrary => DeclarationEmission::SchemaLibrary,
+            RustEmission::DatomicLibrary => DeclarationEmission::DatomicLibrary,
+            RustEmission::D3Consumer | RustEmission::WireContract => {
+                DeclarationEmission::D3Consumer
+            }
+        };
         for declaration in definitions {
             let datomic = is_datomic_file(file);
             tokens.extend(declaration_tokens(
                 declaration,
                 datomic,
-                self.emission == RustEmission::SchemaLibrary,
+                declaration_emission,
             )?);
             if datomic
                 && matches!(
@@ -1067,11 +1074,19 @@ fn generic_tokens(
     Ok(quote! { < #( #parameters ),* > })
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum DeclarationEmission {
+    D3Consumer,
+    SchemaLibrary,
+    DatomicLibrary,
+}
+
 fn declaration_tokens(
     declaration: &TypeDeclaration,
     datomic: bool,
-    schema_library: bool,
+    emission: DeclarationEmission,
 ) -> Result<proc_macro2::TokenStream, FileFault> {
+    let schema_library = emission == DeclarationEmission::SchemaLibrary;
     Ok(match declaration {
         TypeDeclaration::Alias {
             visibility,
@@ -1141,7 +1156,7 @@ fn declaration_tokens(
                 *non_exhaustive,
                 variants,
                 datomic,
-                schema_library,
+                emission,
             )?
         }
     })
@@ -1154,10 +1169,16 @@ fn enum_tokens(
     non_exhaustive: bool,
     variants: &[Variant],
     datomic: bool,
-    schema_library: bool,
+    emission: DeclarationEmission,
 ) -> Result<proc_macro2::TokenStream, FileFault> {
+    let schema_library = emission == DeclarationEmission::SchemaLibrary;
     let mut derived = proc_macro2::TokenStream::new();
     let mut emitted_variants = Vec::new();
+    let unit_enum_derives = (emission == DeclarationEmission::DatomicLibrary
+        && variants
+            .iter()
+            .all(|variant| matches!(variant.payload, VariantPayload::Unit)))
+    .then(|| quote! { #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)] });
     for variant in variants {
         let name = identifier(&variant.name)?;
         match &variant.payload {
@@ -1195,7 +1216,7 @@ fn enum_tokens(
                     false,
                     members,
                     datomic,
-                    schema_library,
+                    emission,
                 )?);
                 emitted_variants.push(quote! { #name(#derived_name) });
             }
@@ -1203,7 +1224,7 @@ fn enum_tokens(
     }
     let non_exhaustive = non_exhaustive.then(|| quote! { #[non_exhaustive] });
     derived.extend(
-        quote! { #non_exhaustive #visibility enum #parent #generics { #( #emitted_variants, )* } },
+        quote! { #unit_enum_derives #non_exhaustive #visibility enum #parent #generics { #( #emitted_variants, )* } },
     );
     Ok(derived)
 }

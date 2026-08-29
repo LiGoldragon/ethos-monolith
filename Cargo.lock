@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "ethos-zero"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "datomic",
  "proc-macro2",

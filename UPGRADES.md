@@ -1,5 +1,12 @@
 # Upgrades
 
+## 0.7.1 — value semantics for unit data enums
+
+Data-only and D3 Schema emission gives all-unit enums the ordinary value
+semantics their closed data model supports: `Copy`, ordering, and hashing in
+addition to clone, debug, and equality. Enums with any payload deliberately do
+not receive those derives, because their payload controls those guarantees.
+
 ## 0.7.0 — data-only Datomic libraries
 
 `RustEmitter::datomic_library()` emits a Schema's public declarations and

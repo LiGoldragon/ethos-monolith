@@ -940,6 +940,10 @@ fn datomic_library_emits_only_data_declarations_and_portion_anatomy() {
         .emit(&file)
         .expect("data-only emission");
     assert!(generated.contains("impl datomic :: Datomic for ProposalLevels"));
+    assert!(
+        generated
+            .contains("derive (Clone , Copy , Debug , PartialEq , Eq , PartialOrd , Ord , Hash)")
+    );
     assert!(!generated.contains("pub trait Datomic"));
     assert!(!generated.contains("Frame"));
     compile_generated_interface(
@@ -951,6 +955,8 @@ use generated_datomic_library::{Magnitude, ProposalLevels};
 
 #[test]
 fn named_fields_round_trip_in_schema_order() {
+    fn require_copy<T: Copy>(_: T) {}
+    require_copy(Magnitude::Min);
     let value = ProposalLevels { size: Magnitude::Large, trust: Magnitude::Min };
     let text = value.textualize();
     assert_eq!(text.as_ref(), "{Large Min}");
