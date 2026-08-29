@@ -1,5 +1,11 @@
 # Upgrades
 
+## Unreleased
+
+E2 now checks the complete map-owned public declaration contract for Protos
+and Datomic through syntax projection. The map pins advance to the complete
+contract revisions. This does not change Ethos-zero's public runtime API.
+
 ## 0.1.0 — ethos-zero E0–E2 replacement
 
 The former `ethos-monolith` package and repository are renamed `ethos-zero`.

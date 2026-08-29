@@ -86,13 +86,35 @@ fn source_linked_protos_and_datomic_maps_read_and_emit_through_the_portion_pivot
 }
 
 #[test]
-fn map_owned_public_trait_and_fault_signatures_match_handwritten_sources() {
+fn map_owned_public_contracts_match_handwritten_sources() {
     let reader = FileReader::new(&EmptyManifest);
     let scopes = [
         (
             "ETHOS_PROTOS_MAP",
             "ETHOS_PROTOS_RUST",
             [
+                "Text",
+                "ContentHash",
+                "Symbol",
+                "Extent",
+                "Separator",
+                "BareExpectation",
+                "Enclosure",
+                "StructuralEnclosure",
+                "OpaqueBoundary",
+                "Boundary",
+                "DialectBoundary",
+                "Portion",
+                "Headed",
+                "Enclosed",
+                "StructuralEnclosed",
+                "OpaqueEnclosed",
+                "Bare",
+                "Delineation",
+                "Fault",
+                "FaultProblem",
+                "Layout",
+                "Prospective",
                 "Delineatable",
                 "Embodiable",
                 "Embodied",
@@ -101,7 +123,9 @@ fn map_owned_public_trait_and_fault_signatures_match_handwritten_sources() {
                 "ContentHashable",
                 "BareSafe",
                 "PortionText",
+                "ScalarAnatomy",
                 "EnclosedArity",
+                "EnclosedAnatomy",
                 "Printing",
                 "DelineatedText",
             ]
@@ -110,7 +134,20 @@ fn map_owned_public_trait_and_fault_signatures_match_handwritten_sources() {
         (
             "ETHOS_DATOMIC_MAP",
             "ETHOS_DATOMIC_RUST",
-            ["Fault", "FaultProblem"].as_slice(),
+            [
+                "Fault",
+                "FaultProblem",
+                "FiniteDecimal",
+                "DatomicString",
+                "NonFiniteDecimal",
+                "UnrepresentableString",
+                "Datomic",
+                "TextEdge",
+                "PortionViewing",
+                "DecimalViewing",
+                "PortionBuilding",
+            ]
+            .as_slice(),
         ),
     ];
     for (map_variable, rust_variable, names) in scopes {
@@ -127,8 +164,8 @@ fn map_owned_public_trait_and_fault_signatures_match_handwritten_sources() {
         let handwritten = syn::parse_file(&handwritten).expect("handwritten syntax");
         for name in names {
             assert_eq!(
-                canonical_item(&generated, name),
-                canonical_item(&handwritten, name),
+                contract_projection(&generated, name),
+                contract_projection(&handwritten, name),
                 "map-owned public item {name}"
             );
         }
@@ -158,7 +195,7 @@ fn rustfmt_for_comparison(source: &str) -> String {
     formatted
 }
 
-fn canonical_item(file: &syn::File, name: &str) -> String {
+fn contract_projection(file: &syn::File, name: &str) -> String {
     let mut item = file
         .items
         .iter()
@@ -166,18 +203,29 @@ fn canonical_item(file: &syn::File, name: &str) -> String {
             syn::Item::Struct(item) => item.ident == name,
             syn::Item::Enum(item) => item.ident == name,
             syn::Item::Trait(item) => item.ident == name,
+            syn::Item::Type(item) => item.ident == name,
             _ => false,
         })
         .cloned()
         .unwrap_or_else(|| panic!("public item {name}"));
     match &mut item {
-        syn::Item::Struct(item) => item.attrs.clear(),
-        syn::Item::Enum(item) => item.attrs.clear(),
+        syn::Item::Struct(item) => {
+            item.attrs
+                .retain(|attribute| attribute.path().is_ident("non_exhaustive"));
+            if matches!(name, "FiniteDecimal" | "DatomicString") {
+                item.fields = syn::Fields::Named(syn::parse_quote!({}));
+            }
+        }
+        syn::Item::Enum(item) => item
+            .attrs
+            .retain(|attribute| attribute.path().is_ident("non_exhaustive")),
         syn::Item::Trait(item) => {
             item.attrs.clear();
             for trait_item in &mut item.items {
                 if let syn::TraitItem::Fn(method) = trait_item {
-                    method.default = None;
+                    if method.default.is_some() {
+                        method.default = Some(syn::parse_quote!({}));
+                    }
                     for (index, argument) in method.sig.inputs.iter_mut().enumerate() {
                         if let syn::FnArg::Typed(argument) = argument {
                             let name = syn::Ident::new(
@@ -190,9 +238,13 @@ fn canonical_item(file: &syn::File, name: &str) -> String {
                 }
             }
         }
+        syn::Item::Type(item) => item.attrs.clear(),
         _ => unreachable!("selected structural item"),
     }
-    item.to_token_stream().to_string().replace("protos :: ", "")
+    item.to_token_stream()
+        .to_string()
+        .replace("protos :: ", "")
+        .replace("datomic :: ", "")
 }
 
 #[test]
@@ -253,14 +305,13 @@ fn schema_kinds_and_associations_become_traits_and_checked_impls() {
         .expect("schema read");
     let rust = RustEmitter::new().emit(&file).expect("schema emit");
     assert!(rust.contains("trait Processable"));
-    assert!(rust.contains("impl Processable for User"));
+    assert!(rust.contains("fn carries < T > () where T : Processable"));
     syn::parse_file(&rust).expect("syntax");
 }
 
 #[test]
 fn false_kind_association_fails_generated_rust_compilation() {
-    let source =
-        "Schema.{0 1 0} [] Types.[Name.String User.{Name}] Kinds.[] Associations.[User.[Missing]]";
+    let source = "Schema.{0 1 0} [] Types.[User.{}] Kinds.[] Associations.[User.[Missing]]";
     let file = FileReader::new(&EmptyManifest)
         .read(source)
         .expect("schema read");
@@ -272,17 +323,89 @@ fn false_kind_association_fails_generated_rust_compilation() {
     fs::create_dir_all(&directory).expect("isolated output directory");
     let source_path = directory.join("generated.rs");
     fs::write(&source_path, rust).expect("generated Rust source");
-    assert!(
-        !Command::new("rustc")
-            .args(["--edition", "2024", "--crate-type", "lib"])
-            .arg(&source_path)
-            .arg("--out-dir")
-            .arg(&directory)
-            .status()
-            .expect("rustc invocation")
-            .success()
-    );
+    let output = Command::new("rustc")
+        .args(["--edition", "2024", "--crate-type", "lib"])
+        .arg(&source_path)
+        .arg("--out-dir")
+        .arg(&directory)
+        .output()
+        .expect("rustc invocation");
+    assert!(!output.status.success(), "missing association must fail");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Missing"));
     fs::remove_dir_all(directory).expect("isolated output cleanup");
+}
+
+#[test]
+fn pinned_public_associations_compile_only_with_actual_implementations() {
+    let directory = std::env::temp_dir().join(format!(
+        "ethos-zero-pinned-associations-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(directory.join("src")).expect("association harness directory");
+    fs::write(
+        directory.join("Cargo.toml"),
+        "[package]\nname = \"ethos-zero-association-witness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nprotos = { git = \"https://github.com/LiGoldragon/protos\", rev = \"2f605fd689679a24e4ef83a643a2cd066cb12186\" }\ndatomic = { git = \"https://github.com/LiGoldragon/datomic\", rev = \"4baeaac79de265bfeb019e8dcdf7124daa9ecac5\" }\n",
+    )
+    .expect("association harness manifest");
+    fs::write(
+        directory.join("src/main.rs"),
+        r#"
+use datomic::{Datomic, DatomicString, DecimalViewing, FiniteDecimal};
+use protos::{
+    BareSafe, ContentHashable, Delineatable, DelineatedText, Embodiable, Embodied, Fault, Portion,
+    PortionText, Printing, Prospective, ScalarAnatomy, Text,
+};
+
+fn text<T: Delineatable + Embodiable + ContentHashable + BareSafe + DelineatedText>() {}
+fn portion<T: Printing + PortionText + ScalarAnatomy>() {}
+fn datomic<T: Datomic>() {}
+fn decimal<T: Datomic + DecimalViewing>() {}
+
+struct EmbodiedValue;
+
+impl Embodied for EmbodiedValue {
+    fn from_portion(_: &Portion) -> Result<Self, Fault> { loop {} }
+}
+
+fn main() {
+    text::<Text<EmbodiedValue>>();
+    text::<Prospective<EmbodiedValue>>();
+    portion::<Portion>();
+    datomic::<DatomicString>();
+    decimal::<FiniteDecimal>();
+}
+"#,
+    )
+    .expect("positive association witness");
+    fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock"),
+        directory.join("Cargo.lock"),
+    )
+    .expect("association harness lockfile");
+    assert!(
+        Command::new("cargo")
+            .arg("check")
+            .current_dir(&directory)
+            .status()
+            .expect("positive association compile")
+            .success(),
+        "map associations must compile against the pinned implementations"
+    );
+    fs::write(
+        directory.join("src/main.rs"),
+        "trait Required {}\nstruct Missing;\nfn need<T: Required>() {}\nfn main() { need::<Missing>(); }\n",
+    )
+    .expect("negative association witness");
+    assert!(
+        !Command::new("cargo")
+            .arg("check")
+            .current_dir(&directory)
+            .status()
+            .expect("negative association compile")
+            .success(),
+        "a missing required association must fail"
+    );
+    fs::remove_dir_all(directory).expect("association harness cleanup");
 }
 
 #[test]
@@ -361,7 +484,7 @@ fn generated_orchestrate_anatomies_compile_and_round_trip_through_datomic() {
     fs::create_dir_all(&test_directory).expect("generated test directory");
     fs::write(
         directory.join("Cargo.toml"),
-        "[package]\nname = \"generated-orchestrate\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nprotos = { git = \"https://github.com/LiGoldragon/protos\", rev = \"7e2bba7d48c62de53b3f93cb6053a490bbd6cf3b\" }\ndatomic = { git = \"https://github.com/LiGoldragon/datomic\", rev = \"ffb0ffa316285ab56e50fbc035cb8c14380f4665\" }\n",
+        "[package]\nname = \"generated-orchestrate\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nprotos = { git = \"https://github.com/LiGoldragon/protos\", rev = \"2f605fd689679a24e4ef83a643a2cd066cb12186\" }\ndatomic = { git = \"https://github.com/LiGoldragon/datomic\", rev = \"4baeaac79de265bfeb019e8dcdf7124daa9ecac5\" }\n",
     )
     .expect("fixture manifest");
     fs::write(source_directory.join("lib.rs"), generated).expect("generated Rust");

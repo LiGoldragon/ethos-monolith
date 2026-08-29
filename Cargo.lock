@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "datomic"
 version = "0.7.0"
-source = "git+https://github.com/LiGoldragon/datomic?rev=ffb0ffa316285ab56e50fbc035cb8c14380f4665#ffb0ffa316285ab56e50fbc035cb8c14380f4665"
+source = "git+https://github.com/LiGoldragon/datomic?rev=4baeaac79de265bfeb019e8dcdf7124daa9ecac5#4baeaac79de265bfeb019e8dcdf7124daa9ecac5"
 dependencies = [
  "protos",
 ]
@@ -34,7 +34,7 @@ dependencies = [
 [[package]]
 name = "protos"
 version = "0.14.0"
-source = "git+https://github.com/LiGoldragon/protos?rev=7e2bba7d48c62de53b3f93cb6053a490bbd6cf3b#7e2bba7d48c62de53b3f93cb6053a490bbd6cf3b"
+source = "git+https://github.com/LiGoldragon/protos?rev=2f605fd689679a24e4ef83a643a2cd066cb12186#2f605fd689679a24e4ef83a643a2cd066cb12186"
 
 [[package]]
 name = "quote"

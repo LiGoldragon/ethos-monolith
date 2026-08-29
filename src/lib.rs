@@ -152,6 +152,7 @@ impl Manifest for DatomicManifest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TypeExpression {
+    Unit,
     Reference(String),
     Associated {
         base: String,
@@ -164,7 +165,22 @@ pub enum TypeExpression {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Visibility {
+    Public,
+    Crate,
+    Private,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenericParameter {
+    pub name: String,
+    pub default: Option<TypeExpression>,
+    pub bounds: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Field {
+    pub visibility: Visibility,
     pub name: String,
     pub ty: TypeExpression,
 }
@@ -173,6 +189,7 @@ pub struct Field {
 pub enum VariantPayload {
     Unit,
     Type(TypeExpression),
+    Tuple(Vec<TypeExpression>),
     InlineStruct(Vec<Field>),
     InlineEnum(Vec<Variant>),
 }
@@ -186,15 +203,28 @@ pub struct Variant {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TypeDeclaration {
     Alias {
+        visibility: Visibility,
         name: String,
+        generics: Vec<GenericParameter>,
         target: TypeExpression,
     },
     Struct {
+        visibility: Visibility,
         name: String,
+        generics: Vec<GenericParameter>,
         fields: Vec<Field>,
     },
-    Enum {
+    TupleStruct {
+        visibility: Visibility,
         name: String,
+        generics: Vec<GenericParameter>,
+        fields: Vec<(Visibility, TypeExpression)>,
+    },
+    Enum {
+        visibility: Visibility,
+        name: String,
+        generics: Vec<GenericParameter>,
+        non_exhaustive: bool,
         variants: Vec<Variant>,
     },
 }
@@ -218,9 +248,38 @@ pub enum Capability {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KindDeclaration {
+    pub visibility: Visibility,
     pub name: String,
+    pub generics: Vec<GenericParameter>,
     pub constraints: Vec<String>,
+    pub associated: Vec<AssociatedType>,
+    pub methods: Vec<Method>,
     pub capabilities: Vec<Capability>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssociatedType {
+    pub name: String,
+    pub bounds: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Receiver {
+    Shared,
+    Mutable,
+    Owned,
+    None,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Method {
+    pub name: String,
+    pub generics: Vec<GenericParameter>,
+    pub receiver: Receiver,
+    pub inputs: Vec<Field>,
+    pub output: TypeExpression,
+    pub where_bounds: Vec<(String, Vec<String>)>,
+    pub has_default: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -485,9 +544,12 @@ fn datomic_anatomy_tokens(
             }
         }
         TypeDeclaration::Enum { variants, .. } => enum_anatomy_tokens(&name, variants)?,
+        TypeDeclaration::TupleStruct { .. } => {
+            return Err(root_fault(0, FileFaultReason::Declaration));
+        }
     };
     let nested = match declaration {
-        TypeDeclaration::Enum { name, variants } => nested_enum_anatomies(name, variants)?,
+        TypeDeclaration::Enum { name, variants, .. } => nested_enum_anatomies(name, variants)?,
         _ => proc_macro2::TokenStream::new(),
     };
     Ok(quote! {
@@ -507,19 +569,24 @@ fn nested_enum_anatomies(
         match &variant.payload {
             VariantPayload::InlineStruct(fields) => {
                 let declaration = TypeDeclaration::Struct {
+                    visibility: Visibility::Public,
                     name: format!("{parent}{variant_name}"),
+                    generics: Vec::new(),
                     fields: fields.clone(),
                 };
                 tokens.extend(datomic_anatomy_tokens(&declaration)?);
             }
             VariantPayload::InlineEnum(members) => {
                 let declaration = TypeDeclaration::Enum {
+                    visibility: Visibility::Public,
                     name: format!("{parent}{variant_name}"),
+                    generics: Vec::new(),
+                    non_exhaustive: false,
                     variants: members.clone(),
                 };
                 tokens.extend(datomic_anatomy_tokens(&declaration)?);
             }
-            VariantPayload::Unit | VariantPayload::Type(_) => {}
+            VariantPayload::Unit | VariantPayload::Type(_) | VariantPayload::Tuple(_) => {}
         }
     }
     Ok(tokens)
@@ -539,6 +606,20 @@ fn enum_anatomy_tokens(
                         return Ok(Self::#variant_name);
                     }
                 }),
+                VariantPayload::Tuple(types) => {
+                    let types = types
+                        .iter()
+                        .map(|ty| type_tokens_with_datomic(ty, true))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(quote! {
+                        if let Some(headed) = datomic::PortionViewing::headed(portion)
+                            && headed.head.as_ref() == stringify!(#variant_name)
+                            && headed.separator == protos::Separator::Period
+                        {
+                            return Ok(Self::#variant_name( #( <#types as datomic::Datomic>::embody(&headed.body)?, )* ));
+                        }
+                    })
+                }
                 payload => {
                     let ty = variant_payload_type(parent, &variant_name, payload)?;
                     Ok(quote! {
@@ -561,6 +642,7 @@ fn enum_anatomy_tokens(
                 VariantPayload::Unit => Ok(quote! {
                     Self::#variant_name => datomic::PortionBuilding::bare(stringify!(#variant_name)),
                 }),
+                VariantPayload::Tuple(_) => Err(root_fault(0, FileFaultReason::Declaration)),
                 payload => {
                     let ty = variant_payload_type(parent, &variant_name, payload)?;
                     Ok(quote! {
@@ -596,7 +678,9 @@ fn variant_payload_type(
             let name = format_ident!("{}{}", parent, variant);
             Ok(quote! { #name })
         }
-        VariantPayload::Unit => Err(root_fault(0, FileFaultReason::Declaration)),
+        VariantPayload::Unit | VariantPayload::Tuple(_) => {
+            Err(root_fault(0, FileFaultReason::Declaration))
+        }
     }
 }
 
@@ -626,8 +710,49 @@ fn declaration_name(declaration: &TypeDeclaration) -> &str {
     match declaration {
         TypeDeclaration::Alias { name, .. }
         | TypeDeclaration::Struct { name, .. }
+        | TypeDeclaration::TupleStruct { name, .. }
         | TypeDeclaration::Enum { name, .. } => name,
     }
+}
+
+fn visibility_tokens(visibility: &Visibility) -> proc_macro2::TokenStream {
+    match visibility {
+        Visibility::Public => quote! { pub },
+        Visibility::Crate => quote! { pub(crate) },
+        Visibility::Private => proc_macro2::TokenStream::new(),
+    }
+}
+
+fn generic_tokens(
+    generics: &[GenericParameter],
+    datomic: bool,
+) -> Result<proc_macro2::TokenStream, FileFault> {
+    if generics.is_empty() {
+        return Ok(proc_macro2::TokenStream::new());
+    }
+    let parameters = generics
+        .iter()
+        .map(|parameter| {
+            let name = identifier(&parameter.name)?;
+            let bounds = parameter
+                .bounds
+                .iter()
+                .map(|bound| identifier(bound))
+                .collect::<Result<Vec<_>, _>>()?;
+            let default = parameter
+                .default
+                .as_ref()
+                .map(|default| type_tokens_with_datomic(default, datomic))
+                .transpose()?;
+            Ok(match (bounds.is_empty(), default) {
+                (true, None) => quote! { #name },
+                (false, None) => quote! { #name: #( #bounds )+* },
+                (true, Some(default)) => quote! { #name = #default },
+                (false, Some(default)) => quote! { #name: #( #bounds )+* = #default },
+            })
+        })
+        .collect::<Result<Vec<_>, FileFault>>()?;
+    Ok(quote! { < #( #parameters ),* > })
 }
 
 fn declaration_tokens(
@@ -635,32 +760,84 @@ fn declaration_tokens(
     datomic: bool,
 ) -> Result<proc_macro2::TokenStream, FileFault> {
     Ok(match declaration {
-        TypeDeclaration::Alias { name, target } => {
+        TypeDeclaration::Alias {
+            visibility,
+            name,
+            generics,
+            target,
+        } => {
             let name = identifier(name)?;
+            let visibility = visibility_tokens(visibility);
+            let generics = generic_tokens(generics, datomic)?;
             let target = type_tokens_with_datomic(target, datomic)?;
-            quote! { pub type #name = #target; }
+            quote! { #visibility type #name #generics = #target; }
         }
-        TypeDeclaration::Struct { name, fields } => {
+        TypeDeclaration::Struct {
+            visibility,
+            name,
+            generics,
+            fields,
+        } => {
             let name = identifier(name)?;
+            let visibility = visibility_tokens(visibility);
+            let generics = generic_tokens(generics, datomic)?;
             let fields = fields
                 .iter()
                 .map(|field| {
                     let name = field_identifier(&field.name)?;
+                    let visibility = visibility_tokens(&field.visibility);
                     let ty = type_tokens_with_datomic(&field.ty, datomic)?;
-                    Ok(quote! { pub #name: #ty })
+                    Ok(quote! { #visibility #name: #ty })
                 })
                 .collect::<Result<Vec<_>, FileFault>>()?;
-            quote! { pub struct #name { #( #fields, )* } }
+            quote! { #visibility struct #name #generics { #( #fields, )* } }
         }
-        TypeDeclaration::Enum { name, variants } => {
+        TypeDeclaration::TupleStruct {
+            visibility,
+            name,
+            generics,
+            fields,
+        } => {
             let name = identifier(name)?;
-            enum_tokens(&name, variants, datomic)?
+            let visibility = visibility_tokens(visibility);
+            let generics = generic_tokens(generics, datomic)?;
+            let fields = fields
+                .iter()
+                .map(|(visibility, ty)| {
+                    let visibility = visibility_tokens(visibility);
+                    let ty = type_tokens_with_datomic(ty, datomic)?;
+                    Ok(quote! { #visibility #ty })
+                })
+                .collect::<Result<Vec<_>, FileFault>>()?;
+            quote! { #visibility struct #name #generics ( #( #fields, )* ); }
+        }
+        TypeDeclaration::Enum {
+            visibility,
+            name,
+            generics,
+            non_exhaustive,
+            variants,
+        } => {
+            let name = identifier(name)?;
+            let visibility = visibility_tokens(visibility);
+            let generics = generic_tokens(generics, datomic)?;
+            enum_tokens(
+                &visibility,
+                &name,
+                &generics,
+                *non_exhaustive,
+                variants,
+                datomic,
+            )?
         }
     })
 }
 
 fn enum_tokens(
+    visibility: &proc_macro2::TokenStream,
     parent: &proc_macro2::Ident,
+    generics: &proc_macro2::TokenStream,
+    non_exhaustive: bool,
     variants: &[Variant],
     datomic: bool,
 ) -> Result<proc_macro2::TokenStream, FileFault> {
@@ -687,19 +864,38 @@ fn enum_tokens(
                 derived.extend(quote! { pub struct #derived_name { #( #fields, )* } });
                 emitted_variants.push(quote! { #name(#derived_name) });
             }
+            VariantPayload::Tuple(types) => {
+                let types = types
+                    .iter()
+                    .map(|ty| type_tokens_with_datomic(ty, datomic))
+                    .collect::<Result<Vec<_>, _>>()?;
+                emitted_variants.push(quote! { #name( #( #types, )* ) });
+            }
             VariantPayload::InlineEnum(members) => {
                 let derived_name = format_ident!("{}{}", parent, name);
-                derived.extend(enum_tokens(&derived_name, members, datomic)?);
+                derived.extend(enum_tokens(
+                    &quote! { pub },
+                    &derived_name,
+                    &proc_macro2::TokenStream::new(),
+                    false,
+                    members,
+                    datomic,
+                )?);
                 emitted_variants.push(quote! { #name(#derived_name) });
             }
         }
     }
-    derived.extend(quote! { pub enum #parent { #( #emitted_variants, )* } });
+    let non_exhaustive = non_exhaustive.then(|| quote! { #[non_exhaustive] });
+    derived.extend(
+        quote! { #non_exhaustive #visibility enum #parent #generics { #( #emitted_variants, )* } },
+    );
     Ok(derived)
 }
 
 fn kind_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenStream, FileFault> {
     let name = identifier(&kind.name)?;
+    let visibility = visibility_tokens(&kind.visibility);
+    let generics = generic_tokens(&kind.generics, false)?;
     let constraints = kind
         .constraints
         .iter()
@@ -748,12 +944,40 @@ fn kind_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenStream, FileF
             }
         })
         .collect::<Result<Vec<_>, FileFault>>()?;
-    let associated = match kind.name.as_str() {
-        "Delineatable" => quote! { type Delineation; },
-        "Embodiable" => quote! { type Embodied: Embodied; },
-        _ => proc_macro2::TokenStream::new(),
+    let associated = if !kind.associated.is_empty() {
+        let associated = kind
+            .associated
+            .iter()
+            .map(|associated| {
+                let name = identifier(&associated.name)?;
+                let bounds = associated
+                    .bounds
+                    .iter()
+                    .map(|bound| identifier(bound))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(if bounds.is_empty() {
+                    quote! { type #name; }
+                } else {
+                    quote! { type #name: #( #bounds )+*; }
+                })
+            })
+            .collect::<Result<Vec<_>, FileFault>>()?;
+        quote! { #( #associated )* }
+    } else {
+        match kind.name.as_str() {
+            "Delineatable" => quote! { type Delineation; },
+            "Embodiable" => quote! { type Embodied: Embodied; },
+            _ => proc_macro2::TokenStream::new(),
+        }
     };
-    let capabilities = if kind.name == "Delineatable" {
+    let capabilities = if !kind.methods.is_empty() {
+        let methods = kind
+            .methods
+            .iter()
+            .map(method_tokens)
+            .collect::<Result<Vec<_>, _>>()?;
+        quote! { #( #methods )* }
+    } else if kind.name == "Delineatable" {
         quote! { fn delineate(&self) -> Result<Self::Delineation, Fault>; }
     } else if kind.name == "Embodiable" {
         quote! { fn embody(&self) -> Result<Self::Embodied, Fault>; }
@@ -770,10 +994,65 @@ fn kind_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenStream, FileF
         quote! { #( #capabilities )* }
     };
     Ok(if constraints.is_empty() {
-        quote! { pub trait #name { #associated #capabilities } }
+        quote! { #visibility trait #name #generics { #associated #capabilities } }
     } else {
-        quote! { pub trait #name: #( #constraints )+* { #associated #capabilities } }
+        quote! { #visibility trait #name #generics: #( #constraints )+* { #associated #capabilities } }
     })
+}
+
+fn method_tokens(method: &Method) -> Result<proc_macro2::TokenStream, FileFault> {
+    let name = field_identifier(&method.name)?;
+    let generics = generic_tokens(&method.generics, false)?;
+    let receiver = match method.receiver {
+        Receiver::Shared => quote! { &self },
+        Receiver::Mutable => quote! { &mut self },
+        Receiver::Owned => quote! { self },
+        Receiver::None => proc_macro2::TokenStream::new(),
+    };
+    let inputs = method
+        .inputs
+        .iter()
+        .map(|input| {
+            let name = field_identifier(&input.name)?;
+            let ty = type_tokens(&input.ty)?;
+            Ok(quote! { #name: #ty })
+        })
+        .collect::<Result<Vec<_>, FileFault>>()?;
+    let output = type_tokens(&method.output)?;
+    let where_bounds = method
+        .where_bounds
+        .iter()
+        .map(|(subject, bounds)| {
+            let subject = if subject == "Self" {
+                quote! { Self }
+            } else {
+                let subject = identifier(subject)?;
+                quote! { #subject }
+            };
+            let bounds = bounds
+                .iter()
+                .map(|bound| identifier(bound))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(quote! { #subject: #( #bounds )+* })
+        })
+        .collect::<Result<Vec<_>, FileFault>>()?;
+    let inputs = if receiver.is_empty() {
+        quote! { #( #inputs ),* }
+    } else if inputs.is_empty() {
+        receiver
+    } else {
+        quote! { #receiver, #( #inputs ),* }
+    };
+    let body = if method.has_default {
+        quote! { { loop {} } }
+    } else {
+        quote! { ; }
+    };
+    if where_bounds.is_empty() {
+        Ok(quote! { fn #name #generics ( #inputs ) -> #output #body })
+    } else {
+        Ok(quote! { fn #name #generics ( #inputs ) -> #output where #( #where_bounds ),* #body })
+    }
 }
 
 fn association_tokens(association: &Association) -> Result<proc_macro2::TokenStream, FileFault> {
@@ -783,10 +1062,12 @@ fn association_tokens(association: &Association) -> Result<proc_macro2::TokenStr
         .iter()
         .map(|kind| identifier(kind))
         .collect::<Result<Vec<_>, _>>()?;
-    let implementations = kinds.iter().map(|kind| quote! { impl #kind for #ty {} });
-    Ok(
-        quote! { #( #implementations )* const _: fn() = || { fn carries<T: #( #kinds + )*>() {} carries::<#ty>(); }; },
-    )
+    Ok(quote! {
+        const _: fn() = || {
+            fn carries<T>() where T: #( #kinds + )* {}
+            carries::<#ty>();
+        };
+    })
 }
 
 fn type_tokens(expression: &TypeExpression) -> Result<proc_macro2::TokenStream, FileFault> {
@@ -798,6 +1079,7 @@ fn type_tokens_with_datomic(
     datomic: bool,
 ) -> Result<proc_macro2::TokenStream, FileFault> {
     match expression {
+        TypeExpression::Unit => Ok(quote! { () }),
         TypeExpression::Reference(name) => Ok({
             if name == "Self" {
                 return Ok(quote! { Self });
@@ -808,6 +1090,8 @@ fn type_tokens_with_datomic(
                 "UnsignedInteger" => return Ok(quote! { u64 }),
                 "SignedInteger" | "Signed64" => return Ok(quote! { i64 }),
                 "Float64" => return Ok(quote! { f64 }),
+                "StringSlice" => return Ok(quote! { str }),
+                "PhantomData" => return Ok(quote! { std::marker::PhantomData }),
                 _ => {}
             }
             if datomic {
@@ -818,6 +1102,11 @@ fn type_tokens_with_datomic(
                     "Decimal" | "FiniteDecimal" | "Float64" => quote! { datomic::FiniteDecimal },
                     "Portion" => quote! { protos::Portion },
                     "Text" => quote! { protos::Text },
+                    "Extent" => quote! { protos::Extent },
+                    "Headed" => quote! { protos::Headed },
+                    "OpaqueBoundary" => quote! { protos::OpaqueBoundary },
+                    "StructuralEnclosure" => quote! { protos::StructuralEnclosure },
+                    "Separator" => quote! { protos::Separator },
                     _ => {
                         let name = identifier(name)?;
                         quote! { #name }
@@ -865,6 +1154,41 @@ fn type_tokens_with_datomic(
         } if constructor == "Text" && arguments.len() == 1 => {
             let target = type_tokens_with_datomic(&arguments[0], datomic)?;
             Ok(quote! { protos::Text<#target> })
+        }
+        TypeExpression::Application {
+            constructor,
+            arguments,
+        } if constructor == "Box" && arguments.len() == 1 => {
+            let inner = type_tokens_with_datomic(&arguments[0], datomic)?;
+            Ok(quote! { Box<#inner> })
+        }
+        TypeExpression::Application {
+            constructor,
+            arguments,
+        } if constructor == "Phantom" && arguments.len() == 1 => {
+            let inner = type_tokens_with_datomic(&arguments[0], datomic)?;
+            Ok(quote! { std::marker::PhantomData<fn() -> #inner> })
+        }
+        TypeExpression::Application {
+            constructor,
+            arguments,
+        } if constructor == "Borrowed" && arguments.len() == 1 => {
+            let inner = type_tokens_with_datomic(&arguments[0], datomic)?;
+            Ok(quote! { &#inner })
+        }
+        TypeExpression::Application {
+            constructor,
+            arguments,
+        } if constructor == "BorrowedMut" && arguments.len() == 1 => {
+            let inner = type_tokens_with_datomic(&arguments[0], datomic)?;
+            Ok(quote! { &mut #inner })
+        }
+        TypeExpression::Application {
+            constructor,
+            arguments,
+        } if constructor == "Slice" && arguments.len() == 1 => {
+            let inner = type_tokens_with_datomic(&arguments[0], datomic)?;
+            Ok(quote! { [#inner] })
         }
         TypeExpression::Application {
             constructor,
@@ -955,24 +1279,114 @@ fn declaration_of(
 ) -> Result<(TypeDeclaration, bool), FileFault> {
     let (name, body) =
         any_headed(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+    if let Some(contents) = headed(body, "Struct", Separator::Period).and_then(|body| {
+        structural(body).and_then(|(enclosure, values)| {
+            (enclosure == StructuralEnclosure::Braced).then_some(values)
+        })
+    }) {
+        let (visibility, generics, values) = declaration_metadata(contents)?;
+        return Ok((
+            TypeDeclaration::Struct {
+                visibility,
+                name: name.to_owned(),
+                generics,
+                fields: fields(&values)?,
+            },
+            false,
+        ));
+    }
+    if let Some(contents) = headed(body, "Tuple", Separator::Period).and_then(|body| {
+        structural(body).and_then(|(enclosure, values)| {
+            (enclosure == StructuralEnclosure::Bracketed).then_some(values)
+        })
+    }) {
+        let (visibility, generics, values) = declaration_metadata(contents)?;
+        let fields = values
+            .iter()
+            .map(tuple_field)
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok((
+            TypeDeclaration::TupleStruct {
+                visibility,
+                name: name.to_owned(),
+                generics,
+                fields,
+            },
+            false,
+        ));
+    }
+    if let Some(contents) = headed(body, "Enum", Separator::Period).and_then(|body| {
+        structural(body).and_then(|(enclosure, values)| {
+            (enclosure == StructuralEnclosure::Bracketed).then_some(values)
+        })
+    }) {
+        let (visibility, generics, mut values) = declaration_metadata(contents)?;
+        let non_exhaustive = values.iter().any(|value| {
+            headed(value, "NonExhaustive", Separator::Period)
+                .is_some_and(|body| bare(body).is_ok_and(|value| value == "Yes"))
+        });
+        values.retain(|value| headed(value, "NonExhaustive", Separator::Period).is_none());
+        return Ok((
+            TypeDeclaration::Enum {
+                visibility,
+                name: name.to_owned(),
+                generics,
+                non_exhaustive,
+                variants: variants(&values)?,
+            },
+            false,
+        ));
+    }
+    if let Some(contents) = headed(body, "Alias", Separator::Period).and_then(|body| {
+        structural(body).and_then(|(enclosure, values)| {
+            (enclosure == StructuralEnclosure::Braced).then_some(values)
+        })
+    }) {
+        let (visibility, generics, values) = declaration_metadata(contents)?;
+        let [target, following @ ..] = values.as_slice() else {
+            return Err(fault(body, FileFaultReason::Declaration));
+        };
+        let (label, target) =
+            any_headed(target).ok_or_else(|| fault(target, FileFaultReason::Declaration))?;
+        if label != "Target" {
+            return Err(fault(target, FileFaultReason::Declaration));
+        }
+        let (target, _) = field_type_expression(target, following.first())?;
+        return Ok((
+            TypeDeclaration::Alias {
+                visibility,
+                name: name.to_owned(),
+                generics,
+                target,
+            },
+            false,
+        ));
+    }
     match structural(body) {
         Some((StructuralEnclosure::Braced, values)) => Ok((
             TypeDeclaration::Struct {
+                visibility: Visibility::Public,
                 name: name.to_owned(),
+                generics: Vec::new(),
                 fields: fields(values)?,
             },
             false,
         )),
         Some((StructuralEnclosure::Bracketed, values)) => Ok((
             TypeDeclaration::Enum {
+                visibility: Visibility::Public,
                 name: name.to_owned(),
+                generics: Vec::new(),
+                non_exhaustive: false,
                 variants: variants(values)?,
             },
             false,
         )),
         Some((StructuralEnclosure::Guillemets, values)) => Ok((
             TypeDeclaration::Alias {
+                visibility: Visibility::Public,
                 name: name.to_owned(),
+                generics: Vec::new(),
                 target: TypeExpression::Application {
                     constructor: "Map".to_owned(),
                     arguments: fields(values)?.into_iter().map(|field| field.ty).collect(),
@@ -984,13 +1398,95 @@ fn declaration_of(
             let (target, consumed) = type_expression_with_following(body, following)?;
             Ok((
                 TypeDeclaration::Alias {
+                    visibility: Visibility::Public,
                     name: name.to_owned(),
+                    generics: Vec::new(),
                     target,
                 },
                 consumed,
             ))
         }
     }
+}
+
+fn declaration_metadata(
+    values: &[Portion],
+) -> Result<(Visibility, Vec<GenericParameter>, Vec<Portion>), FileFault> {
+    let mut visibility = Visibility::Public;
+    let mut generics = Vec::new();
+    let mut remaining = Vec::new();
+    for value in values {
+        if let Some(body) = headed(value, "Visibility", Separator::Period) {
+            visibility = visibility_of(body)?;
+        } else if let Some(body) = headed(value, "Generics", Separator::Period) {
+            let Some((StructuralEnclosure::Angled, values)) = structural(body) else {
+                return Err(fault(value, FileFaultReason::Declaration));
+            };
+            generics = generic_parameters(values)?;
+        } else {
+            remaining.push(value.clone());
+        }
+    }
+    Ok((visibility, generics, remaining))
+}
+
+fn visibility_of(portion: &Portion) -> Result<Visibility, FileFault> {
+    match bare(portion)? {
+        "Public" => Ok(Visibility::Public),
+        "Crate" => Ok(Visibility::Crate),
+        "Private" => Ok(Visibility::Private),
+        _ => Err(fault(portion, FileFaultReason::Declaration)),
+    }
+}
+
+fn generic_parameters(portions: &[Portion]) -> Result<Vec<GenericParameter>, FileFault> {
+    portions
+        .iter()
+        .map(|portion| {
+            if let Ok(name) = bare(portion) {
+                return Ok(GenericParameter {
+                    name: name.to_owned(),
+                    default: None,
+                    bounds: Vec::new(),
+                });
+            }
+            let (name, body) =
+                any_headed(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+            let (default, bounds) = match structural(body) {
+                Some((StructuralEnclosure::Bracketed, bounds)) => (
+                    None,
+                    bounds
+                        .iter()
+                        .map(bare)
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                ),
+                _ => (Some(type_expression(body)?), Vec::new()),
+            };
+            Ok(GenericParameter {
+                name: name.to_owned(),
+                default,
+                bounds,
+            })
+        })
+        .collect()
+}
+
+fn tuple_field(portion: &Portion) -> Result<(Visibility, TypeExpression), FileFault> {
+    if let Some((name, body)) = any_headed(portion)
+        && matches!(name, "Public" | "Crate" | "Private")
+    {
+        let visibility = match name {
+            "Public" => Visibility::Public,
+            "Crate" => Visibility::Crate,
+            "Private" => Visibility::Private,
+            _ => unreachable!(),
+        };
+        return Ok((visibility, type_expression(body)?));
+    }
+    Ok((Visibility::Private, type_expression(portion)?))
 }
 
 fn fields(portions: &[Portion]) -> Result<Vec<Field>, FileFault> {
@@ -1000,6 +1496,7 @@ fn fields(portions: &[Portion]) -> Result<Vec<Field>, FileFault> {
         let portion = &portions[index];
         if let Ok(name) = bare(portion) {
             fields.push(Field {
+                visibility: Visibility::Public,
                 name: name.to_owned(),
                 ty: TypeExpression::Reference(name.to_owned()),
             });
@@ -1008,8 +1505,27 @@ fn fields(portions: &[Portion]) -> Result<Vec<Field>, FileFault> {
         }
         let (name, body) =
             any_headed(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+        if matches!(name, "Public" | "Crate" | "Private") {
+            let visibility = match name {
+                "Public" => Visibility::Public,
+                "Crate" => Visibility::Crate,
+                "Private" => Visibility::Private,
+                _ => unreachable!(),
+            };
+            let (name, body) =
+                any_headed(body).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+            let (ty, consumed) = field_type_expression(body, portions.get(index + 1))?;
+            fields.push(Field {
+                visibility,
+                name: name.to_owned(),
+                ty,
+            });
+            index += 1 + usize::from(consumed);
+            continue;
+        }
         let (ty, consumed) = field_type_expression(body, portions.get(index + 1))?;
         fields.push(Field {
+            visibility: Visibility::Public,
             name: name.to_owned(),
             ty,
         });
@@ -1024,6 +1540,19 @@ fn variants(portions: &[Portion]) -> Result<Vec<Variant>, FileFault> {
     while index < portions.len() {
         let portion = &portions[index];
         let (variant, consumed) = match any_headed(portion) {
+            Some((name, body)) if headed(body, "Tuple", Separator::Period).is_some() => {
+                let body = headed(body, "Tuple", Separator::Period).expect("checked Tuple head");
+                let Some((StructuralEnclosure::Bracketed, values)) = structural(body) else {
+                    return Err(fault(portion, FileFaultReason::Declaration));
+                };
+                (
+                    Variant {
+                        name: name.to_owned(),
+                        payload: VariantPayload::Tuple(type_expressions(values)?),
+                    },
+                    false,
+                )
+            }
             Some((name, body)) => match structural(body) {
                 Some((StructuralEnclosure::Braced, members)) => (
                     Variant {
@@ -1082,6 +1611,9 @@ fn variants(portions: &[Portion]) -> Result<Vec<Variant>, FileFault> {
                         },
                         consumed,
                     ),
+                    TypeExpression::Unit => {
+                        return Err(fault(portion, FileFaultReason::Declaration));
+                    }
                 }
             }
         };
@@ -1097,6 +1629,22 @@ fn kinds_of(portion: &Portion) -> Result<Vec<KindDeclaration>, FileFault> {
         .map(|portion| {
             let (name, body) =
                 any_headed(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+            if let Some((StructuralEnclosure::Braced, values)) = structural(body)
+                && values.iter().any(|value| {
+                    any_headed(value).is_some_and(|(label, _)| {
+                        [
+                            "Visibility",
+                            "Generics",
+                            "Supertraits",
+                            "Associated",
+                            "Methods",
+                        ]
+                        .contains(&label)
+                    })
+                })
+            {
+                return declarative_kind(name, values);
+            }
             let (constraints, values) = match structural(body) {
                 Some((StructuralEnclosure::Angled, identity)) => {
                     let mut constraints = Vec::new();
@@ -1128,9 +1676,156 @@ fn kinds_of(portion: &Portion) -> Result<Vec<KindDeclaration>, FileFault> {
                 }
             }
             Ok(KindDeclaration {
+                visibility: Visibility::Public,
                 name: name.to_owned(),
+                generics: Vec::new(),
                 constraints,
+                associated: Vec::new(),
+                methods: Vec::new(),
                 capabilities,
+            })
+        })
+        .collect()
+}
+
+fn declarative_kind(name: &str, values: &[Portion]) -> Result<KindDeclaration, FileFault> {
+    let mut visibility = Visibility::Public;
+    let mut generics = Vec::new();
+    let mut constraints = Vec::new();
+    let mut associated = Vec::new();
+    let mut methods = Vec::new();
+    for value in values {
+        let Some((label, body)) = any_headed(value) else {
+            return Err(fault(value, FileFaultReason::Declaration));
+        };
+        match label {
+            "Visibility" => visibility = visibility_of(body)?,
+            "Generics" => {
+                let Some((StructuralEnclosure::Angled, values)) = structural(body) else {
+                    return Err(fault(value, FileFaultReason::Declaration));
+                };
+                generics = generic_parameters(values)?;
+            }
+            "Supertraits" => {
+                constraints = bracket_contents(body)?
+                    .iter()
+                    .map(bare)
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect()
+            }
+            "Associated" => {
+                associated = associated_types(bracket_contents(body)?)?;
+            }
+            "Methods" => {
+                methods = methods_of(bracket_contents(body)?)?;
+            }
+            _ => return Err(fault(value, FileFaultReason::Declaration)),
+        }
+    }
+    Ok(KindDeclaration {
+        visibility,
+        name: name.to_owned(),
+        generics,
+        constraints,
+        associated,
+        methods,
+        capabilities: Vec::new(),
+    })
+}
+
+fn associated_types(portions: &[Portion]) -> Result<Vec<AssociatedType>, FileFault> {
+    portions
+        .iter()
+        .map(|portion| {
+            if let Ok(name) = bare(portion) {
+                return Ok(AssociatedType {
+                    name: name.to_owned(),
+                    bounds: Vec::new(),
+                });
+            }
+            let (name, body) =
+                any_headed(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+            let bounds = match structural(body) {
+                Some((StructuralEnclosure::Bracketed, values)) => values
+                    .iter()
+                    .map(bare)
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                _ => vec![bare(body)?.to_owned()],
+            };
+            Ok(AssociatedType {
+                name: name.to_owned(),
+                bounds,
+            })
+        })
+        .collect()
+}
+
+fn methods_of(portions: &[Portion]) -> Result<Vec<Method>, FileFault> {
+    portions
+        .iter()
+        .map(|portion| {
+            let (name, body) =
+                any_headed(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+            let Some((StructuralEnclosure::Braced, values)) = structural(body) else {
+                return Err(fault(portion, FileFaultReason::Declaration));
+            };
+            let mut generics = Vec::new();
+            let mut receiver = Receiver::None;
+            let mut inputs = Vec::new();
+            let mut output = None;
+            let mut where_bounds = Vec::new();
+            let mut has_default = false;
+            let mut index = 0;
+            while index < values.len() {
+                let value = &values[index];
+                let (label, body) =
+                    any_headed(value).ok_or_else(|| fault(value, FileFaultReason::Declaration))?;
+                match label {
+                    "Generics" => {
+                        let Some((StructuralEnclosure::Angled, values)) = structural(body) else {
+                            return Err(fault(value, FileFaultReason::Declaration));
+                        };
+                        generics = generic_parameters(values)?;
+                    }
+                    "Receiver" => {
+                        receiver = match bare(body)? {
+                            "Shared" => Receiver::Shared,
+                            "Mutable" => Receiver::Mutable,
+                            "Owned" => Receiver::Owned,
+                            "None" => Receiver::None,
+                            _ => return Err(fault(value, FileFaultReason::Declaration)),
+                        }
+                    }
+                    "Inputs" => inputs = fields(bracket_contents(body)?)?,
+                    "Output" => {
+                        let (ty, consumed) = field_type_expression(body, values.get(index + 1))?;
+                        output = Some(ty);
+                        index += usize::from(consumed);
+                    }
+                    "Where" => {
+                        where_bounds = associated_types(bracket_contents(body)?)?
+                            .into_iter()
+                            .map(|associated| (associated.name, associated.bounds))
+                            .collect()
+                    }
+                    "Default" => has_default = bare(body)? == "Yes",
+                    _ => return Err(fault(value, FileFaultReason::Declaration)),
+                }
+                index += 1;
+            }
+            Ok(Method {
+                name: name.to_owned(),
+                generics,
+                receiver,
+                inputs,
+                output: output.ok_or_else(|| fault(portion, FileFaultReason::Declaration))?,
+                where_bounds,
+                has_default,
             })
         })
         .collect()
@@ -1197,6 +1892,9 @@ fn type_expression(portion: &Portion) -> Result<TypeExpression, FileFault> {
         });
     }
     if let Ok(name) = bare(portion) {
+        if name == "Unit" {
+            return Ok(TypeExpression::Unit);
+        }
         return Ok(TypeExpression::Reference(name.to_owned()));
     }
     if let Some((base, Separator::Period, member)) = headed_full(portion) {
@@ -1225,10 +1923,7 @@ fn type_expression_with_following(
     Ok((
         TypeExpression::Application {
             constructor: constructor.to_owned(),
-            arguments: arguments
-                .iter()
-                .map(type_expression)
-                .collect::<Result<_, _>>()?,
+            arguments: type_expressions(arguments)?,
         },
         true,
     ))
@@ -1262,8 +1957,11 @@ fn type_expressions(portions: &[Portion]) -> Result<Vec<TypeExpression>, FileFau
     let mut expressions = Vec::new();
     let mut index = 0;
     while index < portions.len() {
-        let (expression, consumed) =
-            type_expression_with_following(&portions[index], portions.get(index + 1))?;
+        let (expression, consumed) = if any_headed(&portions[index]).is_some() {
+            (type_expression(&portions[index])?, false)
+        } else {
+            type_expression_with_following(&portions[index], portions.get(index + 1))?
+        };
         expressions.push(expression);
         index += 1 + usize::from(consumed);
     }

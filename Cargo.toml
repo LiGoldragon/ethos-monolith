@@ -16,8 +16,8 @@ name = "ethos_zero"
 path = "src/lib.rs"
 
 [dependencies]
-protos = { git = "https://github.com/LiGoldragon/protos", rev = "7e2bba7d48c62de53b3f93cb6053a490bbd6cf3b" }
-datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "ffb0ffa316285ab56e50fbc035cb8c14380f4665" }
+protos = { git = "https://github.com/LiGoldragon/protos", rev = "2f605fd689679a24e4ef83a643a2cd066cb12186" }
+datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "4baeaac79de265bfeb019e8dcdf7124daa9ecac5" }
 quote = "1"
 proc-macro2 = "1"
 syn = { version = "3", features = ["full"] }
