@@ -2,20 +2,6 @@ use ethos_zero::{FileReader, Manifest, RustEmitter};
 use quote::ToTokens;
 use std::{fs, process::Command};
 
-fn pinned_path(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| match name {
-        "ETHOS_PROTOS_MAP" => "/git/github.com/LiGoldragon/protos/protos.ethos",
-        "ETHOS_DATOMIC_MAP" => "/git/github.com/LiGoldragon/datomic/datomic.ethos",
-        "ETHOS_PROTOS_RUST" => "/git/github.com/LiGoldragon/protos/src/lib.rs",
-        "ETHOS_DATOMIC_RUST" => "/git/github.com/LiGoldragon/datomic/src/lib.rs",
-        "ETHOS_PROTOS_CRATE" => "/git/github.com/LiGoldragon/protos",
-        "ETHOS_DATOMIC_CRATE" => "/git/github.com/LiGoldragon/datomic",
-        "ETHOS_SIGNAL_ORCHESTRATE_SOURCE" => "/git/github.com/LiGoldragon/signal-orchestrate/ethos/signal.ethos",
-        "ETHOS_META_SIGNAL_ORCHESTRATE_SOURCE" => "/git/github.com/LiGoldragon/meta-signal-orchestrate/ethos/signal.ethos",
-        _ => panic!("unknown pinned path {name}"),
-    }.into())
-}
-
 struct EmptyManifest;
 
 impl Manifest for EmptyManifest {
@@ -88,7 +74,7 @@ fn datomic_manifest_is_the_concrete_external_import_index() {
 fn source_linked_protos_and_datomic_maps_read_and_emit_through_the_portion_pivot() {
     let reader = FileReader::new(&EmptyManifest);
     for variable in ["ETHOS_PROTOS_MAP", "ETHOS_DATOMIC_MAP"] {
-        let path = pinned_path(variable);
+        let path = std::env::var(variable).expect("Nix supplies the pinned authored map path");
         let source = fs::read_to_string(path).expect("authored map");
         let file = reader.read(&source).expect("map embodiment");
         assert!(matches!(file, ethos_zero::File::Schema(_)));
@@ -926,4 +912,44 @@ fn interface_file_is_read_from_the_portion_pivot_and_emitted_as_rust_syntax() {
         .expect("read file");
     let rust = RustEmitter::new().emit(&file).expect("emit Rust");
     syn::parse_file(rust.as_ref()).expect("generated Rust parses");
+}
+
+#[test]
+fn wire_contract_emission_is_rkyv_native_and_has_no_generation_stub() {
+    let source = "Interface.{0 2 0} Channel.{Example 7 3} [] {[Submit.Submission] [Submitted.Result] [] [] [Name.String Submission.{Name} Result.{Name}]}";
+    let file = FileReader::new(&EmptyManifest)
+        .read(source)
+        .expect("wire map");
+    let emitted = RustEmitter::wire_contract()
+        .emit(&file)
+        .expect("wire emission");
+    let syntax = syn::parse_file(&emitted).expect("wire syntax");
+    assert!(emitted.contains("derive (Archive"));
+    assert!(emitted.contains("struct Name") && emitted.contains("String"));
+    assert!(emitted.contains("enum FrameBody"));
+    assert!(!emitted.contains("unimplemented"));
+    assert!(
+        syntax
+            .items
+            .iter()
+            .any(|item| matches!(item, syn::Item::Struct(item) if item.ident == "Frame"))
+    );
+    let directory =
+        std::env::temp_dir().join(format!("ethos-zero-wire-contract-{}", std::process::id()));
+    fs::create_dir_all(directory.join("src")).expect("wire fixture directory");
+    fs::write(directory.join("src/lib.rs"), emitted).expect("wire generated source");
+    fs::write(
+        directory.join("Cargo.toml"),
+        "[package]\nname = \"ethos-zero-wire-contract\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nrkyv = { version = \"0.8\", default-features = false, features = [\"std\", \"bytecheck\", \"little_endian\", \"pointer_width_32\", \"unaligned\"] }\nprotos = { git = \"https://github.com/LiGoldragon/protos\", rev = \"bfde3b878dd3de2991d7f605b59f57a13ef8f20b\" }\ndatomic = { git = \"https://github.com/LiGoldragon/datomic\", rev = \"b670c72d0c2cb94ad1e39b372271f6569d91e214\" }\n",
+    )
+    .expect("wire fixture manifest");
+    assert!(
+        Command::new("cargo")
+            .arg("check")
+            .current_dir(&directory)
+            .status()
+            .expect("wire fixture compile")
+            .success()
+    );
+    fs::remove_dir_all(directory).expect("wire fixture cleanup");
 }

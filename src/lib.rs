@@ -562,6 +562,11 @@ fn wire_interface_tokens(interface: &InterfaceFile) -> Result<proc_macro2::Token
         .iter()
         .map(wire_declaration_tokens)
         .collect::<Result<Vec<_>, _>>()?;
+    let anatomies = interface
+        .types
+        .iter()
+        .map(wire_datomic_tokens)
+        .collect::<Result<Vec<_>, _>>()?;
     let request = wire_root_tokens("Request", &interface.input)?;
     let reply = wire_root_tokens("Reply", &interface.output)?;
     let refusal = wire_root_tokens("Refusal", &interface.refusal)?;
@@ -586,10 +591,43 @@ fn wire_interface_tokens(interface: &InterfaceFile) -> Result<proc_macro2::Token
         pub const CHANNEL_CONTRACT_ID: ChannelContractId = ChannelContractId(#contract);
         pub const CHANNEL_WIRE_REVISION: ChannelWireRevision = ChannelWireRevision(#wire);
         pub const PROTOCOL_VERSION: ProtocolVersion = INTERFACE_VERSION;
-        #( #types )* #request #reply #refusal #stream
+        #( #types )* #( #anatomies )* #request #reply #refusal #stream
         #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] pub enum FrameBody { Request(Request), Reply(Reply) }
         #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] pub struct Frame { pub channel_contract_id: ChannelContractId, pub channel_wire_revision: ChannelWireRevision, pub protocol_version: ProtocolVersion, pub body: FrameBody }
     })
+}
+
+fn wire_datomic_tokens(
+    declaration: &TypeDeclaration,
+) -> Result<proc_macro2::TokenStream, FileFault> {
+    match declaration {
+        TypeDeclaration::Alias { name, target, .. } => {
+            let name = identifier(name)?;
+            match target {
+                TypeExpression::Reference(value) if value == "String" => Ok(quote! {
+                    impl datomic::Datomic for #name {
+                        fn embody(portion: &protos::Portion) -> std::result::Result<Self, datomic::Fault> {
+                            Ok(Self(<datomic::DatomicString as datomic::Datomic>::embody(portion)?.as_ref().to_owned()))
+                        }
+                        fn portion(&self) -> protos::Portion {
+                            datomic::Datomic::portion(&datomic::DatomicString::try_from(self.0.clone()).expect("wire strings were embodied"))
+                        }
+                    }
+                }),
+                TypeExpression::Reference(value) if value == "Integer" => Ok(quote! {
+                    impl datomic::Datomic for #name {
+                        fn embody(portion: &protos::Portion) -> std::result::Result<Self, datomic::Fault> { Ok(Self(<i64 as datomic::Datomic>::embody(portion)?)) }
+                        fn portion(&self) -> protos::Portion { datomic::Datomic::portion(&self.0) }
+                    }
+                }),
+                _ => Ok(proc_macro2::TokenStream::new()),
+            }
+        }
+        TypeDeclaration::Struct { .. } | TypeDeclaration::Enum { .. } => {
+            datomic_anatomy_tokens(declaration)
+        }
+        TypeDeclaration::TupleStruct { .. } => Ok(proc_macro2::TokenStream::new()),
+    }
 }
 
 fn wire_declaration_tokens(
@@ -635,6 +673,9 @@ fn wire_root_tokens(
     name: &str,
     declarations: &[SectionReference],
 ) -> Result<proc_macro2::TokenStream, FileFault> {
+    if declarations.is_empty() {
+        return Ok(proc_macro2::TokenStream::new());
+    }
     let name = identifier(name)?;
     let variants = declarations
         .iter()
@@ -728,7 +769,7 @@ fn datomic_anatomy_tokens(
                 })
                 .collect::<Result<Vec<_>, FileFault>>()?;
             quote! {
-                fn embody(portion: &protos::Portion) -> Result<Self, datomic::Fault> {
+                fn embody(portion: &protos::Portion) -> std::result::Result<Self, datomic::Fault> {
                     let Some(parts) = datomic::PortionViewing::structural(
                         portion,
                         protos::StructuralEnclosure::Braced,
@@ -863,7 +904,7 @@ fn enum_anatomy_tokens(
         })
         .collect::<Result<Vec<_>, FileFault>>()?;
     Ok(quote! {
-        fn embody(portion: &protos::Portion) -> Result<Self, datomic::Fault> {
+        fn embody(portion: &protos::Portion) -> std::result::Result<Self, datomic::Fault> {
             #( #embodiments )*
             Err(datomic::PortionViewing::fault(portion, datomic::FaultProblem::Shape))
         }
