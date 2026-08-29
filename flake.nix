@@ -50,6 +50,7 @@
         commonArguments = {
           inherit src;
           strictDeps = true;
+          cargoExtraArgs = "--locked --workspace";
           ETHOS_PROTOS_MAP = "${protos-map}/protos.ethos";
           ETHOS_DATOMIC_MAP = "${datomic-map}/datomic.ethos";
           ETHOS_PROTOS_RUST = "${protos-map}/src/lib.rs";

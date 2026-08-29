@@ -27,6 +27,20 @@ thiserror = "2"
 proptest = "1.6"
 rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 
+[workspace]
+members = ["nexus", "cli", "meta-cli"]
+resolver = "3"
+
+[workspace.package]
+version = "0.6.0"
+edition = "2024"
+rust-version = "1.89"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused = { level = "warn", priority = -1 }
+dead_code = "warn"
+
 [[test]]
 name = "file_contract"
 path = "tests/file_contract.rs"

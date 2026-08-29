@@ -1,5 +1,14 @@
 # Upgrades
 
+## 0.6.0 — Ethos-zero Nexus runtime
+
+Ethos-zero is now shipped as a Nexus workspace: `ethos-zero-nexus` owns the
+durable Sema state and serves generated ordinary and meta WireContract frames;
+`ethos-zero` and `ethos-zero-meta` are the corresponding one-Datom CLIs.  The
+runtime persists its default configuration on first open, uses the XDG state
+and runtime locations, and rejects source paths that escape their configured
+source root with the typed `InvalidRelativePath` refusal.
+
 ## Unreleased
 
 WireContract 0.5.0 makes every generated interface root (request, reply,
