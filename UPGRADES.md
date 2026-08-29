@@ -1,5 +1,20 @@
 # Upgrades
 
+## 0.7.1 — Nexus socket and containment completion
+
+Subscription connections now retain a private runtime session for their full
+Unix-socket lifetime: Subscribe, event delivery, and Unsubscribe occur on the
+same connection, foreign clients cannot remove another client's subscription,
+and disconnect removes all of that connection's registrations. On reopening a
+pre-0.7 store, Nexus atomically restores both durable socket paths to the
+currently bound XDG-derived paths while preserving the source manifest.
+
+Generation now traverses source roots through directory descriptors with
+`O_NOFOLLOW`, creates destination parents through those descriptors, and
+publishes a synced temporary artifact with `renameat`. Existing and
+prospective symlink paths are rejected with `InvalidRelativePath`; deploy the
+0.7.1 runtime before relying on generation in a shared source root.
+
 ## 0.7.0 — audited Nexus runtime boundary correction
 
 The Nexus and both CLIs now share the same XDG fallback socket directory and

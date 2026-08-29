@@ -157,7 +157,23 @@ impl NexusStore {
                 ))?;
                 defaults
             }
-            [stored] => stored.configuration.clone(),
+            [stored] => {
+                let mut configuration = stored.configuration.clone();
+                let socket_paths_changed = configuration.ordinary_socket_path
+                    != defaults.ordinary_socket_path
+                    || configuration.meta_socket_path != defaults.meta_socket_path;
+                if socket_paths_changed {
+                    configuration.ordinary_socket_path = defaults.ordinary_socket_path.clone();
+                    configuration.meta_socket_path = defaults.meta_socket_path.clone();
+                    engine.commit_atomic(engine.begin_atomic_commit().mutate(
+                        configuration_table,
+                        StoredConfiguration {
+                            configuration: configuration.clone(),
+                        },
+                    ))?;
+                }
+                configuration
+            }
             rows => return Err(RuntimeError::ConfigurationInvariant(rows.len())),
         };
         Ok(Self {
@@ -292,16 +308,18 @@ impl NexusStore {
                 ordinary_signal::GenerationRefusal::UnknownSource(request.file.source_name),
             ));
         };
-        let Some(source_path) = contained_existing(root, &relative_path) else {
-            return Ok(ordinary_signal::Reply::GenerationRejected(
-                ordinary_signal::GenerationRefusal::InvalidRelativePath(request.file.relative_path),
-            ));
-        };
-        let source = match fs::read_to_string(&source_path) {
+        let source = match read_contained(root, &relative_path) {
             Ok(source) => source,
-            Err(_) => {
+            Err(ContainedRead::Absent) => {
                 return Ok(ordinary_signal::Reply::GenerationRejected(
                     ordinary_signal::GenerationRefusal::FileAbsent(request.file),
+                ));
+            }
+            Err(ContainedRead::Invalid) => {
+                return Ok(ordinary_signal::Reply::GenerationRejected(
+                    ordinary_signal::GenerationRefusal::InvalidRelativePath(
+                        request.file.relative_path,
+                    ),
                 ));
             }
         };
@@ -327,16 +345,15 @@ impl NexusStore {
             }
         };
         let artifact_path = relative_path.with_extension("rs");
-        let Some(destination) = contained_destination(root, &artifact_path) else {
+        if write_contained(root, &artifact_path, generated.as_bytes()).is_err() {
             return Ok(ordinary_signal::Reply::GenerationRejected(
                 ordinary_signal::GenerationRefusal::InvalidRelativePath(request.file.relative_path),
             ));
-        };
+        }
         // The source artifact reaches the filesystem before its durable state
         // transition. A process crash can therefore be repaired by a later
         // Generate; it can never claim a stored generation whose artifact was
         // not first written.
-        fs::write(&destination, generated)?;
         let artifact: ordinary_signal::ArtifactPath =
             artifact_path.display().to_string().try_into()?;
         let generation = ordinary_signal::Generation {
@@ -400,43 +417,128 @@ fn contained_relative(value: &str) -> Option<PathBuf> {
         .then(|| path.to_path_buf())
 }
 
-fn contained_existing(root: &Path, relative: &Path) -> Option<PathBuf> {
-    let root = fs::canonicalize(root).ok()?;
-    let candidate = fs::canonicalize(root.join(relative)).ok()?;
-    candidate.starts_with(&root).then_some(candidate)
+enum ContainedRead {
+    Absent,
+    Invalid,
 }
 
-fn contained_destination(root: &Path, relative: &Path) -> Option<PathBuf> {
-    let root = fs::canonicalize(root).ok()?;
-    let mut destination = root.clone();
-    let mut components = relative.components().peekable();
-    while let Some(component) = components.next() {
-        let Component::Normal(name) = component else {
-            return None;
+// Every path component is opened relative to an already-open directory
+// descriptor with `O_NOFOLLOW`.  The names can be swapped concurrently, but
+// they cannot redirect either a read or the temporary-file/rename write out of
+// the source root capability.
+fn open_root(root: &Path) -> Result<std::os::fd::OwnedFd, ()> {
+    rustix::fs::open(
+        root,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|_| ())
+}
+
+fn normal_components(relative: &Path) -> Option<Vec<&std::ffi::OsStr>> {
+    relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect()
+}
+
+fn open_parent<'a>(
+    root: std::os::fd::OwnedFd,
+    components: &'a [&'a std::ffi::OsStr],
+    create: bool,
+) -> Result<(std::os::fd::OwnedFd, &'a std::ffi::OsStr), ()> {
+    let (leaf, parents) = components.split_last().ok_or(())?;
+    let mut directory = root;
+    for parent in parents {
+        let flags = rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC;
+        let next = match rustix::fs::openat(&directory, *parent, flags, rustix::fs::Mode::empty()) {
+            Ok(next) => next,
+            Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {
+                rustix::fs::mkdirat(&directory, *parent, rustix::fs::Mode::RWXU).map_err(|_| ())?;
+                rustix::fs::openat(&directory, *parent, flags, rustix::fs::Mode::empty())
+                    .map_err(|_| ())?
+            }
+            Err(_) => return Err(()),
         };
-        let next = destination.join(name);
-        if components.peek().is_none() {
-            if next.exists() {
-                let canonical = fs::canonicalize(&next).ok()?;
-                return canonical.starts_with(&root).then_some(canonical);
-            }
-            return Some(next);
-        }
-        match fs::symlink_metadata(&next) {
-            Ok(metadata) if metadata.file_type().is_symlink() => return None,
-            Ok(metadata) if metadata.is_dir() => destination = fs::canonicalize(next).ok()?,
-            Ok(_) => return None,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::create_dir(&next).ok()?;
-                destination = next;
-            }
-            Err(_) => return None,
-        }
-        if !destination.starts_with(&root) {
-            return None;
-        }
+        directory = next;
     }
-    None
+    Ok((directory, *leaf))
+}
+
+fn read_contained(root: &Path, relative: &Path) -> Result<String, ContainedRead> {
+    let root = open_root(root).map_err(|_| ContainedRead::Invalid)?;
+    let components = normal_components(relative).ok_or(ContainedRead::Invalid)?;
+    let (parent, leaf) =
+        open_parent(root, &components, false).map_err(|_| ContainedRead::Invalid)?;
+    let file = rustix::fs::openat(
+        &parent,
+        leaf,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            ContainedRead::Absent
+        } else {
+            ContainedRead::Invalid
+        }
+    })?;
+    let mut source = String::new();
+    std::fs::File::from(file)
+        .read_to_string(&mut source)
+        .map_err(|_| ContainedRead::Invalid)?;
+    Ok(source)
+}
+
+fn write_contained(root: &Path, relative: &Path, contents: &[u8]) -> Result<(), ()> {
+    let root = open_root(root)?;
+    let components = normal_components(relative).ok_or(())?;
+    let (parent, leaf) = open_parent(root, &components, true)?;
+    // A preexisting link is rejected as a typed containment failure.  If an
+    // attacker swaps the leaf after this check, `renameat` replaces that name
+    // rather than following it, so the atomic publication remains in `parent`.
+    match rustix::fs::openat(
+        &parent,
+        leaf,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(existing) => drop(existing),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(()),
+    }
+    let temporary = format!(
+        ".ethos-zero-{}.tmp",
+        NEXT_SESSION.fetch_add(1, Ordering::Relaxed)
+    );
+    let flags = rustix::fs::OFlags::WRONLY
+        | rustix::fs::OFlags::CREATE
+        | rustix::fs::OFlags::EXCL
+        | rustix::fs::OFlags::NOFOLLOW
+        | rustix::fs::OFlags::CLOEXEC;
+    let temporary_file = rustix::fs::openat(
+        &parent,
+        temporary.as_str(),
+        flags,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .map_err(|_| ())?;
+    let mut temporary_file = std::fs::File::from(temporary_file);
+    if temporary_file.write_all(contents).is_err() || temporary_file.sync_all().is_err() {
+        let _ = rustix::fs::unlinkat(&parent, temporary.as_str(), rustix::fs::AtFlags::empty());
+        return Err(());
+    }
+    drop(temporary_file);
+    rustix::fs::renameat(&parent, temporary.as_str(), &parent, leaf).map_err(|_| ())
 }
 
 fn syntax_fault(reason: &str) -> Result<ordinary_signal::SyntaxFault, RuntimeError> {
@@ -467,6 +569,16 @@ enum Command {
         events: Option<mpsc::Sender<meta::Stream>>,
         reply: mpsc::Sender<Result<meta::Reply, RuntimeError>>,
     },
+    Disconnect {
+        tier: SubscriptionTier,
+        session: u64,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum SubscriptionTier {
+    Ordinary,
+    Meta,
 }
 
 enum OrdinaryAnswer {
@@ -651,20 +763,20 @@ impl Actor {
                         };
                         let _ = reply.send(result);
                     }
+                    Command::Disconnect { tier, session } => match tier {
+                        SubscriptionTier::Ordinary => {
+                            ordinary_subscribers.retain(|(owner, _, _)| *owner != session);
+                        }
+                        SubscriptionTier::Meta => {
+                            meta_subscribers.retain(|(owner, _, _)| *owner != session);
+                        }
+                    },
                 }
             }
         });
         Ok(Self { sender })
     }
 
-    #[cfg(test)]
-    fn ordinary(
-        &self,
-        request: ordinary_signal::Request,
-        events: Option<mpsc::Sender<ordinary_signal::Stream>>,
-    ) -> Result<OrdinaryAnswer, RuntimeError> {
-        self.ordinary_session(0, request, events)
-    }
     fn ordinary_session(
         &self,
         session: u64,
@@ -682,14 +794,6 @@ impl Actor {
             .map_err(|_| RuntimeError::ActorClosed)?;
         receive.recv().map_err(|_| RuntimeError::ActorClosed)?
     }
-    #[cfg(test)]
-    fn meta(
-        &self,
-        request: meta::Request,
-        events: Option<mpsc::Sender<meta::Stream>>,
-    ) -> Result<meta::Reply, RuntimeError> {
-        self.meta_session(0, request, events)
-    }
     fn meta_session(
         &self,
         session: u64,
@@ -706,6 +810,10 @@ impl Actor {
             })
             .map_err(|_| RuntimeError::ActorClosed)?;
         receive.recv().map_err(|_| RuntimeError::ActorClosed)?
+    }
+
+    fn disconnect(&self, tier: SubscriptionTier, session: u64) {
+        let _ = self.sender.send(Command::Disconnect { tier, session });
     }
 }
 
@@ -760,77 +868,127 @@ fn bind(path: &Path) -> Result<UnixListener, RuntimeError> {
 
 fn ordinary_socket(mut stream: UnixStream, actor: Actor) {
     let session = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
-    let request = read_frame(&mut stream)
-        .ok()
-        .and_then(|bytes| ordinary_signal::Frame::decode_length_prefixed(&bytes).ok())
-        .and_then(|frame| match frame.body {
-            ordinary_signal::FrameBody::Request(value) => Some(value),
-            _ => None,
-        });
-    let Some(request) = request else {
+    let Ok(mut reader) = stream.try_clone() else {
         return;
     };
-    let subscribe = matches!(request, ordinary_signal::Request::Subscribe(_));
-    let (events, receiver) = mpsc::channel();
-    let reply = actor.ordinary_session(session, request, subscribe.then_some(events));
-    let body = match reply {
-        Ok(OrdinaryAnswer::Reply(value)) => ordinary_signal::FrameBody::Reply(value),
-        Ok(OrdinaryAnswer::Refusal(value)) => ordinary_signal::FrameBody::Refusal(value),
-        Err(_) => return,
-    };
-    let Ok(bytes) = ordinary_frame(body).encode_length_prefixed() else {
-        return;
-    };
-    if stream.write_all(&bytes).is_err() {
-        return;
-    }
-    if subscribe {
-        for event in receiver {
-            let Ok(bytes) =
-                ordinary_frame(ordinary_signal::FrameBody::Event(event)).encode_length_prefixed()
+    let (outbound, receiver) = mpsc::channel::<ordinary_signal::FrameBody>();
+    let reader_actor = actor.clone();
+    thread::spawn(move || {
+        let mut subscribed = false;
+        while let Ok(bytes) = read_frame(&mut reader) {
+            let Some(request) = ordinary_signal::Frame::decode_length_prefixed(&bytes)
+                .ok()
+                .and_then(|frame| match frame.body {
+                    ordinary_signal::FrameBody::Request(value) => Some(value),
+                    _ => None,
+                })
             else {
                 break;
             };
-            if stream.write_all(&bytes).is_err() {
+            let is_subscribe = matches!(request, ordinary_signal::Request::Subscribe(_));
+            let is_unsubscribe = matches!(request, ordinary_signal::Request::Unsubscribe(_));
+            let events = if is_subscribe {
+                let (events, event_receiver) = mpsc::channel();
+                let outbound = outbound.clone();
+                thread::spawn(move || {
+                    for event in event_receiver {
+                        if outbound
+                            .send(ordinary_signal::FrameBody::Event(event))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+                Some(events)
+            } else {
+                None
+            };
+            let body = match reader_actor.ordinary_session(session, request, events) {
+                Ok(OrdinaryAnswer::Reply(value)) => ordinary_signal::FrameBody::Reply(value),
+                Ok(OrdinaryAnswer::Refusal(value)) => ordinary_signal::FrameBody::Refusal(value),
+                Err(_) => break,
+            };
+            if outbound.send(body).is_err() {
+                break;
+            }
+            if is_subscribe {
+                subscribed = true;
+            }
+            if is_unsubscribe || !subscribed {
                 break;
             }
         }
+        reader_actor.disconnect(SubscriptionTier::Ordinary, session);
+    });
+    for body in receiver {
+        let Ok(bytes) = ordinary_frame(body).encode_length_prefixed() else {
+            break;
+        };
+        if stream.write_all(&bytes).is_err() {
+            break;
+        }
     }
 }
+
 fn meta_socket(mut stream: UnixStream, actor: Actor) {
     let session = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
-    let request = read_frame(&mut stream)
-        .ok()
-        .and_then(|bytes| meta::Frame::decode_length_prefixed(&bytes).ok())
-        .and_then(|frame| match frame.body {
-            meta::FrameBody::Request(value) => Some(value),
-            _ => None,
-        });
-    let Some(request) = request else {
+    let Ok(mut reader) = stream.try_clone() else {
         return;
     };
-    let subscribe = matches!(request, meta::Request::Subscribe(_));
-    let (events, receiver) = mpsc::channel();
-    let reply = actor.meta_session(session, request, subscribe.then_some(events));
-    let body = match reply {
-        Ok(value) => meta::FrameBody::Reply(value),
-        Err(_) => return,
-    };
-    let Ok(bytes) = meta_frame(body).encode_length_prefixed() else {
-        return;
-    };
-    if stream.write_all(&bytes).is_err() {
-        return;
-    }
-    if subscribe {
-        for event in receiver {
-            let Ok(bytes) = meta_frame(meta::FrameBody::Event(event)).encode_length_prefixed()
+    let (outbound, receiver) = mpsc::channel::<meta::FrameBody>();
+    let reader_actor = actor.clone();
+    thread::spawn(move || {
+        let mut subscribed = false;
+        while let Ok(bytes) = read_frame(&mut reader) {
+            let Some(request) =
+                meta::Frame::decode_length_prefixed(&bytes)
+                    .ok()
+                    .and_then(|frame| match frame.body {
+                        meta::FrameBody::Request(value) => Some(value),
+                        _ => None,
+                    })
             else {
                 break;
             };
-            if stream.write_all(&bytes).is_err() {
+            let is_subscribe = matches!(request, meta::Request::Subscribe(_));
+            let is_unsubscribe = matches!(request, meta::Request::Unsubscribe(_));
+            let events = if is_subscribe {
+                let (events, event_receiver) = mpsc::channel();
+                let outbound = outbound.clone();
+                thread::spawn(move || {
+                    for event in event_receiver {
+                        if outbound.send(meta::FrameBody::Event(event)).is_err() {
+                            break;
+                        }
+                    }
+                });
+                Some(events)
+            } else {
+                None
+            };
+            let body = match reader_actor.meta_session(session, request, events) {
+                Ok(value) => meta::FrameBody::Reply(value),
+                Err(_) => break,
+            };
+            if outbound.send(body).is_err() {
                 break;
             }
+            if is_subscribe {
+                subscribed = true;
+            }
+            if is_unsubscribe || !subscribed {
+                break;
+            }
+        }
+        reader_actor.disconnect(SubscriptionTier::Meta, session);
+    });
+    for body in receiver {
+        let Ok(bytes) = meta_frame(body).encode_length_prefixed() else {
+            break;
+        };
+        if stream.write_all(&bytes).is_err() {
+            break;
         }
     }
 }
@@ -898,6 +1056,70 @@ mod tests {
         ).expect("interface fixture");
     }
 
+    fn ordinary_server(
+        listener: UnixListener,
+        actor: Actor,
+        clients: usize,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let mut workers = Vec::new();
+            for _ in 0..clients {
+                let (stream, _) = listener.accept().expect("ordinary client");
+                let actor = actor.clone();
+                workers.push(thread::spawn(move || ordinary_socket(stream, actor)));
+            }
+            for worker in workers {
+                worker.join().expect("ordinary worker");
+            }
+        })
+    }
+
+    fn meta_server(listener: UnixListener, actor: Actor, clients: usize) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let mut workers = Vec::new();
+            for _ in 0..clients {
+                let (stream, _) = listener.accept().expect("meta client");
+                let actor = actor.clone();
+                workers.push(thread::spawn(move || meta_socket(stream, actor)));
+            }
+            for worker in workers {
+                worker.join().expect("meta worker");
+            }
+        })
+    }
+
+    fn send_ordinary(stream: &mut UnixStream, request: ordinary_signal::Request) {
+        stream
+            .write_all(
+                &ordinary_frame(ordinary_signal::FrameBody::Request(request))
+                    .encode_length_prefixed()
+                    .expect("ordinary request"),
+            )
+            .expect("ordinary write");
+    }
+
+    fn receive_ordinary(stream: &mut UnixStream) -> ordinary_signal::FrameBody {
+        ordinary_signal::Frame::decode_length_prefixed(&read_frame(stream).expect("ordinary frame"))
+            .expect("ordinary decode")
+            .body
+    }
+
+    fn send_meta(stream: &mut UnixStream, request: meta::Request) {
+        stream
+            .write_all(
+                &meta_frame(meta::FrameBody::Request(request))
+                    .encode_length_prefixed()
+                    .expect("meta request"),
+            )
+            .expect("meta write");
+    }
+
+    fn receive_meta(stream: &mut UnixStream) -> meta::FrameBody {
+        meta::Frame::decode_length_prefixed(&read_frame(stream).expect("meta frame"))
+            .expect("meta decode")
+            .body
+    }
+
     #[test]
     fn configuration_reopens_from_the_singleton_family() {
         let directory = tempfile::tempdir().expect("temporary root");
@@ -925,6 +1147,46 @@ mod tests {
     }
 
     #[test]
+    fn reopening_a_legacy_socket_configuration_migrates_to_bound_paths() {
+        let directory = tempfile::tempdir().expect("temporary root");
+        let paths = paths(directory.path());
+        let defaults = paths.configuration().expect("defaults");
+        let store = NexusStore::open(&paths.state_path, defaults.clone()).expect("open");
+        let legacy = meta::Configuration {
+            ordinary_socket_path: "/legacy/ethos-zero-nexus/ethos-zero.sock"
+                .try_into()
+                .expect("ordinary"),
+            meta_socket_path: "/legacy/ethos-zero-nexus/meta-ethos-zero.sock"
+                .try_into()
+                .expect("meta"),
+            source_manifest_path: "/kept/sources.datom".try_into().expect("sources"),
+        };
+        store
+            .engine
+            .commit_atomic(store.engine.begin_atomic_commit().mutate(
+                store.configuration_table,
+                StoredConfiguration {
+                    configuration: legacy,
+                },
+            ))
+            .expect("legacy seed");
+        drop(store);
+        let reopened = NexusStore::open(&paths.state_path, defaults.clone()).expect("migrate");
+        assert_eq!(
+            reopened.configuration.ordinary_socket_path,
+            defaults.ordinary_socket_path
+        );
+        assert_eq!(
+            reopened.configuration.meta_socket_path,
+            defaults.meta_socket_path
+        );
+        assert_eq!(
+            reopened.configuration.source_manifest_path.as_ref(),
+            "/kept/sources.datom"
+        );
+    }
+
+    #[test]
     fn state_fallback_uses_one_nexus_directory_and_frames_are_bounded() {
         let paths = Paths::from_roots(PathBuf::from("/state"), PathBuf::from("/state"));
         assert_eq!(
@@ -938,7 +1200,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlinked_source_and_artifact_paths_are_typed_containment_refusals() {
-        use std::os::unix::fs::symlink;
+        use std::{
+            os::unix::fs::symlink,
+            sync::{Arc, atomic::AtomicBool},
+        };
         let directory = tempfile::tempdir().expect("temporary root");
         let paths = paths(directory.path());
         let source = directory.path().join("source");
@@ -955,7 +1220,8 @@ mod tests {
         let actor = Actor::start(&paths).expect("actor");
         assert!(matches!(
             actor
-                .ordinary(
+                .ordinary_session(
+                    4,
                     ordinary_signal::Request::Generate(request("escape.ethos")),
                     None
                 )
@@ -964,6 +1230,68 @@ mod tests {
                 ordinary_signal::GenerationRefusal::InvalidRelativePath(_)
             ))
         ));
+        write_interface(&source);
+        fs::write(outside.join("artifact.rs"), "outside remains untouched")
+            .expect("outside artifact");
+        symlink(outside.join("artifact.rs"), source.join("example.rs")).expect("artifact link");
+        assert!(matches!(
+            actor
+                .ordinary_session(
+                    5,
+                    ordinary_signal::Request::Generate(request("example.ethos")),
+                    None
+                )
+                .expect("artifact refusal"),
+            OrdinaryAnswer::Reply(ordinary_signal::Reply::GenerationRejected(
+                ordinary_signal::GenerationRefusal::InvalidRelativePath(_)
+            ))
+        ));
+        assert_eq!(
+            fs::read_to_string(outside.join("artifact.rs")).expect("outside artifact"),
+            "outside remains untouched"
+        );
+        symlink(&outside, source.join("prospective")).expect("prospective parent link");
+        assert!(
+            write_contained(
+                &source,
+                Path::new("prospective/example.rs"),
+                b"must remain contained"
+            )
+            .is_err()
+        );
+        assert!(
+            !outside.join("example.rs").exists(),
+            "a prospective parent link cannot receive a generated artifact"
+        );
+
+        let swapped_artifact = source.join("swapped.rs");
+        let outside_artifact = outside.join("swapped.rs");
+        fs::write(&outside_artifact, "outside remains untouched").expect("outside swap target");
+        let swapping = Arc::new(AtomicBool::new(true));
+        let swapping_thread = Arc::clone(&swapping);
+        let swapping_target = swapped_artifact.clone();
+        let swapping_outside = outside_artifact.clone();
+        let swapper = thread::spawn(move || {
+            while swapping_thread.load(Ordering::Relaxed) {
+                let _ = fs::remove_file(&swapping_target);
+                let _ = symlink(&swapping_outside, &swapping_target);
+                let _ = fs::remove_file(&swapping_target);
+                let _ = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&swapping_target);
+            }
+        });
+        for _ in 0..128 {
+            let _ = write_contained(&source, Path::new("swapped.rs"), b"contained artifact");
+        }
+        swapping.store(false, Ordering::Relaxed);
+        swapper.join().expect("symlink swapper");
+        assert_eq!(
+            fs::read_to_string(outside_artifact).expect("outside swap target"),
+            "outside remains untouched",
+            "directory-entry swaps cannot redirect the contained write"
+        );
     }
 
     #[test]
@@ -975,7 +1303,8 @@ mod tests {
         let first = actor.clone();
         let second = actor.clone();
         let first = thread::spawn(move || {
-            first.ordinary(
+            first.ordinary_session(
+                1,
                 ordinary_signal::Request::Observe(
                     ordinary_signal::ObservationSelection::Assemblies,
                 ),
@@ -983,7 +1312,8 @@ mod tests {
             )
         });
         let second = thread::spawn(move || {
-            second.ordinary(
+            second.ordinary_session(
+                2,
                 ordinary_signal::Request::Observe(
                     ordinary_signal::ObservationSelection::Assemblies,
                 ),
@@ -1005,7 +1335,8 @@ mod tests {
             OrdinaryAnswer::Reply(ordinary_signal::Reply::Observed(_))
         ));
         let reply = actor
-            .ordinary(
+            .ordinary_session(
+                3,
                 ordinary_signal::Request::Generate(request("../outside.ethos")),
                 None,
             )
@@ -1017,48 +1348,7 @@ mod tests {
     }
 
     #[test]
-    fn subscription_receives_started_then_completed_after_file_write_and_store_mutation() {
-        let directory = tempfile::tempdir().expect("temporary root");
-        let paths = paths(directory.path());
-        write_manifest(&paths, directory.path());
-        write_interface(directory.path());
-        let actor = Actor::start(&paths).expect("actor");
-        let generation = request("example.ethos");
-        let subscription = ordinary_signal::SubscriptionRequest {
-            file: generation.file.clone(),
-        };
-        let (events, received) = mpsc::channel();
-        assert!(matches!(
-            actor
-                .ordinary(
-                    ordinary_signal::Request::Subscribe(subscription),
-                    Some(events)
-                )
-                .expect("subscribe"),
-            OrdinaryAnswer::Reply(ordinary_signal::Reply::Observed(_))
-        ));
-        assert!(matches!(
-            actor
-                .ordinary(ordinary_signal::Request::Generate(generation), None)
-                .expect("generate"),
-            OrdinaryAnswer::Reply(ordinary_signal::Reply::Generated(_))
-        ));
-        assert!(matches!(
-            received.recv().expect("started event"),
-            ordinary_signal::Stream::GenerationStarted(_)
-        ));
-        assert!(matches!(
-            received.recv().expect("completed event"),
-            ordinary_signal::Stream::GenerationCompleted(_)
-        ));
-        assert!(
-            directory.path().join("example.rs").is_file(),
-            "generation writes before it is recorded"
-        );
-    }
-
-    #[test]
-    fn subscriptions_filter_by_file_and_unsubscribe_only_their_session() {
+    fn ordinary_socket_subscriptions_are_owned_filtered_and_close_on_unsubscribe() {
         let directory = tempfile::tempdir().expect("temporary root");
         let paths = paths(directory.path());
         write_manifest(&paths, directory.path());
@@ -1070,64 +1360,126 @@ mod tests {
         let other = ordinary_signal::SubscriptionRequest {
             file: request("other.ethos").file,
         };
-        let (first_send, first_events) = mpsc::channel();
-        let (other_send, other_events) = mpsc::channel();
-        actor
-            .ordinary_session(
-                1,
-                ordinary_signal::Request::Subscribe(matching.clone()),
-                Some(first_send),
-            )
-            .expect("first subscribe");
-        actor
-            .ordinary_session(
-                2,
-                ordinary_signal::Request::Subscribe(other),
-                Some(other_send),
-            )
-            .expect("other subscribe");
-        actor
-            .ordinary_session(
-                3,
-                ordinary_signal::Request::Unsubscribe(matching.clone()),
-                None,
-            )
-            .expect("foreign unsubscribe");
-        actor
-            .ordinary(
-                ordinary_signal::Request::Generate(request("example.ethos")),
-                None,
-            )
-            .expect("generate");
+        let listener = bind(&paths.ordinary_socket).expect("ordinary listener");
+        let server = ordinary_server(listener, actor, 4);
+        let mut matching_client =
+            UnixStream::connect(&paths.ordinary_socket).expect("matching client");
+        send_ordinary(
+            &mut matching_client,
+            ordinary_signal::Request::Subscribe(matching.clone()),
+        );
         assert!(matches!(
-            first_events.recv().expect("matching start"),
-            ordinary_signal::Stream::GenerationStarted(_)
+            receive_ordinary(&mut matching_client),
+            ordinary_signal::FrameBody::Reply(ordinary_signal::Reply::Observed(_))
+        ));
+        let mut other_client = UnixStream::connect(&paths.ordinary_socket).expect("other client");
+        send_ordinary(
+            &mut other_client,
+            ordinary_signal::Request::Subscribe(other.clone()),
+        );
+        assert!(matches!(
+            receive_ordinary(&mut other_client),
+            ordinary_signal::FrameBody::Reply(ordinary_signal::Reply::Observed(_))
+        ));
+        let mut foreign_client =
+            UnixStream::connect(&paths.ordinary_socket).expect("foreign client");
+        send_ordinary(
+            &mut foreign_client,
+            ordinary_signal::Request::Unsubscribe(matching.clone()),
+        );
+        assert!(matches!(
+            receive_ordinary(&mut foreign_client),
+            ordinary_signal::FrameBody::Reply(ordinary_signal::Reply::Observed(_))
+        ));
+        let mut generator = UnixStream::connect(&paths.ordinary_socket).expect("generator client");
+        send_ordinary(
+            &mut generator,
+            ordinary_signal::Request::Generate(request("example.ethos")),
+        );
+        assert!(matches!(
+            receive_ordinary(&mut generator),
+            ordinary_signal::FrameBody::Reply(ordinary_signal::Reply::Generated(_))
         ));
         assert!(matches!(
-            first_events.recv().expect("matching completion"),
-            ordinary_signal::Stream::GenerationCompleted(_)
+            receive_ordinary(&mut matching_client),
+            ordinary_signal::FrameBody::Event(ordinary_signal::Stream::GenerationStarted(_))
         ));
         assert!(matches!(
-            other_events.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
+            receive_ordinary(&mut matching_client),
+            ordinary_signal::FrameBody::Event(ordinary_signal::Stream::GenerationCompleted(_))
         ));
-        actor
-            .ordinary_session(1, ordinary_signal::Request::Unsubscribe(matching), None)
-            .expect("owned unsubscribe");
-        actor
-            .ordinary(
-                ordinary_signal::Request::Generate(request("example.ethos")),
-                None,
-            )
-            .expect("regenerate");
+        assert!(
+            directory.path().join("example.rs").is_file(),
+            "the source artifact is written before the completed event"
+        );
+        // If the example generation had leaked to this per-file subscriber,
+        // its queued event would precede this reply.
+        send_ordinary(
+            &mut other_client,
+            ordinary_signal::Request::Unsubscribe(other),
+        );
         assert!(matches!(
-            first_events.try_recv(),
-            Err(mpsc::TryRecvError::Disconnected)
+            receive_ordinary(&mut other_client),
+            ordinary_signal::FrameBody::Reply(ordinary_signal::Reply::Observed(_))
         ));
+        send_ordinary(
+            &mut matching_client,
+            ordinary_signal::Request::Unsubscribe(matching),
+        );
+        assert!(matches!(
+            receive_ordinary(&mut matching_client),
+            ordinary_signal::FrameBody::Reply(ordinary_signal::Reply::Observed(_))
+        ));
+        assert!(
+            read_frame(&mut matching_client).is_err(),
+            "unsubscribe closes stream"
+        );
+        server.join().expect("ordinary server");
     }
 
     #[test]
-    fn meta_subscriptions_are_owned_by_their_sessions() {
+    fn ordinary_socket_disconnect_reclaims_the_connection_subscription() {
+        let directory = tempfile::tempdir().expect("temporary root");
+        let paths = paths(directory.path());
+        write_manifest(&paths, directory.path());
+        write_interface(directory.path());
+        let actor = Actor::start(&paths).expect("actor");
+        let listener = bind(&paths.ordinary_socket).expect("ordinary listener");
+        let server = ordinary_server(listener, actor, 2);
+        let subscription = ordinary_signal::SubscriptionRequest {
+            file: request("example.ethos").file,
+        };
+        let mut subscriber = UnixStream::connect(&paths.ordinary_socket).expect("subscriber");
+        send_ordinary(
+            &mut subscriber,
+            ordinary_signal::Request::Subscribe(subscription),
+        );
+        assert!(matches!(
+            receive_ordinary(&mut subscriber),
+            ordinary_signal::FrameBody::Reply(ordinary_signal::Reply::Observed(_))
+        ));
+        subscriber
+            .shutdown(std::net::Shutdown::Both)
+            .expect("disconnect subscriber");
+        drop(subscriber);
+
+        let mut generator = UnixStream::connect(&paths.ordinary_socket).expect("generator");
+        send_ordinary(
+            &mut generator,
+            ordinary_signal::Request::Generate(request("example.ethos")),
+        );
+        assert!(matches!(
+            receive_ordinary(&mut generator),
+            ordinary_signal::FrameBody::Reply(ordinary_signal::Reply::Generated(_))
+        ));
+        drop(generator);
+        server
+            .join()
+            .expect("disconnect cleans ordinary subscription");
+    }
+
+    #[test]
+    fn meta_socket_subscriptions_are_owned_by_their_connection() {
         let directory = tempfile::tempdir().expect("temporary root");
         let paths = paths(directory.path());
         write_manifest(&paths, directory.path());
@@ -1135,51 +1487,112 @@ mod tests {
         let subscription = meta::MetaSubscriptionRequest {
             selection: meta::MetaObservationSelection::Configuration,
         };
-        let (first_send, first_events) = mpsc::channel();
-        let (second_send, second_events) = mpsc::channel();
-        actor
-            .meta_session(
-                1,
-                meta::Request::Subscribe(subscription.clone()),
-                Some(first_send),
-            )
-            .expect("first subscription");
-        actor
-            .meta_session(
-                2,
-                meta::Request::Subscribe(subscription.clone()),
-                Some(second_send),
-            )
-            .expect("second subscription");
-        actor
-            .meta_session(3, meta::Request::Unsubscribe(subscription.clone()), None)
-            .expect("foreign unsubscribe");
+        let listener = bind(&paths.meta_socket).expect("meta listener");
+        let server = meta_server(listener, actor, 5);
+        let mut first = UnixStream::connect(&paths.meta_socket).expect("first client");
+        let mut second = UnixStream::connect(&paths.meta_socket).expect("second client");
+        send_meta(&mut first, meta::Request::Subscribe(subscription.clone()));
+        assert!(matches!(
+            receive_meta(&mut first),
+            meta::FrameBody::Reply(meta::Reply::Observed(_))
+        ));
+        send_meta(&mut second, meta::Request::Subscribe(subscription.clone()));
+        assert!(matches!(
+            receive_meta(&mut second),
+            meta::FrameBody::Reply(meta::Reply::Observed(_))
+        ));
+        let mut foreign = UnixStream::connect(&paths.meta_socket).expect("foreign client");
+        send_meta(
+            &mut foreign,
+            meta::Request::Unsubscribe(subscription.clone()),
+        );
+        assert!(matches!(
+            receive_meta(&mut foreign),
+            meta::FrameBody::Reply(meta::Reply::Observed(_))
+        ));
         let configuration = paths.configuration().expect("defaults");
-        actor
-            .meta(meta::Request::Configure(configuration.clone()), None)
-            .expect("configuration");
+        let mut configure = UnixStream::connect(&paths.meta_socket).expect("configure client");
+        send_meta(
+            &mut configure,
+            meta::Request::Configure(configuration.clone()),
+        );
         assert!(matches!(
-            first_events.recv().expect("first event"),
-            meta::Stream::ConfigurationChanged(value) if value == configuration
+            receive_meta(&mut configure),
+            meta::FrameBody::Reply(meta::Reply::Configured(_))
         ));
         assert!(matches!(
-            second_events.recv().expect("second event"),
-            meta::Stream::ConfigurationChanged(value) if value == configuration
-        ));
-        actor
-            .meta_session(1, meta::Request::Unsubscribe(subscription), None)
-            .expect("owned unsubscribe");
-        actor
-            .meta(meta::Request::Configure(configuration.clone()), None)
-            .expect("configuration again");
-        assert!(matches!(
-            first_events.try_recv(),
-            Err(mpsc::TryRecvError::Disconnected)
+            receive_meta(&mut first),
+            meta::FrameBody::Event(meta::Stream::ConfigurationChanged(value)) if value == configuration
         ));
         assert!(matches!(
-            second_events.recv().expect("second retained event"),
-            meta::Stream::ConfigurationChanged(value) if value == configuration
+            receive_meta(&mut second),
+            meta::FrameBody::Event(meta::Stream::ConfigurationChanged(value)) if value == configuration
         ));
+        send_meta(&mut first, meta::Request::Unsubscribe(subscription.clone()));
+        assert!(matches!(
+            receive_meta(&mut first),
+            meta::FrameBody::Reply(meta::Reply::Observed(_))
+        ));
+        assert!(
+            read_frame(&mut first).is_err(),
+            "unsubscribe closes meta stream"
+        );
+        let mut reconfigure = UnixStream::connect(&paths.meta_socket).expect("reconfigure client");
+        send_meta(
+            &mut reconfigure,
+            meta::Request::Configure(configuration.clone()),
+        );
+        assert!(matches!(
+            receive_meta(&mut reconfigure),
+            meta::FrameBody::Reply(meta::Reply::Configured(_))
+        ));
+        assert!(matches!(
+            receive_meta(&mut second),
+            meta::FrameBody::Event(meta::Stream::ConfigurationChanged(value)) if value == configuration
+        ));
+        send_meta(&mut second, meta::Request::Unsubscribe(subscription));
+        assert!(matches!(
+            receive_meta(&mut second),
+            meta::FrameBody::Reply(meta::Reply::Observed(_))
+        ));
+        assert!(
+            read_frame(&mut second).is_err(),
+            "unsubscribe closes retained stream"
+        );
+        server.join().expect("meta server");
+    }
+
+    #[test]
+    fn meta_socket_disconnect_reclaims_the_connection_subscription() {
+        let directory = tempfile::tempdir().expect("temporary root");
+        let paths = paths(directory.path());
+        write_manifest(&paths, directory.path());
+        let actor = Actor::start(&paths).expect("actor");
+        let listener = bind(&paths.meta_socket).expect("meta listener");
+        let server = meta_server(listener, actor, 2);
+        let subscription = meta::MetaSubscriptionRequest {
+            selection: meta::MetaObservationSelection::Configuration,
+        };
+        let mut subscriber = UnixStream::connect(&paths.meta_socket).expect("subscriber");
+        send_meta(&mut subscriber, meta::Request::Subscribe(subscription));
+        assert!(matches!(
+            receive_meta(&mut subscriber),
+            meta::FrameBody::Reply(meta::Reply::Observed(_))
+        ));
+        subscriber
+            .shutdown(std::net::Shutdown::Both)
+            .expect("disconnect subscriber");
+        drop(subscriber);
+
+        let configuration = paths.configuration().expect("defaults");
+        let mut configurator = UnixStream::connect(&paths.meta_socket).expect("configurator");
+        send_meta(&mut configurator, meta::Request::Configure(configuration));
+        assert!(matches!(
+            receive_meta(&mut configurator),
+            meta::FrameBody::Reply(meta::Reply::Configured(_))
+        ));
+        drop(configurator);
+        server.join().expect("disconnect cleans meta subscription");
     }
 
     #[test]
@@ -1276,61 +1689,5 @@ mod tests {
             ordinary_signal::FrameBody::Refusal(ordinary_signal::Refusal::InvalidRelativePath(_))
         ));
         server.join().expect("server");
-    }
-
-    #[test]
-    fn meta_observe_subscribe_unsubscribe_persists_config_and_orders_events() {
-        let directory = tempfile::tempdir().expect("temporary root");
-        let paths = paths(directory.path());
-        write_manifest(&paths, directory.path());
-        let actor = Actor::start(&paths).expect("actor");
-        assert!(matches!(
-            actor
-                .meta(
-                    meta::Request::Observe(meta::MetaObservationSelection::Configuration),
-                    None
-                )
-                .expect("meta observe"),
-            meta::Reply::Observed(meta::MetaObservation::Configuration(_))
-        ));
-        let subscription = meta::MetaSubscriptionRequest {
-            selection: meta::MetaObservationSelection::Configuration,
-        };
-        let (events, received) = mpsc::channel();
-        assert!(matches!(
-            actor
-                .meta(meta::Request::Subscribe(subscription.clone()), Some(events))
-                .expect("meta subscribe"),
-            meta::Reply::Observed(meta::MetaObservation::Configuration(_))
-        ));
-        let changed = meta::Configuration {
-            ordinary_socket_path: paths
-                .configuration()
-                .expect("defaults")
-                .ordinary_socket_path,
-            meta_socket_path: paths.configuration().expect("defaults").meta_socket_path,
-            source_manifest_path: paths
-                .source_manifest
-                .display()
-                .to_string()
-                .try_into()
-                .expect("source manifest path"),
-        };
-        assert!(matches!(
-            actor
-                .meta(meta::Request::Configure(changed.clone()), None)
-                .expect("meta configure"),
-            meta::Reply::Configured(_)
-        ));
-        assert!(matches!(
-            received.recv().expect("configuration event"),
-            meta::Stream::ConfigurationChanged(value) if value == changed
-        ));
-        assert!(matches!(
-            actor
-                .meta(meta::Request::Unsubscribe(subscription), None)
-                .expect("meta unsubscribe"),
-            meta::Reply::Observed(_)
-        ));
     }
 }

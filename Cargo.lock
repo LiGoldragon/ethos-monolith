@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "ethos-zero-cli"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "datomic",
  "signal-ethos-zero",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "ethos-zero-meta"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "datomic",
  "meta-signal-ethos-zero",
@@ -170,13 +170,14 @@ dependencies = [
 
 [[package]]
 name = "ethos-zero-nexus"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "datomic",
  "ethos-zero",
  "meta-signal-ethos-zero",
  "protos",
  "rkyv",
+ "rustix",
  "sema-engine",
  "signal-ethos-zero",
  "tempfile",

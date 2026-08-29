@@ -14,6 +14,7 @@ signal-ethos-zero = { git = "https://github.com/LiGoldragon/signal-ethos-zero", 
 sema-engine = { git = "https://github.com/LiGoldragon/sema-engine.git", rev = "7158e5503f37fd2fbca1d707f134e38a3fda1176" }
 rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 thiserror = "2"
+rustix = { version = "1.1.4", features = ["fs"] }
 
 [dev-dependencies]
 tempfile = "3"
