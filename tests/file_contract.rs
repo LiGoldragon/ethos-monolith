@@ -2,6 +2,20 @@ use ethos_zero::{FileReader, Manifest, RustEmitter};
 use quote::ToTokens;
 use std::{fs, process::Command};
 
+fn pinned_path(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| match name {
+        "ETHOS_PROTOS_MAP" => "/git/github.com/LiGoldragon/protos/protos.ethos",
+        "ETHOS_DATOMIC_MAP" => "/git/github.com/LiGoldragon/datomic/datomic.ethos",
+        "ETHOS_PROTOS_RUST" => "/git/github.com/LiGoldragon/protos/src/lib.rs",
+        "ETHOS_DATOMIC_RUST" => "/git/github.com/LiGoldragon/datomic/src/lib.rs",
+        "ETHOS_PROTOS_CRATE" => "/git/github.com/LiGoldragon/protos",
+        "ETHOS_DATOMIC_CRATE" => "/git/github.com/LiGoldragon/datomic",
+        "ETHOS_SIGNAL_ORCHESTRATE_SOURCE" => "/git/github.com/LiGoldragon/signal-orchestrate/ethos/signal.ethos",
+        "ETHOS_META_SIGNAL_ORCHESTRATE_SOURCE" => "/git/github.com/LiGoldragon/meta-signal-orchestrate/ethos/signal.ethos",
+        _ => panic!("unknown pinned path {name}"),
+    }.into())
+}
+
 struct EmptyManifest;
 
 impl Manifest for EmptyManifest {
@@ -74,7 +88,7 @@ fn datomic_manifest_is_the_concrete_external_import_index() {
 fn source_linked_protos_and_datomic_maps_read_and_emit_through_the_portion_pivot() {
     let reader = FileReader::new(&EmptyManifest);
     for variable in ["ETHOS_PROTOS_MAP", "ETHOS_DATOMIC_MAP"] {
-        let path = std::env::var(variable).expect("Nix supplies the pinned authored map path");
+        let path = pinned_path(variable);
         let source = fs::read_to_string(path).expect("authored map");
         let file = reader.read(&source).expect("map embodiment");
         assert!(matches!(file, ethos_zero::File::Schema(_)));
