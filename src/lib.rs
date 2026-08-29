@@ -279,7 +279,22 @@ pub struct Method {
     pub inputs: Vec<Field>,
     pub output: TypeExpression,
     pub where_bounds: Vec<(String, Vec<String>)>,
-    pub has_default: bool,
+    pub default: Option<DefaultBody>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DefaultBody {
+    Chain(Vec<DefaultTerm>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DefaultTerm {
+    SelfValue,
+    Call {
+        name: String,
+        arguments: Vec<DefaultTerm>,
+    },
+    Path(Vec<String>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1087,15 +1102,50 @@ fn method_tokens(
     } else {
         quote! { #receiver, #( #inputs ),* }
     };
-    let body = if method.has_default {
-        quote! { { loop {} } }
-    } else {
-        quote! { ; }
-    };
+    let body = method
+        .default
+        .as_ref()
+        .map(default_body_tokens)
+        .transpose()?
+        .map(|body| quote! { { #body } })
+        .unwrap_or_else(|| quote! { ; });
     if where_bounds.is_empty() {
         Ok(quote! { fn #name #generics ( #inputs ) -> #output #body })
     } else {
         Ok(quote! { fn #name #generics ( #inputs ) -> #output where #( #where_bounds ),* #body })
+    }
+}
+
+fn default_body_tokens(default: &DefaultBody) -> Result<proc_macro2::TokenStream, FileFault> {
+    let DefaultBody::Chain(terms) = default;
+    let Some((DefaultTerm::SelfValue, terms)) = terms.split_first() else {
+        return Err(root_fault(0, FileFaultReason::Declaration));
+    };
+    let mut expression = quote! { self };
+    for term in terms {
+        let DefaultTerm::Call { name, arguments } = term else {
+            return Err(root_fault(0, FileFaultReason::Declaration));
+        };
+        let name = field_identifier(name)?;
+        let arguments = arguments
+            .iter()
+            .map(default_value_tokens)
+            .collect::<Result<Vec<_>, _>>()?;
+        expression = quote! { #expression.#name(#(#arguments),*) };
+    }
+    Ok(expression)
+}
+
+fn default_value_tokens(term: &DefaultTerm) -> Result<proc_macro2::TokenStream, FileFault> {
+    match term {
+        DefaultTerm::Path(segments) if !segments.is_empty() => {
+            let segments = segments
+                .iter()
+                .map(|segment| identifier(segment))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(quote! { #(#segments)::* })
+        }
+        _ => Err(root_fault(0, FileFaultReason::Declaration)),
     }
 }
 
@@ -1870,7 +1920,7 @@ fn methods_of(portions: &[Portion]) -> Result<Vec<Method>, FileFault> {
             let mut inputs = Vec::new();
             let mut output = None;
             let mut where_bounds = Vec::new();
-            let mut has_default = false;
+            let mut default = None;
             let mut index = 0;
             while index < values.len() {
                 let value = &values[index];
@@ -1904,7 +1954,7 @@ fn methods_of(portions: &[Portion]) -> Result<Vec<Method>, FileFault> {
                             .map(|associated| (associated.name, associated.bounds))
                             .collect()
                     }
-                    "Default" => has_default = bare(body)? == "Yes",
+                    "Default" => default = Some(default_body(body)?),
                     _ => return Err(fault(value, FileFaultReason::Declaration)),
                 }
                 index += 1;
@@ -1916,10 +1966,65 @@ fn methods_of(portions: &[Portion]) -> Result<Vec<Method>, FileFault> {
                 inputs,
                 output: output.ok_or_else(|| fault(portion, FileFaultReason::Declaration))?,
                 where_bounds,
-                has_default,
+                default,
             })
         })
         .collect()
+}
+
+fn default_body(portion: &Portion) -> Result<DefaultBody, FileFault> {
+    let (name, separator, body) =
+        headed_full(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+    if name != "Chain" || separator != Separator::Period {
+        return Err(fault(portion, FileFaultReason::Declaration));
+    }
+    let Some((StructuralEnclosure::Bracketed, terms)) = structural(body) else {
+        return Err(fault(portion, FileFaultReason::Declaration));
+    };
+    Ok(DefaultBody::Chain(
+        terms
+            .iter()
+            .enumerate()
+            .map(|(index, term)| default_term(term, index == 0))
+            .collect::<Result<Vec<_>, _>>()?,
+    ))
+}
+
+fn default_term(portion: &Portion, first: bool) -> Result<DefaultTerm, FileFault> {
+    if let Ok(name) = bare(portion) {
+        if first && name == "Self" {
+            return Ok(DefaultTerm::SelfValue);
+        }
+        return Ok(DefaultTerm::Call {
+            name: name.to_owned(),
+            arguments: Vec::new(),
+        });
+    }
+    let (name, separator, body) =
+        headed_full(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+    if separator != Separator::Period {
+        return Err(fault(portion, FileFaultReason::Declaration));
+    }
+    let Some((StructuralEnclosure::Bracketed, arguments)) = structural(body) else {
+        return Err(fault(portion, FileFaultReason::Declaration));
+    };
+    Ok(DefaultTerm::Call {
+        name: name.to_owned(),
+        arguments: arguments
+            .iter()
+            .map(default_value)
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn default_value(portion: &Portion) -> Result<DefaultTerm, FileFault> {
+    let (head, separator, tail) =
+        headed_full(portion).ok_or_else(|| fault(portion, FileFaultReason::Declaration))?;
+    if separator != Separator::Period {
+        return Err(fault(portion, FileFaultReason::Declaration));
+    }
+    let tail = bare(tail)?;
+    Ok(DefaultTerm::Path(vec![head.to_owned(), tail.to_owned()]))
 }
 
 fn capability_of(portion: &Portion) -> Result<Capability, FileFault> {

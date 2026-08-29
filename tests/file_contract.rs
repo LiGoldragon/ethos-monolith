@@ -226,6 +226,101 @@ fn complete_map_owned_declarations_splice_into_the_real_engines() {
 }
 
 #[test]
+fn generated_schema_defaults_execute_through_the_real_engines() {
+    let reader = FileReader::new(&EmptyManifest);
+    for (name, map_variable, rust_variable, program) in [
+        (
+            "protos",
+            "ETHOS_PROTOS_MAP",
+            "ETHOS_PROTOS_RUST",
+            r#"
+use ethos_zero_map_witness::{Embodied, Fault, Portion, Textualizable};
+
+struct Witness;
+
+impl Embodied for Witness {
+    fn from_portion(_: &Portion) -> Result<Self, Fault> {
+        Ok(Self)
+    }
+}
+
+impl Textualizable for Witness {
+    fn to_portion(&self) -> Portion {
+        Portion::from_expected_string("generated-default")
+            .expect("a representable Protos witness")
+    }
+}
+
+fn main() {
+    assert_eq!(Textualizable::textualize(&Witness).as_ref(), "generated-default");
+}
+"#,
+        ),
+        (
+            "datomic",
+            "ETHOS_DATOMIC_MAP",
+            "ETHOS_DATOMIC_RUST",
+            r#"
+use datomic::{Datomic, DatomicString};
+
+fn main() {
+    let value = DatomicString::try_from("generated default".to_owned())
+        .expect("a representable Datomic witness");
+    assert_eq!(value.textualize().as_ref(), "“generated default”");
+}
+"#,
+        ),
+    ] {
+        let map = fs::read_to_string(std::env::var(map_variable).expect("pinned map"))
+            .expect("map source");
+        let file = reader.read(&map).expect("map embodiment");
+        let generated = RustEmitter::schema_library()
+            .generate(&file)
+            .expect("map emission");
+        let names = map_owned_names(&file);
+        let rust_path = std::path::PathBuf::from(std::env::var(rust_variable).expect("engine"));
+        let mut engine = syn::parse_file(&fs::read_to_string(&rust_path).expect("engine source"))
+            .expect("engine syntax");
+        engine
+            .items
+            .retain(|item| !is_map_owned_declaration(item, &names));
+        engine.items.extend(generated.syntax.items);
+
+        let directory = std::env::temp_dir().join(format!(
+            "ethos-zero-generated-default-{name}-{}",
+            std::process::id()
+        ));
+        let source_directory = directory.join("src");
+        fs::create_dir_all(&source_directory).expect("witness source directory");
+        fs::write(
+            directory.join("Cargo.toml"),
+            engine_manifest(name == "datomic"),
+        )
+        .expect("witness manifest");
+        fs::write(directory.join("Cargo.lock"), fixture_lockfile()).expect("witness lockfile");
+        fs::write(
+            source_directory.join("lib.rs"),
+            engine.into_token_stream().to_string(),
+        )
+        .expect("spliced engine source");
+        fs::write(source_directory.join("main.rs"), program).expect("witness program");
+        let target = directory.join("target");
+        let output = Command::new("timeout")
+            .args(["10", "cargo", "run", "--offline", "--quiet"])
+            .env("CARGO_TARGET_DIR", &target)
+            .current_dir(&directory)
+            .output()
+            .expect("bounded generated-default invocation");
+        assert!(
+            output.status.success(),
+            "generated {name} default must complete: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::remove_dir_all(directory).expect("witness cleanup");
+    }
+}
+
+#[test]
 fn removing_the_real_text_content_hashable_impl_fails_the_emitted_association() {
     let reader = FileReader::new(&EmptyManifest);
     let map = fs::read_to_string(std::env::var("ETHOS_PROTOS_MAP").expect("pinned map"))
