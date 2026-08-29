@@ -1,5 +1,13 @@
 # Upgrades
 
+## 0.7.2 — ordered Nexus subscription activation
+
+Nexus now sequences each subscription's initial `Observed` reply before any
+subsequent stream event for that connection. Registration still happens before
+the snapshot is read, but an activation barrier holds actor-delivered changes
+until the socket writer has emitted the snapshot. This preserves the ordinary
+and meta wire formats while restoring the state-then-changes contract.
+
 ## 0.7.1 — Nexus socket and containment completion
 
 Subscription connections now retain a private runtime session for their full

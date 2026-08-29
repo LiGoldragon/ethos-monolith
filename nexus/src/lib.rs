@@ -592,6 +592,21 @@ struct Actor {
 }
 impl Actor {
     fn start(paths: &Paths) -> Result<Self, RuntimeError> {
+        Self::start_inner(paths, None)
+    }
+
+    #[cfg(test)]
+    fn start_with_subscription_witness(
+        paths: &Paths,
+        witness: mpsc::Sender<SubscriptionTier>,
+    ) -> Result<Self, RuntimeError> {
+        Self::start_inner(paths, Some(witness))
+    }
+
+    fn start_inner(
+        paths: &Paths,
+        subscription_witness: Option<mpsc::Sender<SubscriptionTier>>,
+    ) -> Result<Self, RuntimeError> {
         let defaults = paths.configuration()?;
         let mut store = NexusStore::open(&paths.state_path, defaults)?;
         let (sender, receiver) = mpsc::channel::<Command>();
@@ -622,6 +637,9 @@ impl Actor {
                             ordinary_signal::Request::Subscribe(subscription) => {
                                 if let Some(events) = events {
                                     ordinary_subscribers.push((session, subscription, events));
+                                }
+                                if let Some(witness) = &subscription_witness {
+                                    let _ = witness.send(SubscriptionTier::Ordinary);
                                 }
                                 store
                                     .ordinary_observation()
@@ -731,6 +749,9 @@ impl Actor {
                                 let selection = subscription.selection.clone();
                                 if let Some(events) = events {
                                     meta_subscribers.push((session, subscription, events));
+                                }
+                                if let Some(witness) = &subscription_witness {
+                                    let _ = witness.send(SubscriptionTier::Meta);
                                 }
                                 match selection {
                                     meta::MetaObservationSelection::Configuration => {
@@ -866,12 +887,25 @@ fn bind(path: &Path) -> Result<UnixListener, RuntimeError> {
     Ok(UnixListener::bind(path)?)
 }
 
+// A subscription enters the actor before its initial observation is written.
+// The activation token keeps changes buffered until the one owning writer has
+// actually sequenced that observation on the socket.
+enum OrdinaryOutbound {
+    Frame(ordinary_signal::FrameBody),
+    Activate(mpsc::Sender<()>),
+}
+
+enum MetaOutbound {
+    Frame(meta::FrameBody),
+    Activate(mpsc::Sender<()>),
+}
+
 fn ordinary_socket(mut stream: UnixStream, actor: Actor) {
     let session = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
     let Ok(mut reader) = stream.try_clone() else {
         return;
     };
-    let (outbound, receiver) = mpsc::channel::<ordinary_signal::FrameBody>();
+    let (outbound, receiver) = mpsc::channel::<OrdinaryOutbound>();
     let reader_actor = actor.clone();
     thread::spawn(move || {
         let mut subscribed = false;
@@ -887,29 +921,42 @@ fn ordinary_socket(mut stream: UnixStream, actor: Actor) {
             };
             let is_subscribe = matches!(request, ordinary_signal::Request::Subscribe(_));
             let is_unsubscribe = matches!(request, ordinary_signal::Request::Unsubscribe(_));
-            let events = if is_subscribe {
+            let (events, activation) = if is_subscribe {
                 let (events, event_receiver) = mpsc::channel();
+                let (activate, activated) = mpsc::channel();
                 let outbound = outbound.clone();
                 thread::spawn(move || {
+                    if activated.recv().is_err() {
+                        return;
+                    }
                     for event in event_receiver {
                         if outbound
-                            .send(ordinary_signal::FrameBody::Event(event))
+                            .send(OrdinaryOutbound::Frame(ordinary_signal::FrameBody::Event(
+                                event,
+                            )))
                             .is_err()
                         {
                             break;
                         }
                     }
                 });
-                Some(events)
+                (Some(events), Some(activate))
             } else {
-                None
+                (None, None)
             };
             let body = match reader_actor.ordinary_session(session, request, events) {
                 Ok(OrdinaryAnswer::Reply(value)) => ordinary_signal::FrameBody::Reply(value),
                 Ok(OrdinaryAnswer::Refusal(value)) => ordinary_signal::FrameBody::Refusal(value),
                 Err(_) => break,
             };
-            if outbound.send(body).is_err() {
+            if outbound.send(OrdinaryOutbound::Frame(body)).is_err() {
+                break;
+            }
+            if let Some(activation) = activation
+                && outbound
+                    .send(OrdinaryOutbound::Activate(activation))
+                    .is_err()
+            {
                 break;
             }
             if is_subscribe {
@@ -921,12 +968,21 @@ fn ordinary_socket(mut stream: UnixStream, actor: Actor) {
         }
         reader_actor.disconnect(SubscriptionTier::Ordinary, session);
     });
-    for body in receiver {
-        let Ok(bytes) = ordinary_frame(body).encode_length_prefixed() else {
-            break;
-        };
-        if stream.write_all(&bytes).is_err() {
-            break;
+    for message in receiver {
+        match message {
+            OrdinaryOutbound::Frame(body) => {
+                let Ok(bytes) = ordinary_frame(body).encode_length_prefixed() else {
+                    break;
+                };
+                if stream.write_all(&bytes).is_err() {
+                    break;
+                }
+            }
+            OrdinaryOutbound::Activate(activation) => {
+                if activation.send(()).is_err() {
+                    break;
+                }
+            }
         }
     }
 }
@@ -936,7 +992,7 @@ fn meta_socket(mut stream: UnixStream, actor: Actor) {
     let Ok(mut reader) = stream.try_clone() else {
         return;
     };
-    let (outbound, receiver) = mpsc::channel::<meta::FrameBody>();
+    let (outbound, receiver) = mpsc::channel::<MetaOutbound>();
     let reader_actor = actor.clone();
     thread::spawn(move || {
         let mut subscribed = false;
@@ -953,25 +1009,37 @@ fn meta_socket(mut stream: UnixStream, actor: Actor) {
             };
             let is_subscribe = matches!(request, meta::Request::Subscribe(_));
             let is_unsubscribe = matches!(request, meta::Request::Unsubscribe(_));
-            let events = if is_subscribe {
+            let (events, activation) = if is_subscribe {
                 let (events, event_receiver) = mpsc::channel();
+                let (activate, activated) = mpsc::channel();
                 let outbound = outbound.clone();
                 thread::spawn(move || {
+                    if activated.recv().is_err() {
+                        return;
+                    }
                     for event in event_receiver {
-                        if outbound.send(meta::FrameBody::Event(event)).is_err() {
+                        if outbound
+                            .send(MetaOutbound::Frame(meta::FrameBody::Event(event)))
+                            .is_err()
+                        {
                             break;
                         }
                     }
                 });
-                Some(events)
+                (Some(events), Some(activate))
             } else {
-                None
+                (None, None)
             };
             let body = match reader_actor.meta_session(session, request, events) {
                 Ok(value) => meta::FrameBody::Reply(value),
                 Err(_) => break,
             };
-            if outbound.send(body).is_err() {
+            if outbound.send(MetaOutbound::Frame(body)).is_err() {
+                break;
+            }
+            if let Some(activation) = activation
+                && outbound.send(MetaOutbound::Activate(activation)).is_err()
+            {
                 break;
             }
             if is_subscribe {
@@ -983,12 +1051,21 @@ fn meta_socket(mut stream: UnixStream, actor: Actor) {
         }
         reader_actor.disconnect(SubscriptionTier::Meta, session);
     });
-    for body in receiver {
-        let Ok(bytes) = meta_frame(body).encode_length_prefixed() else {
-            break;
-        };
-        if stream.write_all(&bytes).is_err() {
-            break;
+    for message in receiver {
+        match message {
+            MetaOutbound::Frame(body) => {
+                let Ok(bytes) = meta_frame(body).encode_length_prefixed() else {
+                    break;
+                };
+                if stream.write_all(&bytes).is_err() {
+                    break;
+                }
+            }
+            MetaOutbound::Activate(activation) => {
+                if activation.send(()).is_err() {
+                    break;
+                }
+            }
         }
     }
 }
@@ -1118,6 +1195,124 @@ mod tests {
         meta::Frame::decode_length_prefixed(&read_frame(stream).expect("meta frame"))
             .expect("meta decode")
             .body
+    }
+
+    #[test]
+    fn ordinary_socket_stress_keeps_the_initial_reply_before_raced_events() {
+        const ROUNDS: usize = 24;
+        let directory = tempfile::tempdir().expect("temporary root");
+        let paths = paths(directory.path());
+        write_manifest(&paths, directory.path());
+        write_interface(directory.path());
+        let (witness, registered) = mpsc::channel();
+        let actor = Actor::start_with_subscription_witness(&paths, witness).expect("actor");
+        let listener = bind(&paths.ordinary_socket).expect("ordinary listener");
+        let server = ordinary_server(listener, actor, ROUNDS * 2);
+        let subscription = ordinary_signal::SubscriptionRequest {
+            file: request("example.ethos").file,
+        };
+        for _ in 0..ROUNDS {
+            let mut subscriber = UnixStream::connect(&paths.ordinary_socket).expect("subscriber");
+            send_ordinary(
+                &mut subscriber,
+                ordinary_signal::Request::Subscribe(subscription.clone()),
+            );
+            assert!(matches!(
+                registered
+                    .recv()
+                    .expect("ordinary subscription registration"),
+                SubscriptionTier::Ordinary
+            ));
+            let socket = paths.ordinary_socket.clone();
+            let generator = thread::spawn(move || {
+                let mut generator = UnixStream::connect(socket).expect("generator");
+                send_ordinary(
+                    &mut generator,
+                    ordinary_signal::Request::Generate(request("example.ethos")),
+                );
+                receive_ordinary(&mut generator)
+            });
+            assert!(matches!(
+                generator.join().expect("generator thread"),
+                ordinary_signal::FrameBody::Reply(ordinary_signal::Reply::Generated(_))
+            ));
+            assert!(matches!(
+                receive_ordinary(&mut subscriber),
+                ordinary_signal::FrameBody::Reply(ordinary_signal::Reply::Observed(_))
+            ));
+            assert!(matches!(
+                receive_ordinary(&mut subscriber),
+                ordinary_signal::FrameBody::Event(ordinary_signal::Stream::GenerationStarted(_))
+            ));
+            assert!(matches!(
+                receive_ordinary(&mut subscriber),
+                ordinary_signal::FrameBody::Event(ordinary_signal::Stream::GenerationCompleted(_))
+            ));
+            send_ordinary(
+                &mut subscriber,
+                ordinary_signal::Request::Unsubscribe(subscription.clone()),
+            );
+            assert!(matches!(
+                receive_ordinary(&mut subscriber),
+                ordinary_signal::FrameBody::Reply(ordinary_signal::Reply::Observed(_))
+            ));
+        }
+        server.join().expect("ordinary stress server");
+    }
+
+    #[test]
+    fn meta_socket_stress_keeps_the_initial_reply_before_raced_events() {
+        const ROUNDS: usize = 24;
+        let directory = tempfile::tempdir().expect("temporary root");
+        let paths = paths(directory.path());
+        write_manifest(&paths, directory.path());
+        let (witness, registered) = mpsc::channel();
+        let actor = Actor::start_with_subscription_witness(&paths, witness).expect("actor");
+        let listener = bind(&paths.meta_socket).expect("meta listener");
+        let server = meta_server(listener, actor, ROUNDS * 2);
+        let subscription = meta::MetaSubscriptionRequest {
+            selection: meta::MetaObservationSelection::Configuration,
+        };
+        let configuration = paths.configuration().expect("configuration");
+        for _ in 0..ROUNDS {
+            let mut subscriber = UnixStream::connect(&paths.meta_socket).expect("subscriber");
+            send_meta(
+                &mut subscriber,
+                meta::Request::Subscribe(subscription.clone()),
+            );
+            assert!(matches!(
+                registered.recv().expect("meta subscription registration"),
+                SubscriptionTier::Meta
+            ));
+            let socket = paths.meta_socket.clone();
+            let configuration = configuration.clone();
+            let configure = thread::spawn(move || {
+                let mut configure = UnixStream::connect(socket).expect("configure");
+                send_meta(&mut configure, meta::Request::Configure(configuration));
+                receive_meta(&mut configure)
+            });
+            assert!(matches!(
+                configure.join().expect("configure thread"),
+                meta::FrameBody::Reply(meta::Reply::Configured(_))
+            ));
+            assert!(matches!(
+                receive_meta(&mut subscriber),
+                meta::FrameBody::Reply(meta::Reply::Observed(_))
+            ));
+            assert!(matches!(
+                receive_meta(&mut subscriber),
+                meta::FrameBody::Event(meta::Stream::ConfigurationChanged(_))
+            ));
+            send_meta(
+                &mut subscriber,
+                meta::Request::Unsubscribe(subscription.clone()),
+            );
+            assert!(matches!(
+                receive_meta(&mut subscriber),
+                meta::FrameBody::Reply(meta::Reply::Observed(_))
+            ));
+        }
+        server.join().expect("meta stress server");
     }
 
     #[test]
