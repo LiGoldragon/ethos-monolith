@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+WireContract 0.4.0 frames can now carry generated refusal roots and stream
+events as `FrameBody::Refusal` and `FrameBody::Event`. Consumers that decode
+frames exhaustively must handle these additional wire variants.
+
 WireContract 0.3.1 makes generated `String` aliases invariant-bearing: their
 fields are private and construction validates Datomic representability through
 `TryFrom`. Unsupported tuple-struct declarations now return a typed

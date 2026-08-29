@@ -571,6 +571,13 @@ fn wire_interface_tokens(interface: &InterfaceFile) -> Result<proc_macro2::Token
     let reply = wire_root_tokens("Reply", &interface.output)?;
     let refusal = wire_root_tokens("Refusal", &interface.refusal)?;
     let stream = wire_root_tokens("Stream", &interface.stream)?;
+    let mut frame_bodies = vec![quote! { Request(Request) }, quote! { Reply(Reply) }];
+    if !interface.refusal.is_empty() {
+        frame_bodies.push(quote! { Refusal(Refusal) });
+    }
+    if !interface.stream.is_empty() {
+        frame_bodies.push(quote! { Event(Stream) });
+    }
     let major = u16::try_from(interface.header.version.major)
         .map_err(|_| root_fault(0, FileFaultReason::Header))?;
     let minor = u16::try_from(interface.header.version.minor)
@@ -592,7 +599,7 @@ fn wire_interface_tokens(interface: &InterfaceFile) -> Result<proc_macro2::Token
         pub const CHANNEL_WIRE_REVISION: ChannelWireRevision = ChannelWireRevision(#wire);
         pub const PROTOCOL_VERSION: ProtocolVersion = INTERFACE_VERSION;
         #( #types )* #( #anatomies )* #request #reply #refusal #stream
-        #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] pub enum FrameBody { Request(Request), Reply(Reply) }
+        #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] pub enum FrameBody { #( #frame_bodies, )* }
         #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] pub struct Frame { pub channel_contract_id: ChannelContractId, pub channel_wire_revision: ChannelWireRevision, pub protocol_version: ProtocolVersion, pub body: FrameBody }
     })
 }

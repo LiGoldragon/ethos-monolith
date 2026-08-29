@@ -925,7 +925,7 @@ fn interface_file_is_read_from_the_portion_pivot_and_emitted_as_rust_syntax() {
 
 #[test]
 fn wire_contract_emission_generates_only_the_signal_module() {
-    let source = "Interface.{0 2 0} Channel.{Example 7 3} [] {[Submit.Submission] [Submitted.Result] [] [] [Name.String Submission.{Name} Result.{Name}]}";
+    let source = "Interface.{0 2 0} Channel.{Example 7 3} [] {[Submit.Submission] [Submitted.Result] [Rejected.Name] [Changed.Name] [Name.String Submission.{Name} Result.{Name}]}";
     let file = FileReader::new(&EmptyManifest)
         .read(source)
         .expect("wire map");
@@ -936,6 +936,8 @@ fn wire_contract_emission_generates_only_the_signal_module() {
     assert!(emitted.contains("derive (Archive"));
     assert!(emitted.contains("struct Name") && emitted.contains("String"));
     assert!(emitted.contains("enum FrameBody"));
+    assert!(emitted.contains("Refusal (Refusal)"));
+    assert!(emitted.contains("Event (Stream)"));
     assert!(!emitted.contains("unimplemented"));
     assert!(!emitted.contains("Codec"));
     let name = syntax
