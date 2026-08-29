@@ -206,6 +206,7 @@ fn complete_map_owned_declarations_splice_into_the_real_engines() {
             engine_manifest(rust_variable == "ETHOS_DATOMIC_RUST"),
         )
         .expect("splice manifest");
+        fs::write(directory.join("Cargo.lock"), fixture_lockfile()).expect("splice lockfile");
         fs::write(
             source_directory.join("lib.rs"),
             engine.into_token_stream().to_string(),
@@ -249,6 +250,7 @@ fn removing_the_real_text_content_hashable_impl_fails_the_emitted_association() 
     let source_directory = directory.join("src");
     fs::create_dir_all(&source_directory).expect("negative source directory");
     fs::write(directory.join("Cargo.toml"), engine_manifest(false)).expect("negative manifest");
+    fs::write(directory.join("Cargo.lock"), fixture_lockfile()).expect("negative lockfile");
     fs::write(
         source_directory.join("lib.rs"),
         engine.into_token_stream().to_string(),
@@ -331,6 +333,11 @@ fn engine_manifest(needs_datomic: bool) -> String {
         "[package]\nname = \"ethos-zero-map-witness\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nprotos = {{ path = {protos:?} }}\n{}[patch.\"https://github.com/LiGoldragon/protos\"]\nprotos = {{ path = {protos:?} }}\n",
         datomic.unwrap_or_default()
     )
+}
+
+fn fixture_lockfile() -> String {
+    fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
+        .expect("Ethos-zero locked dependency graph")
 }
 
 fn rustfmt_for_comparison(source: &str) -> String {
@@ -495,16 +502,148 @@ fn false_kind_association_fails_generated_rust_compilation() {
 }
 
 #[test]
-fn own_and_orchestrate_interfaces_are_read_as_portion_files() {
+fn pinned_orchestrate_interfaces_are_read_from_their_real_sources() {
     let reader = FileReader::new(&EmptyManifest);
-    for source in [
-        include_str!("../signal.ethos"),
-        include_str!("../meta-signal.ethos"),
-        "Interface.{0 2 0} Channel.{Orchestrate 1 5} [] {[Lock.LockRequest Release.LockId Observe.ObserveSelection] [Locked.Lock LockRejected.LockRejection Released.Lock ReleaseRejected.ReleaseRejection Observed.Observation] [] [] [LockName.String FlowId.String LockPath.String LockPaths.Vector<LockPath> LockReason.String LockRequest.{LockName FlowId LockPaths LockReason} LockId.Integer Lock.{LockId LockName FlowId LockPaths LockReason} DuplicateName.Lock LockOverlap.{LockPath Lock} LockRejection.[DuplicateName.Lock PathOverlap.LockOverlap] ReleaseRejection.[UnknownLockId] ObserveSelection.[Locks] Locks.Vector<Lock> LockSnapshot.{Locks} Observation.[Locks.LockSnapshot]]}",
-        "Interface.{0 1 0} Channel.{MetaOrchestrate 2 4} [] {[Configure.Configure] [Configured.Configured ConfigurationRejected.ConfigurationRejected] [] [] [OrdinarySocketPath.String MetaSocketPath.String Configure.{OrdinarySocketPath MetaSocketPath} ConfigurationRefusal.[InvalidConfiguration] Configured.{Configure} ConfigurationRejected.{Configure ConfigurationRefusal}]}",
+    for (variable, channel, contract, wire) in [
+        ("ETHOS_SIGNAL_ORCHESTRATE_SOURCE", "Orchestrate", 1, 5),
+        (
+            "ETHOS_META_SIGNAL_ORCHESTRATE_SOURCE",
+            "MetaOrchestrate",
+            2,
+            4,
+        ),
     ] {
-        reader.read(source).expect("complete headed interface");
+        let source = fs::read_to_string(std::env::var(variable).expect("pinned source path"))
+            .expect("pinned authored interface");
+        let file = reader.read(&source).expect("complete headed interface");
+        let ethos_zero::File::Interface(interface) = file else {
+            panic!("pinned source must be an interface");
+        };
+        assert_eq!(interface.channel.name, channel);
+        assert_eq!(interface.channel.contract, contract);
+        assert_eq!(interface.channel.wire, wire);
     }
+}
+
+#[test]
+fn generated_real_orchestrate_interfaces_compile_and_exercise_their_source_linked_types() {
+    let reader = FileReader::new(&EmptyManifest);
+    let interfaces = [
+        (
+            "ordinary",
+            "ETHOS_SIGNAL_ORCHESTRATE_SOURCE",
+            r#"
+use datomic::{Datomic, DatomicString, Text, TextEdge};
+use generated_ordinary::*;
+
+fn string(value: &str) -> DatomicString {
+    DatomicString::try_from(value.to_owned()).expect("representable fixture string")
+}
+
+#[test]
+fn approved_operations_and_string_edges_round_trip() {
+    let lock_name: LockName = Text::<LockName>::from("<Kind>")
+        .embody()
+        .expect("LockName angle string");
+    assert_eq!(lock_name.textualize().as_ref(), "<Kind>");
+    let lock_reason: LockReason = Text::<LockReason>::from("(outer (nested) tail)")
+        .embody()
+        .expect("LockReason parenthesized string");
+    assert_eq!(lock_reason.textualize().as_ref(), "“outer (nested) tail”");
+
+    let lock = Lock {
+        lock_id: 7,
+        lock_name,
+        flow_id: string("01a04a30"),
+        lock_paths: vec![string("/tmp/ethos-zero-e2")],
+        lock_reason,
+    };
+    let text = lock.textualize();
+    assert_eq!(Text::<Lock>::from(text.as_ref()).embody().expect("Lock embodiment").textualize().as_ref(), text.as_ref());
+
+    let request = Request::Lock(LockRequest {
+        lock_name: string("e2"),
+        flow_id: string("01a04a30"),
+        lock_paths: vec![],
+        lock_reason: string("acceptance"),
+    });
+    assert!(matches!(request, Request::Lock(_)));
+    assert!(matches!(Reply::Locked(lock), Reply::Locked(_)));
+    let duplicate = Lock {
+        lock_id: 8,
+        lock_name: string("duplicate"),
+        flow_id: string("01a04a30"),
+        lock_paths: vec![],
+        lock_reason: string("duplicate name"),
+    };
+    assert!(matches!(Reply::LockRejected(LockRejection::DuplicateName(duplicate)), Reply::LockRejected(_)));
+}
+"#,
+        ),
+        (
+            "meta",
+            "ETHOS_META_SIGNAL_ORCHESTRATE_SOURCE",
+            r#"
+use datomic::{Datomic, DatomicString, Text, TextEdge};
+use generated_meta::*;
+
+fn string(value: &str) -> DatomicString {
+    DatomicString::try_from(value.to_owned()).expect("representable fixture string")
+}
+
+#[test]
+fn approved_configuration_operation_round_trips() {
+    let configure = Configure {
+        ordinary_socket_path: string("/tmp/orchestrate.sock"),
+        meta_socket_path: string("/tmp/meta-orchestrate.sock"),
+    };
+    let text = configure.textualize();
+    assert_eq!(Text::<Configure>::from(text.as_ref()).embody().expect("Configure embodiment").textualize().as_ref(), text.as_ref());
+    assert!(matches!(Request::Configure(configure), Request::Configure(_)));
+}
+"#,
+        ),
+    ];
+    for (name, variable, fixture) in interfaces {
+        let source = fs::read_to_string(std::env::var(variable).expect("pinned source path"))
+            .expect("pinned authored interface");
+        let file = reader.read(&source).expect("pinned interface embodiment");
+        let generated = RustEmitter::new()
+            .emit(&file)
+            .expect("pinned interface emission");
+        compile_generated_interface(name, &generated, fixture);
+    }
+}
+
+fn compile_generated_interface(name: &str, generated: &str, fixture: &str) {
+    let directory = std::env::temp_dir().join(format!(
+        "ethos-zero-real-interface-{name}-{}",
+        std::process::id()
+    ));
+    let source_directory = directory.join("src");
+    let test_directory = directory.join("tests");
+    fs::create_dir_all(&source_directory).expect("generated source directory");
+    fs::create_dir_all(&test_directory).expect("generated test directory");
+    fs::write(
+        directory.join("Cargo.toml"),
+        engine_manifest(true).replace("ethos-zero-map-witness", &format!("generated-{name}")),
+    )
+    .expect("fixture manifest");
+    fs::write(directory.join("Cargo.lock"), fixture_lockfile()).expect("fixture lockfile");
+    fs::write(source_directory.join("lib.rs"), generated).expect("generated Rust");
+    fs::write(test_directory.join("round_trip.rs"), fixture).expect("fixture tests");
+    let target = directory.join("target");
+    assert!(
+        Command::new("cargo")
+            .args(["test", "--offline"])
+            .env("CARGO_TARGET_DIR", &target)
+            .current_dir(&directory)
+            .status()
+            .expect("fixture cargo invocation")
+            .success(),
+        "generated real interface must compile and exercise its source-linked types"
+    );
+    fs::remove_dir_all(directory).expect("fixture cleanup");
 }
 
 #[test]
@@ -601,6 +740,7 @@ fn generated_orchestrate_anatomies_compile_and_round_trip_through_datomic() {
         engine_manifest(true).replace("ethos-zero-map-witness", "generated-orchestrate"),
     )
     .expect("fixture manifest");
+    fs::write(directory.join("Cargo.lock"), fixture_lockfile()).expect("fixture lockfile");
     fs::write(source_directory.join("lib.rs"), generated).expect("generated Rust");
     fs::write(
         test_directory.join("round_trip.rs"),

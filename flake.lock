@@ -100,6 +100,33 @@
         "type": "github"
       }
     },
+    "meta-signal-orchestrate-interface": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-build": [
+          "rust-build"
+        ]
+      },
+      "locked": {
+        "lastModified": 1787744865,
+        "narHash": "sha256-05yoYH7hH8n8ZzUGbph9JK4qfbMXsCskwOlFxHz4+50=",
+        "owner": "LiGoldragon",
+        "repo": "meta-signal-orchestrate",
+        "rev": "d4dd208cd6e10254075a0c311a8e8a14a1ff3f8d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "LiGoldragon",
+        "repo": "meta-signal-orchestrate",
+        "rev": "d4dd208cd6e10254075a0c311a8e8a14a1ff3f8d",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1786348146,
@@ -147,9 +174,11 @@
       "inputs": {
         "datomic-map": "datomic-map",
         "flake-utils": "flake-utils",
+        "meta-signal-orchestrate-interface": "meta-signal-orchestrate-interface",
         "nixpkgs": "nixpkgs",
         "protos-map": "protos-map",
-        "rust-build": "rust-build"
+        "rust-build": "rust-build",
+        "signal-orchestrate-interface": "signal-orchestrate-interface"
       }
     },
     "rust-analyzer-src": {
@@ -189,6 +218,33 @@
       "original": {
         "owner": "LiGoldragon",
         "repo": "rust-build",
+        "type": "github"
+      }
+    },
+    "signal-orchestrate-interface": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-build": [
+          "rust-build"
+        ]
+      },
+      "locked": {
+        "lastModified": 1787767887,
+        "narHash": "sha256-AU2OnuU+tW3y7vcefHBdfJo006qGO0VlGRNCl70UZ3A=",
+        "owner": "LiGoldragon",
+        "repo": "signal-orchestrate",
+        "rev": "6fc8c5b7f1880b73461a4ffa863a3f8952245c0a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "LiGoldragon",
+        "repo": "signal-orchestrate",
+        "rev": "6fc8c5b7f1880b73461a4ffa863a3f8952245c0a",
         "type": "github"
       }
     },

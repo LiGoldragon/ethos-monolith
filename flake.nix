@@ -20,9 +20,22 @@
       inputs.flake-utils.follows = "flake-utils";
       inputs.rust-build.follows = "rust-build";
     };
+    signal-orchestrate-interface = {
+      url = "github:LiGoldragon/signal-orchestrate/6fc8c5b7f1880b73461a4ffa863a3f8952245c0a";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+      inputs.rust-build.follows = "rust-build";
+    };
+    meta-signal-orchestrate-interface = {
+      url = "github:LiGoldragon/meta-signal-orchestrate/d4dd208cd6e10254075a0c311a8e8a14a1ff3f8d";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+      inputs.rust-build.follows = "rust-build";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-build, protos-map, datomic-map }:
+  outputs = { self, nixpkgs, flake-utils, rust-build, protos-map, datomic-map
+    , signal-orchestrate-interface, meta-signal-orchestrate-interface }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -43,6 +56,8 @@
           ETHOS_DATOMIC_RUST = "${datomic-map}/src/lib.rs";
           ETHOS_PROTOS_CRATE = "${protos-map}";
           ETHOS_DATOMIC_CRATE = "${datomic-map}";
+          ETHOS_SIGNAL_ORCHESTRATE_SOURCE = "${signal-orchestrate-interface}/ethos/signal.ethos";
+          ETHOS_META_SIGNAL_ORCHESTRATE_SOURCE = "${meta-signal-orchestrate-interface}/ethos/signal.ethos";
         };
         cargoArtifacts = craneLib.buildDepsOnly commonArguments;
       in {
