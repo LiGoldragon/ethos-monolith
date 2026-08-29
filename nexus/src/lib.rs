@@ -10,7 +10,10 @@ use std::{
     io::{Read, Write},
     os::unix::net::{UnixListener, UnixStream},
     path::{Component, Path, PathBuf},
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
 };
 
@@ -30,6 +33,8 @@ const SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1);
 const CONFIGURATION_TABLE: TableName = TableName::new("ethos_zero_nexus_configuration");
 const ASSEMBLIES_TABLE: TableName = TableName::new("ethos_zero_nexus_assemblies");
 const CONFIGURATION_KEY: &str = "configuration";
+const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Paths {
@@ -45,16 +50,20 @@ impl Paths {
             .map(PathBuf::from)
             .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
             .ok_or(RuntimeError::MissingHome)?;
-        let state_root = state_home.join("ethos-zero-nexus");
         let runtime_root = env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| state_root.clone());
-        Ok(Self {
+            .unwrap_or_else(|| state_home.clone());
+        Ok(Self::from_roots(state_home, runtime_root))
+    }
+
+    fn from_roots(state_home: PathBuf, runtime_root: PathBuf) -> Self {
+        let state_root = state_home.join("ethos-zero-nexus");
+        Self {
             state_path: state_root.join("ethos-zero-nexus.sema"),
             ordinary_socket: runtime_root.join("ethos-zero-nexus/ethos-zero.sock"),
             meta_socket: runtime_root.join("ethos-zero-nexus/meta-ethos-zero.sock"),
             source_manifest: state_root.join("sources.datom"),
-        })
+        }
     }
 
     pub fn configuration(&self) -> Result<meta::Configuration, RuntimeError> {
@@ -236,6 +245,19 @@ impl NexusStore {
                 meta::ConfigurationRefusal::InvalidSourceManifestPath,
             ));
         }
+        // Listener ownership lives outside the store actor. Until listeners
+        // can be replaced atomically, accepting a changed path would persist
+        // a lie: the running Nexus would still serve the old socket.
+        if value.ordinary_socket_path != self.configuration.ordinary_socket_path {
+            return Ok(meta::Reply::ConfigurationRejected(
+                meta::ConfigurationRefusal::InvalidOrdinarySocketPath,
+            ));
+        }
+        if value.meta_socket_path != self.configuration.meta_socket_path {
+            return Ok(meta::Reply::ConfigurationRejected(
+                meta::ConfigurationRefusal::InvalidMetaSocketPath,
+            ));
+        }
         self.engine
             .commit_atomic(self.engine.begin_atomic_commit().mutate(
                 self.configuration_table,
@@ -270,7 +292,11 @@ impl NexusStore {
                 ordinary_signal::GenerationRefusal::UnknownSource(request.file.source_name),
             ));
         };
-        let source_path = root.join(&relative_path);
+        let Some(source_path) = contained_existing(root, &relative_path) else {
+            return Ok(ordinary_signal::Reply::GenerationRejected(
+                ordinary_signal::GenerationRefusal::InvalidRelativePath(request.file.relative_path),
+            ));
+        };
         let source = match fs::read_to_string(&source_path) {
             Ok(source) => source,
             Err(_) => {
@@ -301,10 +327,11 @@ impl NexusStore {
             }
         };
         let artifact_path = relative_path.with_extension("rs");
-        let destination = root.join(&artifact_path);
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        let Some(destination) = contained_destination(root, &artifact_path) else {
+            return Ok(ordinary_signal::Reply::GenerationRejected(
+                ordinary_signal::GenerationRefusal::InvalidRelativePath(request.file.relative_path),
+            ));
+        };
         // The source artifact reaches the filesystem before its durable state
         // transition. A process crash can therefore be repaired by a later
         // Generate; it can never claim a stored generation whose artifact was
@@ -373,6 +400,45 @@ fn contained_relative(value: &str) -> Option<PathBuf> {
         .then(|| path.to_path_buf())
 }
 
+fn contained_existing(root: &Path, relative: &Path) -> Option<PathBuf> {
+    let root = fs::canonicalize(root).ok()?;
+    let candidate = fs::canonicalize(root.join(relative)).ok()?;
+    candidate.starts_with(&root).then_some(candidate)
+}
+
+fn contained_destination(root: &Path, relative: &Path) -> Option<PathBuf> {
+    let root = fs::canonicalize(root).ok()?;
+    let mut destination = root.clone();
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return None;
+        };
+        let next = destination.join(name);
+        if components.peek().is_none() {
+            if next.exists() {
+                let canonical = fs::canonicalize(&next).ok()?;
+                return canonical.starts_with(&root).then_some(canonical);
+            }
+            return Some(next);
+        }
+        match fs::symlink_metadata(&next) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return None,
+            Ok(metadata) if metadata.is_dir() => destination = fs::canonicalize(next).ok()?,
+            Ok(_) => return None,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&next).ok()?;
+                destination = next;
+            }
+            Err(_) => return None,
+        }
+        if !destination.starts_with(&root) {
+            return None;
+        }
+    }
+    None
+}
+
 fn syntax_fault(reason: &str) -> Result<ordinary_signal::SyntaxFault, RuntimeError> {
     Ok(ordinary_signal::SyntaxFault {
         extent: ordinary_signal::SourceExtent {
@@ -390,11 +456,13 @@ fn projection_fault(reason: &str) -> Result<ordinary_signal::ProjectionFault, Ru
 
 enum Command {
     Ordinary {
+        session: u64,
         request: ordinary_signal::Request,
         events: Option<mpsc::Sender<ordinary_signal::Stream>>,
         reply: mpsc::Sender<Result<OrdinaryAnswer, RuntimeError>>,
     },
     Meta {
+        session: u64,
         request: meta::Request,
         events: Option<mpsc::Sender<meta::Stream>>,
         reply: mpsc::Sender<Result<meta::Reply, RuntimeError>>,
@@ -417,16 +485,19 @@ impl Actor {
         let (sender, receiver) = mpsc::channel::<Command>();
         thread::spawn(move || {
             let mut ordinary_subscribers: Vec<(
+                u64,
                 ordinary_signal::SubscriptionRequest,
                 mpsc::Sender<ordinary_signal::Stream>,
             )> = Vec::new();
             let mut meta_subscribers: Vec<(
+                u64,
                 meta::MetaSubscriptionRequest,
                 mpsc::Sender<meta::Stream>,
             )> = Vec::new();
             while let Ok(command) = receiver.recv() {
                 match command {
                     Command::Ordinary {
+                        session,
                         request,
                         events,
                         reply,
@@ -438,7 +509,7 @@ impl Actor {
                                 .map(OrdinaryAnswer::Reply),
                             ordinary_signal::Request::Subscribe(subscription) => {
                                 if let Some(events) = events {
-                                    ordinary_subscribers.push((subscription, events));
+                                    ordinary_subscribers.push((session, subscription, events));
                                 }
                                 store
                                     .ordinary_observation()
@@ -446,14 +517,16 @@ impl Actor {
                                     .map(OrdinaryAnswer::Reply)
                             }
                             ordinary_signal::Request::Unsubscribe(subscription) => {
-                                ordinary_subscribers
-                                    .retain(|(current, _)| current != &subscription);
+                                ordinary_subscribers.retain(|(owner, current, _)| {
+                                    *owner != session || current != &subscription
+                                });
                                 store
                                     .ordinary_observation()
                                     .map(ordinary_signal::Reply::Observed)
                                     .map(OrdinaryAnswer::Reply)
                             }
                             ordinary_signal::Request::Generate(request) => {
+                                let requested_file = request.file.clone();
                                 if contained_relative(request.file.relative_path.as_ref()).is_none()
                                 {
                                     let refusal = ordinary_signal::Refusal::InvalidRelativePath(
@@ -464,8 +537,10 @@ impl Actor {
                                 }
                                 let started =
                                     ordinary_signal::Stream::GenerationStarted(request.clone());
-                                ordinary_subscribers
-                                    .retain(|(_, sender)| sender.send(started.clone()).is_ok());
+                                ordinary_subscribers.retain(|(_, current, sender)| {
+                                    current.file != requested_file
+                                        || sender.send(started.clone()).is_ok()
+                                });
                                 let result = store.generate(request).map(OrdinaryAnswer::Reply);
                                 if let Ok(OrdinaryAnswer::Reply(reply_value)) = &result {
                                     let event = match reply_value {
@@ -483,8 +558,10 @@ impl Actor {
                                             unreachable!("Generate has a generation reply")
                                         }
                                     };
-                                    ordinary_subscribers
-                                        .retain(|(_, sender)| sender.send(event.clone()).is_ok());
+                                    ordinary_subscribers.retain(|(_, current, sender)| {
+                                        current.file != requested_file
+                                            || sender.send(event.clone()).is_ok()
+                                    });
                                 }
                                 result
                             }
@@ -492,6 +569,7 @@ impl Actor {
                         let _ = reply.send(result);
                     }
                     Command::Meta {
+                        session,
                         request,
                         events,
                         reply,
@@ -502,7 +580,7 @@ impl Actor {
                                 if let Ok(meta::Reply::Configured(configuration)) = &result {
                                     let event =
                                         meta::Stream::ConfigurationChanged(configuration.clone());
-                                    meta_subscribers.retain(|(subscription, sender)| {
+                                    meta_subscribers.retain(|(_, subscription, sender)| {
                                         !matches!(
                                             subscription.selection,
                                             meta::MetaObservationSelection::Configuration
@@ -510,7 +588,7 @@ impl Actor {
                                     });
                                     if let Ok(index) = store.source_index() {
                                         let event = meta::Stream::SourcesChanged(index);
-                                        meta_subscribers.retain(|(subscription, sender)| {
+                                        meta_subscribers.retain(|(_, subscription, sender)| {
                                             !matches!(
                                                 subscription.selection,
                                                 meta::MetaObservationSelection::Sources
@@ -540,7 +618,7 @@ impl Actor {
                             meta::Request::Subscribe(subscription) => {
                                 let selection = subscription.selection.clone();
                                 if let Some(events) = events {
-                                    meta_subscribers.push((subscription, events));
+                                    meta_subscribers.push((session, subscription, events));
                                 }
                                 match selection {
                                     meta::MetaObservationSelection::Configuration => {
@@ -563,7 +641,9 @@ impl Actor {
                                 }
                             }
                             meta::Request::Unsubscribe(subscription) => {
-                                meta_subscribers.retain(|(current, _)| current != &subscription);
+                                meta_subscribers.retain(|(owner, current, _)| {
+                                    *owner != session || current != &subscription
+                                });
                                 Ok(meta::Reply::Observed(meta::MetaObservation::Configuration(
                                     store.configuration.clone(),
                                 )))
@@ -577,14 +657,24 @@ impl Actor {
         Ok(Self { sender })
     }
 
+    #[cfg(test)]
     fn ordinary(
         &self,
+        request: ordinary_signal::Request,
+        events: Option<mpsc::Sender<ordinary_signal::Stream>>,
+    ) -> Result<OrdinaryAnswer, RuntimeError> {
+        self.ordinary_session(0, request, events)
+    }
+    fn ordinary_session(
+        &self,
+        session: u64,
         request: ordinary_signal::Request,
         events: Option<mpsc::Sender<ordinary_signal::Stream>>,
     ) -> Result<OrdinaryAnswer, RuntimeError> {
         let (reply, receive) = mpsc::channel();
         self.sender
             .send(Command::Ordinary {
+                session,
                 request,
                 events,
                 reply,
@@ -592,14 +682,24 @@ impl Actor {
             .map_err(|_| RuntimeError::ActorClosed)?;
         receive.recv().map_err(|_| RuntimeError::ActorClosed)?
     }
+    #[cfg(test)]
     fn meta(
         &self,
+        request: meta::Request,
+        events: Option<mpsc::Sender<meta::Stream>>,
+    ) -> Result<meta::Reply, RuntimeError> {
+        self.meta_session(0, request, events)
+    }
+    fn meta_session(
+        &self,
+        session: u64,
         request: meta::Request,
         events: Option<mpsc::Sender<meta::Stream>>,
     ) -> Result<meta::Reply, RuntimeError> {
         let (reply, receive) = mpsc::channel();
         self.sender
             .send(Command::Meta {
+                session,
                 request,
                 events,
                 reply,
@@ -629,11 +729,23 @@ fn meta_frame(body: meta::FrameBody) -> meta::Frame {
 fn read_frame(stream: &mut UnixStream) -> std::io::Result<Vec<u8>> {
     let mut prefix = [0; 4];
     stream.read_exact(&mut prefix)?;
-    let length = u32::from_le_bytes(prefix) as usize;
+    let length = frame_length(prefix)?;
     let mut bytes = vec![0; length + 4];
     bytes[..4].copy_from_slice(&prefix);
     stream.read_exact(&mut bytes[4..])?;
     Ok(bytes)
+}
+
+fn frame_length(prefix: [u8; 4]) -> std::io::Result<usize> {
+    let length = u32::from_le_bytes(prefix) as usize;
+    (length <= MAX_FRAME_BYTES)
+        .then_some(length)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "frame exceeds maximum length",
+            )
+        })
 }
 
 fn bind(path: &Path) -> Result<UnixListener, RuntimeError> {
@@ -647,6 +759,7 @@ fn bind(path: &Path) -> Result<UnixListener, RuntimeError> {
 }
 
 fn ordinary_socket(mut stream: UnixStream, actor: Actor) {
+    let session = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
     let request = read_frame(&mut stream)
         .ok()
         .and_then(|bytes| ordinary_signal::Frame::decode_length_prefixed(&bytes).ok())
@@ -659,38 +772,33 @@ fn ordinary_socket(mut stream: UnixStream, actor: Actor) {
     };
     let subscribe = matches!(request, ordinary_signal::Request::Subscribe(_));
     let (events, receiver) = mpsc::channel();
-    let reply = actor.ordinary(request, subscribe.then_some(events));
+    let reply = actor.ordinary_session(session, request, subscribe.then_some(events));
     let body = match reply {
         Ok(OrdinaryAnswer::Reply(value)) => ordinary_signal::FrameBody::Reply(value),
         Ok(OrdinaryAnswer::Refusal(value)) => ordinary_signal::FrameBody::Refusal(value),
         Err(_) => return,
     };
-    if stream
-        .write_all(
-            &ordinary_frame(body)
-                .encode_length_prefixed()
-                .unwrap_or_default(),
-        )
-        .is_err()
-    {
+    let Ok(bytes) = ordinary_frame(body).encode_length_prefixed() else {
+        return;
+    };
+    if stream.write_all(&bytes).is_err() {
         return;
     }
     if subscribe {
         for event in receiver {
-            if stream
-                .write_all(
-                    &ordinary_frame(ordinary_signal::FrameBody::Event(event))
-                        .encode_length_prefixed()
-                        .unwrap_or_default(),
-                )
-                .is_err()
-            {
+            let Ok(bytes) =
+                ordinary_frame(ordinary_signal::FrameBody::Event(event)).encode_length_prefixed()
+            else {
+                break;
+            };
+            if stream.write_all(&bytes).is_err() {
                 break;
             }
         }
     }
 }
 fn meta_socket(mut stream: UnixStream, actor: Actor) {
+    let session = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
     let request = read_frame(&mut stream)
         .ok()
         .and_then(|bytes| meta::Frame::decode_length_prefixed(&bytes).ok())
@@ -703,31 +811,24 @@ fn meta_socket(mut stream: UnixStream, actor: Actor) {
     };
     let subscribe = matches!(request, meta::Request::Subscribe(_));
     let (events, receiver) = mpsc::channel();
-    let reply = actor.meta(request, subscribe.then_some(events));
+    let reply = actor.meta_session(session, request, subscribe.then_some(events));
     let body = match reply {
         Ok(value) => meta::FrameBody::Reply(value),
         Err(_) => return,
     };
-    if stream
-        .write_all(
-            &meta_frame(body)
-                .encode_length_prefixed()
-                .unwrap_or_default(),
-        )
-        .is_err()
-    {
+    let Ok(bytes) = meta_frame(body).encode_length_prefixed() else {
+        return;
+    };
+    if stream.write_all(&bytes).is_err() {
         return;
     }
     if subscribe {
         for event in receiver {
-            if stream
-                .write_all(
-                    &meta_frame(meta::FrameBody::Event(event))
-                        .encode_length_prefixed()
-                        .unwrap_or_default(),
-                )
-                .is_err()
-            {
+            let Ok(bytes) = meta_frame(meta::FrameBody::Event(event)).encode_length_prefixed()
+            else {
+                break;
+            };
+            if stream.write_all(&bytes).is_err() {
                 break;
             }
         }
@@ -804,20 +905,8 @@ mod tests {
         let defaults = paths.configuration().expect("defaults");
         let mut store = NexusStore::open(&paths.state_path, defaults.clone()).expect("open store");
         let changed = meta::Configuration {
-            ordinary_socket_path: directory
-                .path()
-                .join("other.sock")
-                .display()
-                .to_string()
-                .try_into()
-                .expect("ordinary path"),
-            meta_socket_path: directory
-                .path()
-                .join("other-meta.sock")
-                .display()
-                .to_string()
-                .try_into()
-                .expect("meta path"),
+            ordinary_socket_path: defaults.ordinary_socket_path.clone(),
+            meta_socket_path: defaults.meta_socket_path.clone(),
             source_manifest_path: directory
                 .path()
                 .join("other-sources.datom")
@@ -833,6 +922,48 @@ mod tests {
         drop(store);
         let reopened = NexusStore::open(&paths.state_path, defaults).expect("reopen store");
         assert_eq!(reopened.configuration, changed);
+    }
+
+    #[test]
+    fn state_fallback_uses_one_nexus_directory_and_frames_are_bounded() {
+        let paths = Paths::from_roots(PathBuf::from("/state"), PathBuf::from("/state"));
+        assert_eq!(
+            paths.ordinary_socket,
+            PathBuf::from("/state/ethos-zero-nexus/ethos-zero.sock")
+        );
+        assert!(frame_length((MAX_FRAME_BYTES as u32).to_le_bytes()).is_ok());
+        assert!(frame_length(((MAX_FRAME_BYTES as u32) + 1).to_le_bytes()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_source_and_artifact_paths_are_typed_containment_refusals() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().expect("temporary root");
+        let paths = paths(directory.path());
+        let source = directory.path().join("source");
+        let outside = directory.path().join("outside");
+        fs::create_dir_all(&source).expect("source root");
+        fs::create_dir_all(&outside).expect("outside root");
+        fs::write(
+            outside.join("escape.ethos"),
+            "Interface.{0 1 0} Channel.{Example 1 1} [] {[][][][][]}",
+        )
+        .expect("outside source");
+        symlink(outside.join("escape.ethos"), source.join("escape.ethos")).expect("source link");
+        write_manifest(&paths, &source);
+        let actor = Actor::start(&paths).expect("actor");
+        assert!(matches!(
+            actor
+                .ordinary(
+                    ordinary_signal::Request::Generate(request("escape.ethos")),
+                    None
+                )
+                .expect("refusal"),
+            OrdinaryAnswer::Reply(ordinary_signal::Reply::GenerationRejected(
+                ordinary_signal::GenerationRefusal::InvalidRelativePath(_)
+            ))
+        ));
     }
 
     #[test]
@@ -924,6 +1055,131 @@ mod tests {
             directory.path().join("example.rs").is_file(),
             "generation writes before it is recorded"
         );
+    }
+
+    #[test]
+    fn subscriptions_filter_by_file_and_unsubscribe_only_their_session() {
+        let directory = tempfile::tempdir().expect("temporary root");
+        let paths = paths(directory.path());
+        write_manifest(&paths, directory.path());
+        write_interface(directory.path());
+        let actor = Actor::start(&paths).expect("actor");
+        let matching = ordinary_signal::SubscriptionRequest {
+            file: request("example.ethos").file,
+        };
+        let other = ordinary_signal::SubscriptionRequest {
+            file: request("other.ethos").file,
+        };
+        let (first_send, first_events) = mpsc::channel();
+        let (other_send, other_events) = mpsc::channel();
+        actor
+            .ordinary_session(
+                1,
+                ordinary_signal::Request::Subscribe(matching.clone()),
+                Some(first_send),
+            )
+            .expect("first subscribe");
+        actor
+            .ordinary_session(
+                2,
+                ordinary_signal::Request::Subscribe(other),
+                Some(other_send),
+            )
+            .expect("other subscribe");
+        actor
+            .ordinary_session(
+                3,
+                ordinary_signal::Request::Unsubscribe(matching.clone()),
+                None,
+            )
+            .expect("foreign unsubscribe");
+        actor
+            .ordinary(
+                ordinary_signal::Request::Generate(request("example.ethos")),
+                None,
+            )
+            .expect("generate");
+        assert!(matches!(
+            first_events.recv().expect("matching start"),
+            ordinary_signal::Stream::GenerationStarted(_)
+        ));
+        assert!(matches!(
+            first_events.recv().expect("matching completion"),
+            ordinary_signal::Stream::GenerationCompleted(_)
+        ));
+        assert!(matches!(
+            other_events.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        actor
+            .ordinary_session(1, ordinary_signal::Request::Unsubscribe(matching), None)
+            .expect("owned unsubscribe");
+        actor
+            .ordinary(
+                ordinary_signal::Request::Generate(request("example.ethos")),
+                None,
+            )
+            .expect("regenerate");
+        assert!(matches!(
+            first_events.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn meta_subscriptions_are_owned_by_their_sessions() {
+        let directory = tempfile::tempdir().expect("temporary root");
+        let paths = paths(directory.path());
+        write_manifest(&paths, directory.path());
+        let actor = Actor::start(&paths).expect("actor");
+        let subscription = meta::MetaSubscriptionRequest {
+            selection: meta::MetaObservationSelection::Configuration,
+        };
+        let (first_send, first_events) = mpsc::channel();
+        let (second_send, second_events) = mpsc::channel();
+        actor
+            .meta_session(
+                1,
+                meta::Request::Subscribe(subscription.clone()),
+                Some(first_send),
+            )
+            .expect("first subscription");
+        actor
+            .meta_session(
+                2,
+                meta::Request::Subscribe(subscription.clone()),
+                Some(second_send),
+            )
+            .expect("second subscription");
+        actor
+            .meta_session(3, meta::Request::Unsubscribe(subscription.clone()), None)
+            .expect("foreign unsubscribe");
+        let configuration = paths.configuration().expect("defaults");
+        actor
+            .meta(meta::Request::Configure(configuration.clone()), None)
+            .expect("configuration");
+        assert!(matches!(
+            first_events.recv().expect("first event"),
+            meta::Stream::ConfigurationChanged(value) if value == configuration
+        ));
+        assert!(matches!(
+            second_events.recv().expect("second event"),
+            meta::Stream::ConfigurationChanged(value) if value == configuration
+        ));
+        actor
+            .meta_session(1, meta::Request::Unsubscribe(subscription), None)
+            .expect("owned unsubscribe");
+        actor
+            .meta(meta::Request::Configure(configuration.clone()), None)
+            .expect("configuration again");
+        assert!(matches!(
+            first_events.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            second_events.recv().expect("second retained event"),
+            meta::Stream::ConfigurationChanged(value) if value == configuration
+        ));
     }
 
     #[test]
@@ -1048,20 +1304,11 @@ mod tests {
             meta::Reply::Observed(meta::MetaObservation::Configuration(_))
         ));
         let changed = meta::Configuration {
-            ordinary_socket_path: directory
-                .path()
-                .join("changed-ordinary.sock")
-                .display()
-                .to_string()
-                .try_into()
-                .expect("ordinary path"),
-            meta_socket_path: directory
-                .path()
-                .join("changed-meta.sock")
-                .display()
-                .to_string()
-                .try_into()
-                .expect("meta path"),
+            ordinary_socket_path: paths
+                .configuration()
+                .expect("defaults")
+                .ordinary_socket_path,
+            meta_socket_path: paths.configuration().expect("defaults").meta_socket_path,
             source_manifest_path: paths
                 .source_manifest
                 .display()

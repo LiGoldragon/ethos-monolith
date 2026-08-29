@@ -1,5 +1,15 @@
 # Upgrades
 
+## 0.7.0 — audited Nexus runtime boundary correction
+
+The Nexus and both CLIs now share the same XDG fallback socket directory and
+reject frames over 16 MiB before allocation. Source and artifact paths are
+canonical containment-checked, including symlink traversal. Configure now
+rejects changed socket paths until listener replacement can be atomic; it may
+still persist a changed source-manifest path. Deploy this workspace update as a
+unit: stop the old `ethos-zero-nexus`, then start the new executable so its
+socket location and persisted configuration are interpreted consistently.
+
 ## 0.6.0 — Ethos-zero Nexus runtime
 
 Ethos-zero is now shipped as a Nexus workspace: `ethos-zero-nexus` owns the

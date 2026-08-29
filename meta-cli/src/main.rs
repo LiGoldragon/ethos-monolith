@@ -12,11 +12,15 @@ use datomic::{Datomic, Text, TextEdge};
 use meta_signal_ethos_zero as signal;
 use signal::SignalFrameCodec as _;
 
+const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
 fn socket_path() -> Result<PathBuf, String> {
+    let state = env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")));
     env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .or_else(|| env::var_os("XDG_STATE_HOME").map(PathBuf::from))
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .or(state)
         .map(|root| root.join("ethos-zero-nexus/meta-ethos-zero.sock"))
         .ok_or_else(|| "XDG_RUNTIME_DIR, XDG_STATE_HOME, or HOME is required".to_owned())
 }
@@ -53,8 +57,9 @@ fn run() -> Result<(), String> {
     stream
         .read_exact(&mut prefix)
         .map_err(|error| error.to_string())?;
+    let length = frame_length(prefix)?;
     let mut bytes = prefix.to_vec();
-    bytes.resize(4 + u32::from_le_bytes(prefix) as usize, 0);
+    bytes.resize(4 + length, 0);
     stream
         .read_exact(&mut bytes[4..])
         .map_err(|error| error.to_string())?;
@@ -67,6 +72,12 @@ fn run() -> Result<(), String> {
         _ => return Err("Nexus returned a non-reply frame".into()),
     }
     Ok(())
+}
+fn frame_length(prefix: [u8; 4]) -> Result<usize, String> {
+    let length = u32::from_le_bytes(prefix) as usize;
+    (length <= MAX_FRAME_BYTES)
+        .then_some(length)
+        .ok_or_else(|| "Nexus frame exceeds maximum length".into())
 }
 fn main() -> ExitCode {
     match run() {
@@ -87,5 +98,10 @@ mod tests {
         assert!(parse_arguments(&[]).is_err());
         assert!(parse_arguments(&["--help".into()]).is_err());
         assert!(parse_arguments(&["Observe.Configuration".into(), "extra".into()]).is_err());
+    }
+    #[test]
+    fn rejects_oversized_frame_before_allocation() {
+        assert!(frame_length((MAX_FRAME_BYTES as u32).to_le_bytes()).is_ok());
+        assert!(frame_length(((MAX_FRAME_BYTES as u32) + 1).to_le_bytes()).is_err());
     }
 }

@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "ethos-zero-cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "datomic",
  "signal-ethos-zero",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "ethos-zero-meta"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "datomic",
  "meta-signal-ethos-zero",
@@ -170,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "ethos-zero-nexus"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "datomic",
  "ethos-zero",
