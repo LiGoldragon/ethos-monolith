@@ -1008,16 +1008,32 @@ impl HandOwnedCodec {
 use ethos_zero_wire_contract::{
     codec::HandOwnedCodec,
     generated::{
-        ChannelContractId, ChannelWireRevision, FrameBody, Name, ProtocolVersion, Request,
-        Submission,
+        ChannelContractId, ChannelWireRevision, FrameBody, Name, ProtocolVersion, Refusal,
+        Reply, Request, Result, Stream, Submission,
     },
 };
+use datomic::Datomic;
 
 #[test]
 fn generated_signal_and_hand_owned_codec_meet_at_the_frame() {
-    let frame = HandOwnedCodec::envelope(FrameBody::Request(Request::Submit(Submission {
+    let submission = Submission {
         name: Name::try_from("ready").expect("representable fixture string"),
-    })));
+    };
+    let request = Request::Submit(submission.clone());
+    let request_portion = Datomic::portion(&request);
+    assert_eq!(Request::embody(&request_portion).expect("request root"), request);
+    let reply = Reply::Submitted(Result {
+        name: Name::try_from("ready").expect("representable reply"),
+    });
+    let reply_portion = Datomic::portion(&reply);
+    assert_eq!(Reply::embody(&reply_portion).expect("reply root"), reply);
+    let refusal = Refusal::Rejected(Name::try_from("missing").expect("representable refusal"));
+    let refusal_portion = Datomic::portion(&refusal);
+    assert_eq!(Refusal::embody(&refusal_portion).expect("refusal root"), refusal);
+    let stream = Stream::Changed(Name::try_from("changed").expect("representable event"));
+    let stream_portion = Datomic::portion(&stream);
+    assert_eq!(Stream::embody(&stream_portion).expect("event root"), stream);
+    let frame = HandOwnedCodec::envelope(FrameBody::Request(Request::Submit(submission)));
     assert_eq!(frame.channel_contract_id, ChannelContractId(7));
     assert_eq!(frame.channel_wire_revision, ChannelWireRevision(3));
     assert_eq!(frame.protocol_version, ProtocolVersion::new(0, 2, 0));

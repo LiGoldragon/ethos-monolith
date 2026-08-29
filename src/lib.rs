@@ -726,18 +726,30 @@ fn wire_root_tokens(
     if declarations.is_empty() {
         return Ok(proc_macro2::TokenStream::new());
     }
+    let declaration = TypeDeclaration::Enum {
+        visibility: Visibility::Public,
+        name: name.to_owned(),
+        generics: Vec::new(),
+        non_exhaustive: false,
+        variants: declarations
+            .iter()
+            .map(|reference| Variant {
+                name: reference.name.clone(),
+                payload: VariantPayload::Type(reference.ty.clone()),
+            })
+            .collect(),
+    };
+    let TypeDeclaration::Enum { name, variants, .. } = &declaration else {
+        unreachable!("WireContract roots are enums");
+    };
     let name = identifier(name)?;
-    let variants = declarations
-        .iter()
-        .map(|d| {
-            let variant = identifier(&d.name)?;
-            let ty = wire_type_tokens(&d.ty)?;
-            Ok(quote! { #variant(#ty) })
-        })
-        .collect::<Result<Vec<_>, FileFault>>()?;
-    Ok(
-        quote! { #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] pub enum #name { #( #variants, )* } },
-    )
+    let variants = wire_variants(variants)?;
+    let anatomy = datomic_anatomy_tokens(&declaration)?;
+    Ok(quote! {
+        #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)]
+        pub enum #name { #( #variants, )* }
+        #anatomy
+    })
 }
 fn interface_root_tokens(
     name: &str,

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+WireContract 0.5.0 makes every generated interface root (request, reply,
+refusal, and stream event) a Datomic anatomy as well as an rkyv projection.
+This enables source-linked textual boundary tests without a hand-maintained
+root codec.
+
 WireContract 0.4.0 frames can now carry generated refusal roots and stream
 events as `FrameBody::Refusal` and `FrameBody::Event`. Consumers that decode
 frames exhaustively must handle these additional wire variants.
