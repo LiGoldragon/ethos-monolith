@@ -459,6 +459,8 @@ pub enum RustEmission {
     D3Consumer,
     /// Emit only the schema library's declarations, kinds, and association checks.
     SchemaLibrary,
+    /// Emit a standalone rkyv Signal contract from an Interface file.
+    WireContract,
 }
 
 pub struct RustEmitter {
@@ -484,6 +486,12 @@ impl RustEmitter {
         }
     }
 
+    pub fn wire_contract() -> Self {
+        Self {
+            emission: RustEmission::WireContract,
+        }
+    }
+
     pub fn emit(&self, file: &File) -> Result<String, FileFault> {
         let generation = self.generate(file)?;
         Ok(generation.syntax.into_token_stream().to_string())
@@ -498,15 +506,19 @@ impl RustEmitter {
     }
 
     pub fn syntax(&self, file: &File) -> Result<syn::File, FileFault> {
+        if let (RustEmission::WireContract, File::Interface(interface)) = (self.emission, file) {
+            return syn::parse2(wire_interface_tokens(interface)?)
+                .map_err(|_| root_fault(0, FileFaultReason::Declaration));
+        }
         let mut definitions = Vec::new();
-        let mut section_roots = Vec::new();
+        let mut section_roots: Vec<proc_macro2::TokenStream> = Vec::new();
         match file {
             File::Interface(interface) => {
                 definitions.extend(interface.types.iter());
-                section_roots.push(section_root_tokens("Request", &interface.input)?);
-                section_roots.push(section_root_tokens("Reply", &interface.output)?);
-                section_roots.push(section_root_tokens("Refusal", &interface.refusal)?);
-                section_roots.push(section_root_tokens("Stream", &interface.stream)?);
+                section_roots.push(interface_root_tokens("Request", &interface.input, true)?);
+                section_roots.push(interface_root_tokens("Reply", &interface.output, true)?);
+                section_roots.push(interface_root_tokens("Refusal", &interface.refusal, true)?);
+                section_roots.push(interface_root_tokens("Stream", &interface.stream, true)?);
             }
             File::Schema(schema) => definitions.extend(schema.types.iter()),
         }
@@ -544,6 +556,206 @@ impl RustEmitter {
     }
 }
 
+fn wire_interface_tokens(interface: &InterfaceFile) -> Result<proc_macro2::TokenStream, FileFault> {
+    let types = interface
+        .types
+        .iter()
+        .map(wire_declaration_tokens)
+        .collect::<Result<Vec<_>, _>>()?;
+    let anatomies = interface
+        .types
+        .iter()
+        .map(wire_datomic_tokens)
+        .collect::<Result<Vec<_>, _>>()?;
+    let request = wire_root_tokens("Request", &interface.input)?;
+    let reply = wire_root_tokens("Reply", &interface.output)?;
+    let refusal = wire_root_tokens("Refusal", &interface.refusal)?;
+    let stream = wire_root_tokens("Stream", &interface.stream)?;
+    let major = u16::try_from(interface.header.version.major)
+        .map_err(|_| root_fault(0, FileFaultReason::Header))?;
+    let minor = u16::try_from(interface.header.version.minor)
+        .map_err(|_| root_fault(0, FileFaultReason::Header))?;
+    let patch = u16::try_from(interface.header.version.patch)
+        .map_err(|_| root_fault(0, FileFaultReason::Header))?;
+    let contract = u32::try_from(interface.channel.contract)
+        .map_err(|_| root_fault(0, FileFaultReason::Header))?;
+    let wire = u16::try_from(interface.channel.wire)
+        .map_err(|_| root_fault(0, FileFaultReason::Header))?;
+    Ok(quote! {
+        use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+        #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Copy, Debug, PartialEq, Eq)] pub struct ProtocolVersion { pub major: u16, pub minor: u16, pub patch: u16 }
+        impl ProtocolVersion { pub const fn new(major: u16, minor: u16, patch: u16) -> Self { Self { major, minor, patch } } }
+        #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Copy, Debug, PartialEq, Eq)] pub struct ChannelContractId(pub u32);
+        #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Copy, Debug, PartialEq, Eq)] pub struct ChannelWireRevision(pub u16);
+        pub const INTERFACE_VERSION: ProtocolVersion = ProtocolVersion::new(#major, #minor, #patch);
+        pub const CHANNEL_CONTRACT_ID: ChannelContractId = ChannelContractId(#contract);
+        pub const CHANNEL_WIRE_REVISION: ChannelWireRevision = ChannelWireRevision(#wire);
+        pub const PROTOCOL_VERSION: ProtocolVersion = INTERFACE_VERSION;
+        #( #types )* #( #anatomies )* #request #reply #refusal #stream
+        #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] pub enum FrameBody { Request(Request), Reply(Reply) }
+        #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] pub struct Frame { pub channel_contract_id: ChannelContractId, pub channel_wire_revision: ChannelWireRevision, pub protocol_version: ProtocolVersion, pub body: FrameBody }
+    })
+}
+
+fn wire_datomic_tokens(
+    declaration: &TypeDeclaration,
+) -> Result<proc_macro2::TokenStream, FileFault> {
+    match declaration {
+        TypeDeclaration::Alias { name, target, .. } => {
+            let name = identifier(name)?;
+            match target {
+                TypeExpression::Reference(value) if value == "String" => Ok(quote! {
+                    impl datomic::Datomic for #name {
+                        fn embody(portion: &protos::Portion) -> std::result::Result<Self, datomic::Fault> {
+                            Ok(Self(<datomic::DatomicString as datomic::Datomic>::embody(portion)?.as_ref().to_owned()))
+                        }
+                        fn portion(&self) -> protos::Portion {
+                            datomic::Datomic::portion(&datomic::DatomicString::try_from(self.0.clone()).expect("wire strings were embodied"))
+                        }
+                    }
+                }),
+                TypeExpression::Reference(value) if value == "Integer" => Ok(quote! {
+                    impl datomic::Datomic for #name {
+                        fn embody(portion: &protos::Portion) -> std::result::Result<Self, datomic::Fault> { Ok(Self(<i64 as datomic::Datomic>::embody(portion)?)) }
+                        fn portion(&self) -> protos::Portion { datomic::Datomic::portion(&self.0) }
+                    }
+                }),
+                _ => {
+                    let target = wire_type_tokens(target)?;
+                    Ok(quote! {
+                        impl datomic::Datomic for #name {
+                            fn embody(portion: &protos::Portion) -> std::result::Result<Self, datomic::Fault> {
+                                Ok(Self(<#target as datomic::Datomic>::embody(portion)?))
+                            }
+                            fn portion(&self) -> protos::Portion {
+                                <#target as datomic::Datomic>::portion(&self.0)
+                            }
+                        }
+                    })
+                }
+            }
+        }
+        TypeDeclaration::Struct { .. } | TypeDeclaration::Enum { .. } => {
+            datomic_anatomy_tokens(declaration)
+        }
+        TypeDeclaration::TupleStruct { .. } => Ok(proc_macro2::TokenStream::new()),
+    }
+}
+
+fn wire_declaration_tokens(
+    declaration: &TypeDeclaration,
+) -> Result<proc_macro2::TokenStream, FileFault> {
+    let derive =
+        quote! { #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] };
+    match declaration {
+        TypeDeclaration::Alias { name, target, .. } => {
+            let name = identifier(name)?;
+            let target = wire_type_tokens(target)?;
+            Ok(quote! { #derive pub struct #name(pub #target); })
+        }
+        TypeDeclaration::Struct { name, fields, .. } => {
+            let name = identifier(name)?;
+            let fields = fields
+                .iter()
+                .map(|field| {
+                    let name = field_identifier(&field.name)?;
+                    let ty = wire_type_tokens(&field.ty)?;
+                    Ok(quote! { pub #name: #ty })
+                })
+                .collect::<Result<Vec<_>, FileFault>>()?;
+            Ok(quote! { #derive pub struct #name { #( #fields, )* } })
+        }
+        TypeDeclaration::TupleStruct { name, fields, .. } => {
+            let name = identifier(name)?;
+            let fields = fields
+                .iter()
+                .map(|(_, ty)| wire_type_tokens(ty))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(quote! { #derive pub struct #name( #( pub #fields, )* ); })
+        }
+        TypeDeclaration::Enum { name, variants, .. } => {
+            let name = identifier(name)?;
+            let variants = wire_variants(variants)?;
+            Ok(quote! { #derive pub enum #name { #( #variants, )* } })
+        }
+    }
+}
+
+fn wire_root_tokens(
+    name: &str,
+    declarations: &[SectionReference],
+) -> Result<proc_macro2::TokenStream, FileFault> {
+    if declarations.is_empty() {
+        return Ok(proc_macro2::TokenStream::new());
+    }
+    let name = identifier(name)?;
+    let variants = declarations
+        .iter()
+        .map(|d| {
+            let variant = identifier(&d.name)?;
+            let ty = wire_type_tokens(&d.ty)?;
+            Ok(quote! { #variant(#ty) })
+        })
+        .collect::<Result<Vec<_>, FileFault>>()?;
+    Ok(
+        quote! { #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] pub enum #name { #( #variants, )* } },
+    )
+}
+fn interface_root_tokens(
+    name: &str,
+    references: &[SectionReference],
+    datomic: bool,
+) -> Result<proc_macro2::TokenStream, FileFault> {
+    let root = identifier(name)?;
+    let variants = references
+        .iter()
+        .map(|reference| {
+            let variant = identifier(&reference.name)?;
+            let ty = type_tokens_with_datomic(&reference.ty, datomic, false)?;
+            Ok(quote! { #variant(#ty) })
+        })
+        .collect::<Result<Vec<_>, FileFault>>()?;
+    Ok(quote! { pub enum #root { #( #variants, )* } })
+}
+fn wire_variants(variants: &[Variant]) -> Result<Vec<proc_macro2::TokenStream>, FileFault> {
+    variants
+        .iter()
+        .map(|variant| {
+            let name = identifier(&variant.name)?;
+            Ok(match &variant.payload {
+                VariantPayload::Unit => quote! { #name },
+                VariantPayload::Type(ty) => {
+                    let ty = wire_type_tokens(ty)?;
+                    quote! { #name(#ty) }
+                }
+                VariantPayload::Tuple(types) => {
+                    let types = types
+                        .iter()
+                        .map(wire_type_tokens)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    quote! { #name( #( #types, )* ) }
+                }
+                _ => return Err(root_fault(0, FileFaultReason::Declaration)),
+            })
+        })
+        .collect()
+}
+fn wire_type_tokens(expression: &TypeExpression) -> Result<proc_macro2::TokenStream, FileFault> {
+    match expression {
+        TypeExpression::Reference(name) if name == "String" => Ok(quote! { String }),
+        TypeExpression::Reference(name) if name == "Integer" => Ok(quote! { i64 }),
+        TypeExpression::Reference(_) => type_tokens_with_datomic(expression, false, false),
+        TypeExpression::Application {
+            constructor,
+            arguments,
+        } if constructor == "Vector" && arguments.len() == 1 => {
+            let inner = wire_type_tokens(&arguments[0])?;
+            Ok(quote! { Vec<#inner> })
+        }
+        _ => type_tokens_with_datomic(expression, false, false),
+    }
+}
+
 fn datomic_anatomy_tokens(
     declaration: &TypeDeclaration,
 ) -> Result<proc_macro2::TokenStream, FileFault> {
@@ -569,7 +781,7 @@ fn datomic_anatomy_tokens(
                 })
                 .collect::<Result<Vec<_>, FileFault>>()?;
             quote! {
-                fn embody(portion: &protos::Portion) -> Result<Self, datomic::Fault> {
+                fn embody(portion: &protos::Portion) -> std::result::Result<Self, datomic::Fault> {
                     let Some(parts) = datomic::PortionViewing::structural(
                         portion,
                         protos::StructuralEnclosure::Braced,
@@ -704,7 +916,7 @@ fn enum_anatomy_tokens(
         })
         .collect::<Result<Vec<_>, FileFault>>()?;
     Ok(quote! {
-        fn embody(portion: &protos::Portion) -> Result<Self, datomic::Fault> {
+        fn embody(portion: &protos::Portion) -> std::result::Result<Self, datomic::Fault> {
             #( #embodiments )*
             Err(datomic::PortionViewing::fault(portion, datomic::FaultProblem::Shape))
         }
@@ -734,22 +946,6 @@ fn variant_payload_type(
 fn is_datomic_file(file: &File) -> bool {
     matches!(file, File::Schema(schema) if schema.kinds.iter().any(|kind| kind.name == "Datomic"))
         || matches!(file, File::Interface(_))
-}
-
-fn section_root_tokens(
-    name: &str,
-    references: &[SectionReference],
-) -> Result<proc_macro2::TokenStream, FileFault> {
-    let root = identifier(name)?;
-    let variants = references
-        .iter()
-        .map(|reference| {
-            let variant = identifier(&reference.name)?;
-            let ty = type_tokens_with_datomic(&reference.ty, true, false)?;
-            Ok(quote! { #variant(#ty) })
-        })
-        .collect::<Result<Vec<_>, FileFault>>()?;
-    Ok(quote! { pub enum #root { #( #variants, )* } })
 }
 
 fn declaration_name(declaration: &TypeDeclaration) -> &str {

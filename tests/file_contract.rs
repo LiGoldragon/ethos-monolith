@@ -430,6 +430,15 @@ fn engine_manifest(needs_datomic: bool) -> String {
     )
 }
 
+fn wire_contract_manifest(name: &str) -> String {
+    engine_manifest(true)
+        .replace("ethos-zero-map-witness", name)
+        .replace(
+            "[dependencies]\n",
+            "[dependencies]\nrkyv = { version = \"0.8\", default-features = false, features = [\"std\", \"bytecheck\", \"little_endian\", \"pointer_width_32\", \"unaligned\"] }\n",
+        )
+}
+
 fn fixture_lockfile() -> String {
     fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
         .expect("Ethos-zero locked dependency graph")
@@ -912,4 +921,193 @@ fn interface_file_is_read_from_the_portion_pivot_and_emitted_as_rust_syntax() {
         .expect("read file");
     let rust = RustEmitter::new().emit(&file).expect("emit Rust");
     syn::parse_file(rust.as_ref()).expect("generated Rust parses");
+}
+
+#[test]
+fn wire_contract_emission_generates_only_the_signal_module() {
+    let source = "Interface.{0 2 0} Channel.{Example 7 3} [] {[Submit.Submission] [Submitted.Result] [] [] [Name.String Submission.{Name} Result.{Name}]}";
+    let file = FileReader::new(&EmptyManifest)
+        .read(source)
+        .expect("wire map");
+    let emitted = RustEmitter::wire_contract()
+        .emit(&file)
+        .expect("wire emission");
+    let syntax = syn::parse_file(&emitted).expect("wire syntax");
+    assert!(emitted.contains("derive (Archive"));
+    assert!(emitted.contains("struct Name") && emitted.contains("String"));
+    assert!(emitted.contains("enum FrameBody"));
+    assert!(!emitted.contains("unimplemented"));
+    assert!(!emitted.contains("Codec"));
+    assert!(
+        syntax
+            .items
+            .iter()
+            .any(|item| matches!(item, syn::Item::Struct(item) if item.ident == "Frame"))
+    );
+    let directory =
+        std::env::temp_dir().join(format!("ethos-zero-wire-contract-{}", std::process::id()));
+    let source_directory = directory.join("src");
+    let test_directory = directory.join("tests");
+    fs::create_dir_all(&source_directory).expect("wire fixture source directory");
+    fs::create_dir_all(&test_directory).expect("wire fixture test directory");
+    fs::write(
+        directory.join("Cargo.toml"),
+        wire_contract_manifest("ethos-zero-wire-contract"),
+    )
+    .expect("wire fixture manifest");
+    fs::write(source_directory.join("generated.rs"), emitted).expect("generated Signal module");
+    assert!(
+        !source_directory.join("generated.rs").exists()
+            || source_directory.join("generated.rs").is_file(),
+        "the generator owns one generated Signal module"
+    );
+    fs::write(
+        source_directory.join("lib.rs"),
+        "pub mod codec;\npub mod generated;\n",
+    )
+    .expect("signal crate boundary");
+    fs::write(
+        source_directory.join("codec.rs"),
+        r#"
+use crate::generated::{
+    Frame, FrameBody, CHANNEL_CONTRACT_ID, CHANNEL_WIRE_REVISION, INTERFACE_VERSION,
+};
+
+pub struct HandOwnedCodec;
+
+impl HandOwnedCodec {
+    pub fn envelope(body: FrameBody) -> Frame {
+        Frame {
+            channel_contract_id: CHANNEL_CONTRACT_ID,
+            channel_wire_revision: CHANNEL_WIRE_REVISION,
+            protocol_version: INTERFACE_VERSION,
+            body,
+        }
+    }
+}
+"#,
+    )
+    .expect("hand-owned codec module");
+    fs::write(
+        test_directory.join("signal_boundary.rs"),
+        r#"
+use ethos_zero_wire_contract::{
+    codec::HandOwnedCodec,
+    generated::{
+        ChannelContractId, ChannelWireRevision, FrameBody, Name, ProtocolVersion, Request,
+        Submission,
+    },
+};
+
+#[test]
+fn generated_signal_and_hand_owned_codec_meet_at_the_frame() {
+    let frame = HandOwnedCodec::envelope(FrameBody::Request(Request::Submit(Submission {
+        name: Name("ready".to_owned()),
+    })));
+    assert_eq!(frame.channel_contract_id, ChannelContractId(7));
+    assert_eq!(frame.channel_wire_revision, ChannelWireRevision(3));
+    assert_eq!(frame.protocol_version, ProtocolVersion::new(0, 2, 0));
+}
+"#,
+    )
+    .expect("signal boundary witness");
+    fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock"),
+        directory.join("Cargo.lock"),
+    )
+    .expect("wire fixture lockfile");
+    assert!(
+        Command::new("cargo")
+            .args(["test", "--offline"])
+            .env("CARGO_TARGET_DIR", directory.join("target"))
+            .current_dir(&directory)
+            .status()
+            .expect("wire fixture compile")
+            .success(),
+        "generated Signal module and hand-owned codec must compile together"
+    );
+    fs::remove_dir_all(directory).expect("wire fixture cleanup");
+}
+
+#[test]
+fn pinned_orchestrate_interfaces_emit_compilable_wire_contract_modules() {
+    let reader = FileReader::new(&EmptyManifest);
+    for (name, variable, contract, wire) in [
+        ("ordinary", "ETHOS_SIGNAL_ORCHESTRATE_SOURCE", 1, 5),
+        ("meta", "ETHOS_META_SIGNAL_ORCHESTRATE_SOURCE", 2, 4),
+    ] {
+        let source = fs::read_to_string(std::env::var(variable).expect("pinned source path"))
+            .expect("pinned authored interface");
+        let file = reader.read(&source).expect("pinned interface embodiment");
+        let generated = RustEmitter::wire_contract()
+            .emit(&file)
+            .expect("wire contract emission");
+        assert!(generated.contains("ChannelContractId"));
+        assert!(generated.contains("ChannelWireRevision"));
+        assert!(generated.contains("impl datomic :: Datomic"));
+        compile_pinned_wire_contract(name, &generated, contract, wire);
+    }
+}
+
+fn compile_pinned_wire_contract(name: &str, generated: &str, contract: u32, wire: u16) {
+    let directory = std::env::temp_dir().join(format!(
+        "ethos-zero-pinned-wire-contract-{name}-{}",
+        std::process::id()
+    ));
+    let source_directory = directory.join("src");
+    let test_directory = directory.join("tests");
+    fs::create_dir_all(&source_directory).expect("wire contract source directory");
+    fs::create_dir_all(&test_directory).expect("wire contract test directory");
+    fs::write(
+        directory.join("Cargo.toml"),
+        wire_contract_manifest(&format!("pinned-wire-{name}")),
+    )
+    .expect("wire contract manifest");
+    fs::write(directory.join("Cargo.lock"), fixture_lockfile()).expect("wire contract lockfile");
+    fs::write(source_directory.join("generated.rs"), generated).expect("generated Signal module");
+    fs::write(
+        source_directory.join("lib.rs"),
+        "pub mod codec;\npub mod generated;\n",
+    )
+    .expect("Signal module boundary");
+    fs::write(
+        source_directory.join("codec.rs"),
+        r#"
+use crate::generated::{
+    Frame, FrameBody, CHANNEL_CONTRACT_ID, CHANNEL_WIRE_REVISION, INTERFACE_VERSION,
+};
+
+pub struct HandOwnedCodec;
+
+impl HandOwnedCodec {
+    pub fn envelope(body: FrameBody) -> Frame {
+        Frame {
+            channel_contract_id: CHANNEL_CONTRACT_ID,
+            channel_wire_revision: CHANNEL_WIRE_REVISION,
+            protocol_version: INTERFACE_VERSION,
+            body,
+        }
+    }
+}
+"#,
+    )
+    .expect("hand-owned codec module");
+    fs::write(
+        test_directory.join("signal_boundary.rs"),
+        format!(
+            "use pinned_wire_{name}::{{codec::HandOwnedCodec, generated::{{ChannelContractId, ChannelWireRevision, ProtocolVersion}}}};\n\n#[test]\nfn frame_metadata_stays_generated_while_codec_is_hand_owned() {{\n    let _ = HandOwnedCodec::envelope;\n    assert_eq!(ChannelContractId({contract}).0, {contract});\n    assert_eq!(ChannelWireRevision({wire}).0, {wire});\n    assert_eq!(ProtocolVersion::new(0, 2, 0).minor, 2);\n}}\n"
+        ),
+    )
+    .expect("wire contract boundary witness");
+    assert!(
+        Command::new("cargo")
+            .args(["test", "--offline"])
+            .env("CARGO_TARGET_DIR", directory.join("target"))
+            .current_dir(&directory)
+            .status()
+            .expect("wire contract cargo invocation")
+            .success(),
+        "pinned Interface Signal module and hand-owned codec must compile together"
+    );
+    fs::remove_dir_all(directory).expect("wire contract cleanup");
 }

@@ -1,6 +1,6 @@
 [package]
 name         = "ethos-zero"
-version      = "0.2.0"
+version      = "0.3.0"
 edition      = "2024"
 rust-version = "1.89"
 license      = "MIT OR Apache-2.0"
@@ -25,6 +25,7 @@ thiserror = "2"
 
 [dev-dependencies]
 proptest = "1.6"
+rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 
 [[test]]
 name = "file_contract"
