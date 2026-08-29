@@ -457,6 +457,13 @@ impl<'manifest> FileReader<'manifest> {
 pub enum RustEmission {
     /// Emit consumer anatomy, including executable Datomic implementations.
     D3Consumer,
+    /// Emit a data-only Schema library with Datomic anatomy.
+    ///
+    /// Unlike [`Self::D3Consumer`], this omits declared Schema kinds and
+    /// associations.  It is the committed-data boundary for consumers such
+    /// as Horizon: declarations and Portion-based embodiment only, never an
+    /// Interface root, frame, envelope, or rkyv projection.
+    DatomicLibrary,
     /// Emit only the schema library's declarations, kinds, and association checks.
     SchemaLibrary,
     /// Emit a standalone rkyv Signal contract from an Interface file.
@@ -483,6 +490,13 @@ impl RustEmitter {
     pub fn schema_library() -> Self {
         Self {
             emission: RustEmission::SchemaLibrary,
+        }
+    }
+
+    /// Emit a Schema's map-owned declarations and Datomic anatomy only.
+    pub fn datomic_library() -> Self {
+        Self {
+            emission: RustEmission::DatomicLibrary,
         }
     }
 
@@ -531,7 +545,10 @@ impl RustEmitter {
                 self.emission == RustEmission::SchemaLibrary,
             )?);
             if datomic
-                && self.emission == RustEmission::D3Consumer
+                && matches!(
+                    self.emission,
+                    RustEmission::D3Consumer | RustEmission::DatomicLibrary
+                )
                 && !matches!(declaration, TypeDeclaration::Alias { .. })
             {
                 tokens.extend(datomic_anatomy_tokens(declaration)?);
@@ -540,7 +557,9 @@ impl RustEmitter {
         for section_root in section_roots {
             tokens.extend(section_root);
         }
-        if let File::Schema(schema) = file {
+        if let File::Schema(schema) = file
+            && self.emission != RustEmission::DatomicLibrary
+        {
             for kind in &schema.kinds {
                 tokens.extend(kind_tokens(
                     kind,

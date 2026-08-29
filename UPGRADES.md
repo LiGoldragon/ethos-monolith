@@ -1,5 +1,13 @@
 # Upgrades
 
+## 0.7.0 — data-only Datomic libraries
+
+`RustEmitter::datomic_library()` emits a Schema's public declarations and
+executable Datomic Portion anatomy while intentionally omitting Schema kinds
+and associations. It is for committed typed data libraries, not Signal
+contracts: it creates no Interface roots, frames, envelopes, channel metadata,
+or rkyv projection.
+
 ## 0.6.0 — named record fields
 
 Ethos record declarations now accept `Name.Type` field portions. The name is

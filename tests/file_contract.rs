@@ -931,6 +931,36 @@ fn datomic_schema_emits_concrete_anatomy_instead_of_an_unsupported_stub() {
 }
 
 #[test]
+fn datomic_library_emits_only_data_declarations_and_portion_anatomy() {
+    let source = "Schema.{0 1 0} [] Types.[Magnitude.[Zero Min Medium Large Max] ProposalLevels.{size.Magnitude trust.Magnitude}] Kinds.[Datomic.{embody.[Result<Self Fault>] portion.[Portion] textualize.[Text<Self>]}] Associations.[]";
+    let file = FileReader::new(&EmptyManifest)
+        .read(source)
+        .expect("Datomic library declaration");
+    let generated = RustEmitter::datomic_library()
+        .emit(&file)
+        .expect("data-only emission");
+    assert!(generated.contains("impl datomic :: Datomic for ProposalLevels"));
+    assert!(!generated.contains("pub trait Datomic"));
+    assert!(!generated.contains("Frame"));
+    compile_generated_interface(
+        "datomic-library",
+        &generated,
+        r#"
+use datomic::{Datomic, Text, TextEdge};
+use generated_datomic_library::{Magnitude, ProposalLevels};
+
+#[test]
+fn named_fields_round_trip_in_schema_order() {
+    let value = ProposalLevels { size: Magnitude::Large, trust: Magnitude::Min };
+    let text = value.textualize();
+    assert_eq!(text.as_ref(), "{Large Min}");
+    assert_eq!(Text::<ProposalLevels>::from(text.as_ref()).embody().expect("embody").textualize().as_ref(), text.as_ref());
+}
+"#,
+    );
+}
+
+#[test]
 fn generated_orchestrate_anatomies_compile_and_round_trip_through_datomic() {
     let source = "Interface.{0 2 0} Channel.{Orchestrate 1 5} [] {[] [] [] [] [LockName.String FlowId.String LockPath.String LockPaths.Vector<LockPath> LockReason.String LockId.Integer Metadata.«LockName LockReason» MaybeLockId.Option<LockId> Lock.{LockId LockName FlowId LockPaths LockReason} LockRejection.[DuplicateName.Lock PathOverlap.{LockPath Lock}] ObserveSelection.[Locks] Audit.{LockPaths MaybeLockId Metadata}]}";
     let file = FileReader::new(&EmptyManifest)
