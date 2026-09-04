@@ -20,8 +20,8 @@ name = "ethos-zero"
 path = "src/main.rs"
 
 [dependencies]
-protos = { git = "https://github.com/LiGoldragon/protos", rev = "317a77134208549bf34b1b4f644366f04bc55e09" }
-datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "e448736972a3ac30ce94c4e9c81f299fbe894be9" }
+protos = { git = "https://github.com/LiGoldragon/protos", rev = "56c683ec8d1e" }
+datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "768426ea5f34" }
 quote = "1"
 proc-macro2 = "1"
 syn = { version = "3", features = ["full"] }

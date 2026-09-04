@@ -142,9 +142,10 @@ pub enum Concept {
 }
 
 // ============================================================================
-// Potential and kinds
+// Kinds and layers
 // ============================================================================
 
+/// Text that may be an ethos file, ready for actualization.
 pub struct Potential(String);
 
 impl From<&str> for Potential {
@@ -160,17 +161,52 @@ impl From<String> for Potential {
 }
 
 impl Potential {
+    /// The source text.
     pub fn text(&self) -> &str {
         &self.0
     }
 }
 
+/// The reading kind: text actualizes into a Concept.
 pub trait Actualizing {
     fn actualize(&self) -> Result<Concept, Fault>;
 }
 
+/// The emitting kind: a Concept emits generated Rust.
 pub trait Emitting {
     fn emit(&self) -> Result<String, Fault>;
+}
+
+/// The generated Rust from an ethos concept.
+pub struct RustLibrary(pub String);
+
+// ---------------------------------------------------------------------------
+// Layer impls: Conceptual<Concept> for Datom, Protosizable for Concept
+// ---------------------------------------------------------------------------
+
+/// Ethos is read as datom first: a Datom conceives into a Concept.
+impl protos::Conceptual<Concept> for datomic::Datom {
+    type Fault = Fault;
+
+    fn conceive(&self) -> Result<Concept, Fault> {
+        // The ethos reading from a Datom is the same logic as reading from
+        // protoforms: protosize the datom back to a protoform and read from
+        // that. This preserves the structural reading logic while honoring the
+        // layer design (ethos is read as datom first).
+        use protos::Protosizable;
+        let protoform = self.protosize();
+        read_protoform_as_concept(&protoform)
+    }
+}
+
+/// A Concept can yield its protoform (for the textualize direction).
+impl protos::Protosizable for Concept {
+    fn protosize(&self) -> Protoform {
+        // The concept protosizes by reconstructing the ethos file as a protoform.
+        // For now, produce a placeholder; the full implementation comes with the
+        // Corporal trait landing.
+        Protoform::Bare("Concept".to_owned())
+    }
 }
 
 // ============================================================================
@@ -234,6 +270,19 @@ impl Actualizing for Potential {
             "Signal" => read_signal(body, &pfs[1..]),
             _ => Err(fault_here(Problem::Root)),
         }
+    }
+}
+
+/// Read a single protoform as an ethos concept (for the Conceptual<Concept> impl).
+fn read_protoform_as_concept(pf: &Protoform) -> Result<Concept, Fault> {
+    let (head, sep, body) = pf_headed(pf).ok_or_else(|| fault_here(Problem::Root))?;
+    if sep != Separator::Period {
+        return Err(fault_here(Problem::Root));
+    }
+    match head {
+        "Library" => read_library(body, &[]),
+        "Signal" => read_signal(body, &[]),
+        _ => Err(fault_here(Problem::Root)),
     }
 }
 
@@ -338,24 +387,6 @@ fn read_type_declaration(
     pf: &Protoform,
     following: Option<&Protoform>,
 ) -> Result<(TypeDeclaration, bool), Fault> {
-    if let Protoform::Qualified(symbol, args) = pf
-        && let Some(dot) = symbol.find('.')
-    {
-        let name = symbol[..dot].to_owned();
-        let constructor = symbol[dot + 1..].to_owned();
-        let arguments = read_type_expression_list(args)?;
-        return Ok((
-            TypeDeclaration::Alias {
-                name,
-                target: TypeExpression::Applied {
-                    constructor,
-                    arguments,
-                },
-            },
-            false,
-        ));
-    }
-
     let (head, sep, body) = pf_headed(pf).ok_or_else(|| fault_here(Problem::Declaration))?;
     if sep != Separator::Period {
         return Err(fault_here(Problem::Declaration));
@@ -405,24 +436,6 @@ fn read_variants(pfs: &[Protoform]) -> Result<Vec<Variant>, Fault> {
 }
 
 fn read_variant(pf: &Protoform, following: Option<&Protoform>) -> Result<(Variant, bool), Fault> {
-    if let Protoform::Qualified(symbol, args) = pf
-        && let Some(dot) = symbol.find('.')
-    {
-        let name = symbol[..dot].to_owned();
-        let constructor = symbol[dot + 1..].to_owned();
-        let arguments = read_type_expression_list(args)?;
-        return Ok((
-            Variant::Typed(
-                name,
-                TypeExpression::Applied {
-                    constructor,
-                    arguments,
-                },
-            ),
-            false,
-        ));
-    }
-
     if let Some((head, sep, body)) = pf_headed(pf) {
         if sep != Separator::Period {
             return Err(fault_here(Problem::Declaration));

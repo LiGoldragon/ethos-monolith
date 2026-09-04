@@ -73,9 +73,9 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "datomic"
 version = "0.8.0"
-source = "git+https://github.com/LiGoldragon/datomic?rev=e448736972a3ac30ce94c4e9c81f299fbe894be9#e448736972a3ac30ce94c4e9c81f299fbe894be9"
+source = "git+https://github.com/LiGoldragon/datomic?rev=768426ea5f34#768426ea5f34318f929d4d39188e16bc5ae75bb2"
 dependencies = [
- "protos 0.15.0 (git+https://github.com/LiGoldragon/protos?rev=317a77134208)",
+ "protos",
 ]
 
 [[package]]
@@ -101,7 +101,7 @@ dependencies = [
  "datomic",
  "proc-macro2",
  "proptest",
- "protos 0.15.0 (git+https://github.com/LiGoldragon/protos?rev=317a77134208549bf34b1b4f644366f04bc55e09)",
+ "protos",
  "quote",
  "rkyv",
  "syn 3.0.4",
@@ -287,12 +287,7 @@ dependencies = [
 [[package]]
 name = "protos"
 version = "0.15.0"
-source = "git+https://github.com/LiGoldragon/protos?rev=317a77134208#317a77134208549bf34b1b4f644366f04bc55e09"
-
-[[package]]
-name = "protos"
-version = "0.15.0"
-source = "git+https://github.com/LiGoldragon/protos?rev=317a77134208549bf34b1b4f644366f04bc55e09#317a77134208549bf34b1b4f644366f04bc55e09"
+source = "git+https://github.com/LiGoldragon/protos?rev=56c683ec8d1e#56c683ec8d1ec8f8f80e9e12251fbfd08d27d728"
 
 [[package]]
 name = "ptr_meta"
