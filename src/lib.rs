@@ -1,7 +1,30 @@
+use std::collections::HashMap;
 use std::fmt;
 
 use protos::{Enclosure, Extent, Head, Protoform, Separator, Structural};
 use quote::{ToTokens, format_ident, quote};
+
+// ============================================================================
+// Import resolution
+// ============================================================================
+
+/// Build a resolution table from imports: name -> source module.
+fn build_import_resolution(imports: &[Import]) -> HashMap<String, String> {
+    let mut resolution = HashMap::new();
+    for import in imports {
+        match import {
+            Import::Single { source, name } => {
+                resolution.insert(name.clone(), source.clone());
+            }
+            Import::Multiple { source, names } => {
+                for name in names {
+                    resolution.insert(name.clone(), source.clone());
+                }
+            }
+        }
+    }
+    resolution
+}
 
 // ============================================================================
 // Concept types
@@ -1130,14 +1153,19 @@ impl Emitting for Concept {
 fn emit_tokens(concept: &Concept) -> Result<proc_macro2::TokenStream, Fault> {
     let mut tokens = quote! { #![allow(dead_code)] };
 
+    let imports = match concept {
+        Concept::Library(lib) => build_import_resolution(&lib.imports),
+        Concept::Signal(sig) => build_import_resolution(&sig.imports),
+    };
+
     match concept {
         Concept::Library(library) => {
             for ty in &library.types {
-                tokens.extend(type_declaration_tokens(ty, false)?);
-                tokens.extend(datomic_impl_tokens(ty)?);
+                tokens.extend(type_declaration_tokens(ty, false, &imports)?);
+                tokens.extend(datomic_impl_tokens(ty, &imports)?);
             }
             for kind in &library.kinds {
-                tokens.extend(kind_declaration_tokens(kind)?);
+                tokens.extend(kind_declaration_tokens(kind, &imports)?);
             }
             for assoc in &library.associations {
                 tokens.extend(association_assertion_tokens(assoc)?);
@@ -1148,11 +1176,21 @@ fn emit_tokens(concept: &Concept) -> Result<proc_macro2::TokenStream, Fault> {
                 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
             });
             for ty in &signal.types {
-                tokens.extend(type_declaration_tokens(ty, true)?);
-                tokens.extend(datomic_impl_tokens(ty)?);
+                tokens.extend(type_declaration_tokens(ty, true, &imports)?);
+                tokens.extend(datomic_impl_tokens(ty, &imports)?);
             }
-            tokens.extend(section_enum_tokens("Request", &signal.requests, true)?);
-            tokens.extend(section_enum_tokens("Reply", &signal.responses, true)?);
+            tokens.extend(section_enum_tokens(
+                "Request",
+                &signal.requests,
+                true,
+                &imports,
+            )?);
+            tokens.extend(section_enum_tokens(
+                "Reply",
+                &signal.responses,
+                true,
+                &imports,
+            )?);
             tokens.extend(wire_envelope_tokens(signal)?);
         }
     }
@@ -1163,6 +1201,7 @@ fn emit_tokens(concept: &Concept) -> Result<proc_macro2::TokenStream, Fault> {
 fn type_declaration_tokens(
     decl: &TypeDeclaration,
     signal: bool,
+    imports: &HashMap<String, String>,
 ) -> Result<proc_macro2::TokenStream, Fault> {
     let derive = if signal {
         quote! { #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] }
@@ -1176,7 +1215,7 @@ fn type_declaration_tokens(
             let field_tokens = fields
                 .iter()
                 .map(|ty| {
-                    let ty = type_expression_tokens(ty)?;
+                    let ty = type_expression_tokens(ty, imports)?;
                     Ok(quote! { pub #ty })
                 })
                 .collect::<Result<Vec<_>, Fault>>()?;
@@ -1185,7 +1224,7 @@ fn type_declaration_tokens(
         TypeDeclaration::Enum { name, variants } => {
             let name_ident = ident(name)?;
             let (variant_tokens, inline_types) =
-                emit_variant_tokens(&name_ident, variants, signal)?;
+                emit_variant_tokens(&name_ident, variants, signal, imports)?;
             quote! {
                 #( #inline_types )*
                 #derive pub enum #name_ident { #( #variant_tokens, )* }
@@ -1196,13 +1235,13 @@ fn type_declaration_tokens(
             // rkyv-able type needs no derive; the underlying type already has
             // the Corporal/Datomic impls.
             let name = ident(name)?;
-            let target = type_expression_tokens(target)?;
+            let target = type_expression_tokens(target, imports)?;
             quote! { pub type #name = #target; }
         }
         TypeDeclaration::Map { name, key, value } => {
             let name = ident(name)?;
-            let key = type_expression_tokens(key)?;
-            let value = type_expression_tokens(value)?;
+            let key = type_expression_tokens(key, imports)?;
+            let value = type_expression_tokens(value, imports)?;
             quote! { pub type #name = std::collections::BTreeMap<#key, #value>; }
         }
     })
@@ -1212,6 +1251,7 @@ fn emit_variant_tokens(
     parent: &proc_macro2::Ident,
     variants: &[Variant],
     signal: bool,
+    imports: &HashMap<String, String>,
 ) -> Result<(Vec<proc_macro2::TokenStream>, Vec<proc_macro2::TokenStream>), Fault> {
     let derive = if signal {
         quote! { #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] }
@@ -1230,7 +1270,7 @@ fn emit_variant_tokens(
             }
             Variant::Typed(name, ty) => {
                 let name = ident(name)?;
-                let ty = type_expression_tokens(ty)?;
+                let ty = type_expression_tokens(ty, imports)?;
                 variant_tokens.push(quote! { #name(#ty) });
             }
             Variant::InlineStruct(name, fields) => {
@@ -1239,7 +1279,7 @@ fn emit_variant_tokens(
                 let field_tokens = fields
                     .iter()
                     .map(|ty| {
-                        let ty = type_expression_tokens(ty)?;
+                        let ty = type_expression_tokens(ty, imports)?;
                         Ok(quote! { pub #ty })
                     })
                     .collect::<Result<Vec<_>, Fault>>()?;
@@ -1251,7 +1291,7 @@ fn emit_variant_tokens(
                 let variant_name = ident(name)?;
                 let inline_name = format_ident!("{}{}", parent, variant_name);
                 let (inner_variant_tokens, inner_inline_types) =
-                    emit_variant_tokens(&inline_name, inner_variants, signal)?;
+                    emit_variant_tokens(&inline_name, inner_variants, signal, imports)?;
                 inline_types.extend(inner_inline_types);
                 inline_types.push(
                     quote! { #derive pub enum #inline_name { #( #inner_variant_tokens, )* } },
@@ -1264,7 +1304,10 @@ fn emit_variant_tokens(
     Ok((variant_tokens, inline_types))
 }
 
-fn type_expression_tokens(expr: &TypeExpression) -> Result<proc_macro2::TokenStream, Fault> {
+fn type_expression_tokens(
+    expr: &TypeExpression,
+    imports: &HashMap<String, String>,
+) -> Result<proc_macro2::TokenStream, Fault> {
     Ok(match expr {
         TypeExpression::Named(name) => match name.as_str() {
             "Text" => quote! { protos::Text },
@@ -1274,8 +1317,14 @@ fn type_expression_tokens(expr: &TypeExpression) -> Result<proc_macro2::TokenStr
             "Meaning" => quote! { datomic::MeaningValue },
             "Symbol" => quote! { protos::Symbol },
             _ => {
-                let name = ident(name)?;
-                quote! { #name }
+                if let Some(module) = imports.get(name.as_str()) {
+                    let module = ident(module)?;
+                    let name = ident(name)?;
+                    quote! { #module :: #name }
+                } else {
+                    let name = ident(name)?;
+                    quote! { #name }
+                }
             }
         },
         TypeExpression::Applied {
@@ -1284,7 +1333,7 @@ fn type_expression_tokens(expr: &TypeExpression) -> Result<proc_macro2::TokenStr
         } => {
             let args = arguments
                 .iter()
-                .map(type_expression_tokens)
+                .map(|a| type_expression_tokens(a, imports))
                 .collect::<Result<Vec<_>, _>>()?;
             match constructor.as_str() {
                 "Vector" => {
@@ -1306,8 +1355,14 @@ fn type_expression_tokens(expr: &TypeExpression) -> Result<proc_macro2::TokenStr
                     quote! { Result<#ok, #err> }
                 }
                 _ => {
-                    let name = ident(constructor)?;
-                    quote! { #name< #( #args ),* > }
+                    if let Some(module) = imports.get(constructor.as_str()) {
+                        let module = ident(module)?;
+                        let name = ident(constructor)?;
+                        quote! { #module :: #name < #( #args ),* > }
+                    } else {
+                        let name = ident(constructor)?;
+                        quote! { #name< #( #args ),* > }
+                    }
                 }
             }
         }
@@ -1315,7 +1370,10 @@ fn type_expression_tokens(expr: &TypeExpression) -> Result<proc_macro2::TokenStr
     })
 }
 
-fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStream, Fault> {
+fn datomic_impl_tokens(
+    decl: &TypeDeclaration,
+    imports: &HashMap<String, String>,
+) -> Result<proc_macro2::TokenStream, Fault> {
     match decl {
         TypeDeclaration::Alias { .. } | TypeDeclaration::Map { .. } => {
             // Type aliases and map aliases have no separate Corporal/Datomic
@@ -1329,7 +1387,7 @@ fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStrea
             let field_incorporates = fields
                 .iter()
                 .map(|ty| {
-                    let ty = type_expression_tokens(ty)?;
+                    let ty = type_expression_tokens(ty, imports)?;
                     Ok(quote! { <#ty as datomic::Corporal<datomic::Datom>>::incorporate(iter.next().unwrap())? })
                 })
                 .collect::<Result<Vec<_>, Fault>>()?;
@@ -1364,7 +1422,7 @@ fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStrea
             let name_ident = ident(name)?;
             let incorporate_arms = variants
                 .iter()
-                .map(|v| variant_incorporate_arm(&name_ident, v))
+                .map(|v| variant_incorporate_arm(&name_ident, v, imports))
                 .collect::<Result<Vec<_>, _>>()?;
             let datomize_arms = variants
                 .iter()
@@ -1372,7 +1430,7 @@ fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStrea
                 .collect::<Result<Vec<_>, _>>()?;
             let nested = variants
                 .iter()
-                .filter_map(|v| nested_datomic_impl(&name_ident, name, v).transpose())
+                .filter_map(|v| nested_datomic_impl(&name_ident, name, v, imports).transpose())
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(quote! {
                 impl datomic::Corporal<datomic::Datom> for #name_ident {
@@ -1400,6 +1458,7 @@ fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStrea
 fn variant_incorporate_arm(
     parent: &proc_macro2::Ident,
     variant: &Variant,
+    imports: &HashMap<String, String>,
 ) -> Result<proc_macro2::TokenStream, Fault> {
     Ok(match variant {
         Variant::Unit(name) => {
@@ -1410,7 +1469,7 @@ fn variant_incorporate_arm(
         }
         Variant::Typed(name, ty) => {
             let variant_name = ident(name)?;
-            let ty = type_expression_tokens(ty)?;
+            let ty = type_expression_tokens(ty, imports)?;
             quote! {
                 datomic::Datom::Variant(head, protos::Separator::Period, Some(body)) if head == stringify!(#variant_name) => {
                     Ok(Self::#variant_name(<#ty as datomic::Corporal<datomic::Datom>>::incorporate(*body)?))
@@ -1457,27 +1516,37 @@ fn nested_datomic_impl(
     _parent: &proc_macro2::Ident,
     parent_name: &str,
     variant: &Variant,
+    imports: &HashMap<String, String>,
 ) -> Result<Option<proc_macro2::TokenStream>, Fault> {
     match variant {
         Variant::InlineStruct(vname, fields) => {
             let inline_name = format!("{}{}", parent_name, vname);
-            Ok(Some(datomic_impl_tokens(&TypeDeclaration::Struct {
-                name: inline_name,
-                fields: fields.clone(),
-            })?))
+            Ok(Some(datomic_impl_tokens(
+                &TypeDeclaration::Struct {
+                    name: inline_name,
+                    fields: fields.clone(),
+                },
+                imports,
+            )?))
         }
         Variant::InlineEnum(vname, inner) => {
             let inline_name = format!("{}{}", parent_name, vname);
-            Ok(Some(datomic_impl_tokens(&TypeDeclaration::Enum {
-                name: inline_name,
-                variants: inner.clone(),
-            })?))
+            Ok(Some(datomic_impl_tokens(
+                &TypeDeclaration::Enum {
+                    name: inline_name,
+                    variants: inner.clone(),
+                },
+                imports,
+            )?))
         }
         _ => Ok(None),
     }
 }
 
-fn kind_declaration_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenStream, Fault> {
+fn kind_declaration_tokens(
+    kind: &KindDeclaration,
+    imports: &HashMap<String, String>,
+) -> Result<proc_macro2::TokenStream, Fault> {
     let (name, constraints, superkinds, associated_types, associated_constants, capabilities) =
         match kind {
             KindDeclaration::Simple {
@@ -1564,14 +1633,14 @@ fn kind_declaration_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenS
         .iter()
         .map(|ac| {
             let cname = ident(&ac.name)?;
-            let ty = type_expression_tokens(&ac.ty)?;
+            let ty = type_expression_tokens(&ac.ty, imports)?;
             Ok(quote! { const #cname: #ty; })
         })
         .collect::<Result<Vec<_>, Fault>>()?;
 
     let capability_tokens = capabilities
         .iter()
-        .map(capability_method_tokens)
+        .map(|cap| capability_method_tokens(cap, imports))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(quote! {
@@ -1583,9 +1652,12 @@ fn kind_declaration_tokens(kind: &KindDeclaration) -> Result<proc_macro2::TokenS
     })
 }
 
-fn capability_method_tokens(cap: &Capability) -> Result<proc_macro2::TokenStream, Fault> {
+fn capability_method_tokens(
+    cap: &Capability,
+    imports: &HashMap<String, String>,
+) -> Result<proc_macro2::TokenStream, Fault> {
     let name = format_ident!("{}", &cap.name);
-    let return_type = type_expression_tokens(&cap.yield_type)?;
+    let return_type = type_expression_tokens(&cap.yield_type, imports)?;
 
     let receiver = match cap.receiver {
         Receiver::Shared => quote! { &self },
@@ -1599,7 +1671,7 @@ fn capability_method_tokens(cap: &Capability) -> Result<proc_macro2::TokenStream
         .enumerate()
         .map(|(i, ty)| {
             let pname = format_ident!("input_{}", i);
-            let ty = type_expression_tokens(ty)?;
+            let ty = type_expression_tokens(ty, imports)?;
             Ok(quote! { #pname: #ty })
         })
         .collect::<Result<Vec<_>, Fault>>()?;
@@ -1643,6 +1715,7 @@ fn section_enum_tokens(
     name: &str,
     references: &[SectionReference],
     signal: bool,
+    imports: &HashMap<String, String>,
 ) -> Result<proc_macro2::TokenStream, Fault> {
     if references.is_empty() {
         return Ok(proc_macro2::TokenStream::new());
@@ -1657,7 +1730,7 @@ fn section_enum_tokens(
         .iter()
         .map(|r| {
             let variant_name = ident(&r.name)?;
-            let ty = type_expression_tokens(&r.ty)?;
+            let ty = type_expression_tokens(&r.ty, imports)?;
             Ok(quote! { #variant_name(#ty) })
         })
         .collect::<Result<Vec<_>, Fault>>()?;
@@ -1666,7 +1739,7 @@ fn section_enum_tokens(
         .iter()
         .map(|r| {
             let variant_name = ident(&r.name)?;
-            let ty = type_expression_tokens(&r.ty)?;
+            let ty = type_expression_tokens(&r.ty, imports)?;
             Ok(quote! {
                 datomic::Datom::Variant(head, protos::Separator::Period, Some(body)) if head == stringify!(#variant_name) => {
                     Ok(Self::#variant_name(<#ty as datomic::Corporal<datomic::Datom>>::incorporate(*body)?))

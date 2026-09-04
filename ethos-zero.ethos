@@ -1,5 +1,5 @@
 ; ethos-zero: the ethos schema language, version zero
-Library.{1 0 0}
+Library.{1 1 0}
 []
 [ Potential.Text
   Concept.[ Library.Library Signal.Signal ]

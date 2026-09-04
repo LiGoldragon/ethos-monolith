@@ -2,6 +2,8 @@ use ethos_zero::{Actualizing, Concept, Emitting, Potential, Version};
 use protos::{Printing, Protosizable};
 use std::fs;
 
+use proptest::prelude::*;
+
 // ---------------------------------------------------------------------------
 // Reader tests
 // ---------------------------------------------------------------------------
@@ -700,4 +702,178 @@ fn main() {
 
     // Cleanup
     let _ = fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Import resolution tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn imported_name_emits_qualified_in_struct_field() {
+    let source = "\
+Library.{0 1 0}
+[datomic:Fault]
+[ Wrapper.{ Fault } ]
+[]
+[]";
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+    assert!(
+        rust.contains("datomic :: Fault"),
+        "imported Fault should be qualified as datomic::Fault in: {rust}"
+    );
+}
+
+#[test]
+fn imported_names_emit_qualified_in_enum_variant() {
+    let source = "\
+Library.{0 1 0}
+[datomic:[ Fault ]]
+[ Error.[ Bad.Fault Good ] ]
+[]
+[]";
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+    assert!(
+        rust.contains("datomic :: Fault"),
+        "imported Fault should be qualified: {rust}"
+    );
+    syn::parse_file(&rust).expect("generated Rust parses");
+}
+
+#[test]
+fn imported_generic_constructor_emits_qualified() {
+    let source = "\
+Library.{0 1 0}
+[custom_crate:[ Container Item ]]
+[ Holder.Container<Item> ]
+[]
+[]";
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+    assert!(
+        rust.contains("custom_crate :: Container"),
+        "imported constructor should be qualified: {rust}"
+    );
+    assert!(
+        rust.contains("custom_crate :: Item"),
+        "imported argument should be qualified: {rust}"
+    );
+}
+
+#[test]
+fn unimported_names_stay_bare() {
+    let source = "\
+Library.{0 1 0}
+[]
+[ Pair.{ Foo Bar } ]
+[]
+[]";
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+    // Should NOT contain module-qualified Foo or Bar
+    assert!(
+        !rust.contains(":: Foo") && !rust.contains(":: Bar"),
+        "unimported names should not be qualified: {rust}"
+    );
+}
+
+#[test]
+fn intrinsic_names_not_overridden_by_imports() {
+    // Even if someone imports Text from a custom source, the intrinsic mapping wins
+    let source = "\
+Library.{0 1 0}
+[custom:Text]
+[ Wrapper.{ Text } ]
+[]
+[]";
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+    assert!(
+        rust.contains("protos :: Text"),
+        "intrinsic Text should still be protos::Text: {rust}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Datom round-trip proptest
+// ---------------------------------------------------------------------------
+
+fn arb_type_expression() -> impl Strategy<Value = ethos_zero::TypeExpression> {
+    let leaf = prop_oneof![
+        Just(ethos_zero::TypeExpression::Named("Text".to_owned())),
+        Just(ethos_zero::TypeExpression::Named("Integer".to_owned())),
+        Just(ethos_zero::TypeExpression::Named("Boolean".to_owned())),
+    ];
+    leaf.prop_recursive(2, 8, 4, |inner| {
+        prop_oneof![
+            inner
+                .clone()
+                .prop_map(|t| ethos_zero::TypeExpression::Applied {
+                    constructor: "Vector".to_owned(),
+                    arguments: vec![t],
+                }),
+            inner
+                .clone()
+                .prop_map(|t| ethos_zero::TypeExpression::Applied {
+                    constructor: "Option".to_owned(),
+                    arguments: vec![t],
+                }),
+        ]
+    })
+}
+
+fn arb_variant() -> impl Strategy<Value = ethos_zero::Variant> {
+    prop_oneof![
+        "[A-Z][a-z]{2,6}".prop_map(ethos_zero::Variant::Unit),
+        ("[A-Z][a-z]{2,6}", arb_type_expression())
+            .prop_map(|(n, t)| ethos_zero::Variant::Typed(n, t)),
+    ]
+}
+
+fn arb_type_declaration() -> impl Strategy<Value = ethos_zero::TypeDeclaration> {
+    prop_oneof![
+        (
+            "[A-Z][a-z]{2,6}",
+            proptest::collection::vec(arb_type_expression(), 1..4)
+        )
+            .prop_map(|(n, f)| ethos_zero::TypeDeclaration::Struct { name: n, fields: f }),
+        (
+            "[A-Z][a-z]{2,6}",
+            proptest::collection::vec(arb_variant(), 1..4)
+        )
+            .prop_map(|(n, v)| ethos_zero::TypeDeclaration::Enum {
+                name: n,
+                variants: v
+            }),
+        ("[A-Z][a-z]{2,6}", arb_type_expression())
+            .prop_map(|(n, t)| ethos_zero::TypeDeclaration::Alias { name: n, target: t }),
+    ]
+}
+
+fn arb_library() -> impl Strategy<Value = ethos_zero::Concept> {
+    (
+        (0i64..10, 0i64..10, 0i64..10),
+        proptest::collection::vec(arb_type_declaration(), 0..5),
+    )
+        .prop_map(|((major, minor, patch), types)| {
+            ethos_zero::Concept::Library(ethos_zero::Library {
+                version: ethos_zero::Version(major, minor, patch),
+                imports: vec![],
+                types,
+                kinds: vec![],
+                associations: vec![],
+            })
+        })
+}
+
+proptest! {
+    #[test]
+    fn concept_protosize_round_trips(concept in arb_library()) {
+        let printed = concept.protosize().print();
+        let round_tripped = Potential::from(printed.as_str())
+            .actualize()
+            .map_err(|e| TestCaseError::Fail(format!("actualize failed: {e}").into()))?;
+        prop_assert_eq!(concept, round_tripped, "round trip changed the concept");
+    }
 }
