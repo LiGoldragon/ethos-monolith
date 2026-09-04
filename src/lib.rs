@@ -1198,6 +1198,27 @@ fn emit_tokens(concept: &Concept) -> Result<proc_macro2::TokenStream, Fault> {
     Ok(tokens)
 }
 
+fn all_variants_unit(variants: &[Variant]) -> bool {
+    !variants.is_empty() && variants.iter().all(|v| matches!(v, Variant::Unit(_)))
+}
+
+fn enum_derive(signal: bool, unit_only: bool) -> proc_macro2::TokenStream {
+    match (signal, unit_only) {
+        (true, true) => {
+            quote! { #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Copy, Debug, PartialEq, Eq)] }
+        }
+        (true, false) => {
+            quote! { #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] }
+        }
+        (false, true) => {
+            quote! { #[derive(Clone, Copy, Debug, PartialEq, Eq)] }
+        }
+        (false, false) => {
+            quote! { #[derive(Clone, Debug, PartialEq, Eq)] }
+        }
+    }
+}
+
 fn type_declaration_tokens(
     decl: &TypeDeclaration,
     signal: bool,
@@ -1235,6 +1256,7 @@ fn type_declaration_tokens(
             } else {
                 proc_macro2::TokenStream::new()
             };
+            let derive = enum_derive(signal, all_variants_unit(variants));
             quote! {
                 #( #inline_types )*
                 #derive pub enum #name_ident { #( #variant_tokens, )* }
@@ -1314,8 +1336,9 @@ fn emit_variant_tokens(
                 let (inner_variant_tokens, inner_inline_types) =
                     emit_variant_tokens(&inline_name, inner_variants, signal, imports, box_name)?;
                 inline_types.extend(inner_inline_types);
+                let inline_derive = enum_derive(signal, all_variants_unit(inner_variants));
                 inline_types.push(
-                    quote! { #derive pub enum #inline_name { #( #inner_variant_tokens, )* } },
+                    quote! { #inline_derive pub enum #inline_name { #( #inner_variant_tokens, )* } },
                 );
                 variant_tokens.push(quote! { #variant_name(#inline_name) });
             }

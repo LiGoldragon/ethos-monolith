@@ -484,6 +484,64 @@ fn recursive_enum_emits_box_and_impl_datomic_box() {
 }
 
 // ---------------------------------------------------------------------------
+// Copy-derive tests for unit-only enums
+// ---------------------------------------------------------------------------
+
+#[test]
+fn library_unit_only_enum_derives_copy() {
+    // SinkError from the example-library fixture: every variant carries nothing.
+    let source = fs::read_to_string("fixtures/example-library.ethos").expect("fixture");
+    let concept = Potential::from(source.as_str()).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+    // The emitted derive for a unit-only Library enum must include Copy.
+    assert!(
+        rust.contains("Clone , Copy , Debug , PartialEq , Eq")
+            || rust.contains("Clone, Copy, Debug, PartialEq, Eq"),
+        "SinkError (unit-only Library enum) should derive Copy in: {rust}"
+    );
+    assert!(
+        !rust.contains("Archive"),
+        "Library output should not contain rkyv Archive in: {rust}"
+    );
+    syn::parse_file(&rust).expect("generated Rust parses");
+}
+
+#[test]
+fn signal_unit_only_enum_derives_copy() {
+    // ObserveSelection from the orchestrate fixture: the only variant is Locks (unit).
+    let source = fs::read_to_string("fixtures/orchestrate.ethos").expect("fixture");
+    let concept = Potential::from(source.as_str()).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+    // The emitted derive for a unit-only Signal enum must include Copy (plus rkyv traits).
+    assert!(
+        rust.contains("Clone , Copy , Debug , PartialEq , Eq")
+            || rust.contains("Clone, Copy, Debug, PartialEq, Eq"),
+        "ObserveSelection (unit-only Signal enum) should derive Copy in: {rust}"
+    );
+    syn::parse_file(&rust).expect("generated Rust parses");
+}
+
+#[test]
+fn mixed_enum_does_not_derive_copy() {
+    // Query has Typed variants; it must not get Copy.
+    let source = "Library.{0 1 0} [] [ Status.[ Ok.Text Err ] ] [] []";
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+    // Status has a Typed variant (Ok.Text), so Copy must not be added.
+    // The derive list for Status should be Clone, Debug, PartialEq, Eq only.
+    // We check the derive string does not contain Copy.
+    // (Note: if Copy appears for a different type in the same emission, this
+    // test would still pass because we check for the absence of Copy on a
+    // type that is not unit-only; since this is a single-type source, any
+    // Copy in the output would be wrong.)
+    assert!(
+        !rust.contains("Clone , Copy") && !rust.contains("Clone, Copy"),
+        "Status (mixed enum) should NOT derive Copy in: {rust}"
+    );
+    syn::parse_file(&rust).expect("generated Rust parses");
+}
+
+// ---------------------------------------------------------------------------
 // Fixture tests
 // ---------------------------------------------------------------------------
 

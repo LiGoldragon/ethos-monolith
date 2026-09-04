@@ -1,5 +1,12 @@
 # Upgrades
 
+## 1.2.0 to 1.3.0
+
+Unit-only enums (every variant carries nothing) now derive `Copy` in addition
+to `Clone, Debug, PartialEq, Eq` in both Library and Signal roots. Generated
+code for any such enum gains `Copy`; downstream crates that hand-wrote `impl
+Copy` for those types may now remove those impls.
+
 ## 1.0.0 — ProtoformStack rewrite
 
 ethos-zero is rewritten from scratch. The Interface/Schema roots, Channel,
