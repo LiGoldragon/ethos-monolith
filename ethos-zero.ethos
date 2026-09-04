@@ -1,4 +1,4 @@
-;; ethos-zero: the ethos schema language, version zero
+; ethos-zero: the ethos schema language, version zero
 Library.{1 0 0}
 []
 [ Potential.Text

@@ -1,6 +1,6 @@
 use std::{env, fs, path::Path, process::ExitCode};
 
-use protos::{Delineatable, EnclosedAnatomy, Portion, Separator, StructuralEnclosure};
+use protos::{Head, Protoform, Separator, Structural};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -29,38 +29,32 @@ fn main() -> ExitCode {
 }
 
 fn run(arg: &str) -> Result<String, String> {
-    let text = protos::Text::<()>::from(arg);
-    let delineation = text.delineate().map_err(|f| {
+    let delineation = arg.to_owned().delineate().map_err(|f| {
         format!(
             "GenerationFailure.{{ \u{201C}delineation fault at {}..{}\u{201D} }}",
-            f.extent.start, f.extent.end
+            f.extent.0, f.extent.1
         )
     })?;
 
-    let [portion] = delineation.portions.as_slice() else {
+    let [pf] = delineation.protoforms.as_slice() else {
         return Err("GenerationFailure.{ \u{201C}expected one datom value\u{201D} }".into());
     };
 
-    let Portion::Headed(_, headed) = portion else {
+    let Protoform::Headed(Head::Bare(head), sep, body) = pf else {
         return Err(
             "GenerationFailure.{ \u{201C}expected Generate.{ path out-dir }\u{201D} }".into(),
         );
     };
 
-    if headed.head.as_ref() != "Generate" || headed.separator != Separator::Period {
+    if head != "Generate" || *sep != Separator::Period {
         return Err(format!(
-            "GenerationFailure.{{ \u{201C}unknown command: {}\u{201D} }}",
-            headed.head.as_ref()
+            "GenerationFailure.{{ \u{201C}unknown command: {head}\u{201D} }}"
         ));
     }
 
-    let Portion::Enclosed(_, enclosed) = &*headed.body else {
+    let Protoform::Enclosed(protos::Enclosure::Braced, children) = body.as_ref() else {
         return Err("GenerationFailure.{ \u{201C}expected braced body\u{201D} }".into());
     };
-    if enclosed.structural_enclosure() != Some(StructuralEnclosure::Braced) {
-        return Err("GenerationFailure.{ \u{201C}expected braced body\u{201D} }".into());
-    }
-    let children = enclosed.portions().unwrap_or(&[]);
     if children.len() < 2 {
         return Err(
             "GenerationFailure.{ \u{201C}expected Generate.{ file-path out-dir }\u{201D} }".into(),
@@ -117,21 +111,14 @@ fn run(arg: &str) -> Result<String, String> {
     ))
 }
 
-fn rejoin_text(portion: &Portion) -> String {
-    match portion {
-        Portion::Bare(_, bare) => bare.symbol.as_ref().to_owned(),
-        Portion::Headed(_, headed) => {
-            let sep = match headed.separator {
-                Separator::Period => ".",
-                Separator::Exclamation => "!",
-                Separator::Colon => ":",
-            };
-            format!(
-                "{}{}{}",
-                headed.head.as_ref(),
-                sep,
-                rejoin_text(&headed.body)
-            )
+fn rejoin_text(pf: &Protoform) -> String {
+    match pf {
+        Protoform::Bare(s) => s.clone(),
+        Protoform::Headed(Head::Bare(head), sep, body) => {
+            format!("{}{}{}", head, sep.glyph(), rejoin_text(body))
+        }
+        Protoform::Headed(Head::Qualified(head, _), sep, body) => {
+            format!("{}{}{}", head, sep.glyph(), rejoin_text(body))
         }
         _ => String::new(),
     }
@@ -173,17 +160,15 @@ mod tests {
 
     #[test]
     fn rejoin_recovers_dotted_path() {
-        let text = protos::Text::<()>::from("/abs/file.ethos");
-        let delineation = text.delineate().unwrap();
-        let rejoined = rejoin_text(&delineation.portions[0]);
+        let delineation = "/abs/file.ethos".to_owned().delineate().unwrap();
+        let rejoined = rejoin_text(&delineation.protoforms[0]);
         assert_eq!(rejoined, "/abs/file.ethos");
     }
 
     #[test]
     fn rejoin_recovers_plain_path() {
-        let text = protos::Text::<()>::from("/abs/out-dir");
-        let delineation = text.delineate().unwrap();
-        let rejoined = rejoin_text(&delineation.portions[0]);
+        let delineation = "/abs/out-dir".to_owned().delineate().unwrap();
+        let rejoined = rejoin_text(&delineation.protoforms[0]);
         assert_eq!(rejoined, "/abs/out-dir");
     }
 }

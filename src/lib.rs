@@ -1,6 +1,6 @@
 use std::fmt;
 
-use protos::{Delineatable, EnclosedAnatomy, Extent, Portion, Separator, StructuralEnclosure};
+use protos::{Enclosure, Extent, Head, Protoform, Separator, Structural};
 use quote::{ToTokens, format_ident, quote};
 
 // ============================================================================
@@ -145,7 +145,6 @@ pub enum Concept {
 // Potential and kinds
 // ============================================================================
 
-/// Text that may be an ethos file, ready for actualization.
 pub struct Potential(String);
 
 impl From<&str> for Potential {
@@ -161,18 +160,15 @@ impl From<String> for Potential {
 }
 
 impl Potential {
-    /// The source text.
     pub fn text(&self) -> &str {
         &self.0
     }
 }
 
-/// The reading kind: text actualizes into a Concept.
 pub trait Actualizing {
     fn actualize(&self) -> Result<Concept, Fault>;
 }
 
-/// The emitting kind: a Concept emits generated Rust.
 pub trait Emitting {
     fn emit(&self) -> Result<String, Fault>;
 }
@@ -207,7 +203,7 @@ impl fmt::Display for Fault {
         write!(
             f,
             "{:?} at {}..{}",
-            self.problem, self.extent.start, self.extent.end
+            self.problem, self.extent.0, self.extent.1
         )
     }
 }
@@ -220,29 +216,28 @@ impl std::error::Error for Fault {}
 
 impl Actualizing for Potential {
     fn actualize(&self) -> Result<Concept, Fault> {
-        let text = protos::Text::<()>::from(self.0.as_str());
-        let delineation = text.delineate().map_err(|f| Fault {
+        let delineation = self.0.delineate().map_err(|f| Fault {
             extent: f.extent,
             problem: Problem::Protos,
         })?;
-        let portions = &delineation.portions;
+        let pfs = &delineation.protoforms;
 
-        let first = portions.first().ok_or_else(|| root_fault(self.0.len()))?;
+        let first = pfs.first().ok_or_else(|| root_fault(self.0.len()))?;
 
-        let headed = portion_headed(first).ok_or_else(|| fault_at(first, Problem::Root))?;
-        if headed.separator != Separator::Period {
-            return Err(fault_at(first, Problem::Root));
+        let (head, sep, body) = pf_headed(first).ok_or_else(|| fault_here(Problem::Root))?;
+        if sep != Separator::Period {
+            return Err(fault_here(Problem::Root));
         }
 
-        match headed.head.as_ref() {
-            "Library" => read_library(&headed.body, &portions[1..]),
-            "Signal" => read_signal(&headed.body, &portions[1..]),
-            _ => Err(fault_at(first, Problem::Root)),
+        match head {
+            "Library" => read_library(body, &pfs[1..]),
+            "Signal" => read_signal(body, &pfs[1..]),
+            _ => Err(fault_here(Problem::Root)),
         }
     }
 }
 
-fn read_library(version_or_body: &Portion, rest: &[Portion]) -> Result<Concept, Fault> {
+fn read_library(version_or_body: &Protoform, rest: &[Protoform]) -> Result<Concept, Fault> {
     let (version, sections) = extract_version_and_sections(version_or_body, rest, 4)?;
     Ok(Concept::Library(Library {
         version,
@@ -253,7 +248,7 @@ fn read_library(version_or_body: &Portion, rest: &[Portion]) -> Result<Concept, 
     }))
 }
 
-fn read_signal(version_or_body: &Portion, rest: &[Portion]) -> Result<Concept, Fault> {
+fn read_signal(version_or_body: &Protoform, rest: &[Protoform]) -> Result<Concept, Fault> {
     let (version, sections) = extract_version_and_sections(version_or_body, rest, 4)?;
     Ok(Concept::Signal(Signal {
         version,
@@ -265,35 +260,31 @@ fn read_signal(version_or_body: &Portion, rest: &[Portion]) -> Result<Concept, F
 }
 
 fn extract_version_and_sections<'a>(
-    body: &'a Portion,
-    rest: &'a [Portion],
+    body: &'a Protoform,
+    rest: &'a [Protoform],
     expected: usize,
-) -> Result<(Version, Vec<&'a Portion>), Fault> {
-    let braced = portion_braced(body).ok_or_else(|| fault_at(body, Problem::Version))?;
+) -> Result<(Version, Vec<&'a Protoform>), Fault> {
+    let braced = pf_braced(body).ok_or_else(|| fault_here(Problem::Version))?;
 
-    if braced.iter().all(|p| portion_bare(p).is_some()) {
+    if braced.iter().all(|p| pf_bare(p).is_some()) {
         let version = read_version(braced)?;
         if rest.len() != expected {
-            return Err(fault_at(body, Problem::Section));
+            return Err(fault_here(Problem::Section));
         }
         Ok((version, rest.iter().collect()))
     } else {
         if braced.len() != 1 + expected {
-            return Err(fault_at(body, Problem::Section));
+            return Err(fault_here(Problem::Section));
         }
-        let version_children =
-            portion_braced(&braced[0]).ok_or_else(|| fault_at(&braced[0], Problem::Version))?;
+        let version_children = pf_braced(&braced[0]).ok_or_else(|| fault_here(Problem::Version))?;
         let version = read_version(version_children)?;
         Ok((version, braced[1..].iter().collect()))
     }
 }
 
-fn read_version(portions: &[Portion]) -> Result<Version, Fault> {
-    let [major, minor, patch] = portions else {
-        return Err(Fault {
-            extent: Extent { start: 0, end: 0 },
-            problem: Problem::Version,
-        });
+fn read_version(pfs: &[Protoform]) -> Result<Version, Fault> {
+    let [major, minor, patch] = pfs else {
+        return Err(fault_here(Problem::Version));
     };
     Ok(Version(
         bare_integer(major)?,
@@ -302,38 +293,37 @@ fn read_version(portions: &[Portion]) -> Result<Version, Fault> {
     ))
 }
 
-fn read_imports(portion: &Portion) -> Result<Vec<Import>, Fault> {
-    let children = portion_bracketed(portion).ok_or_else(|| fault_at(portion, Problem::Import))?;
+fn read_imports(pf: &Protoform) -> Result<Vec<Import>, Fault> {
+    let children = pf_bracketed(pf).ok_or_else(|| fault_here(Problem::Import))?;
     children.iter().map(read_import).collect()
 }
 
-fn read_import(portion: &Portion) -> Result<Import, Fault> {
-    let headed = portion_headed(portion).ok_or_else(|| fault_at(portion, Problem::Import))?;
-    if headed.separator != Separator::Colon {
-        return Err(fault_at(portion, Problem::Import));
+fn read_import(pf: &Protoform) -> Result<Import, Fault> {
+    let (head, sep, body) = pf_headed(pf).ok_or_else(|| fault_here(Problem::Import))?;
+    if sep != Separator::Colon {
+        return Err(fault_here(Problem::Import));
     }
-    let source = headed.head.as_ref().to_owned();
-    if let Some(names) = portion_bracketed(&headed.body) {
+    let source = head.to_owned();
+    if let Some(names) = pf_bracketed(body) {
         let names = names
             .iter()
             .map(|p| {
                 bare_symbol(p)
                     .map(str::to_owned)
-                    .map_err(|()| fault_at(p, Problem::Import))
+                    .map_err(|()| fault_here(Problem::Import))
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Import::Multiple { source, names })
     } else {
-        let name = bare_symbol(&headed.body)
-            .map_err(|()| fault_at(portion, Problem::Import))?
+        let name = bare_symbol(body)
+            .map_err(|()| fault_here(Problem::Import))?
             .to_owned();
         Ok(Import::Single { source, name })
     }
 }
 
-fn read_types(portion: &Portion) -> Result<Vec<TypeDeclaration>, Fault> {
-    let children =
-        portion_bracketed(portion).ok_or_else(|| fault_at(portion, Problem::Declaration))?;
+fn read_types(pf: &Protoform) -> Result<Vec<TypeDeclaration>, Fault> {
+    let children = pf_bracketed(pf).ok_or_else(|| fault_here(Problem::Declaration))?;
     let mut declarations = Vec::new();
     let mut index = 0;
     while index < children.len() {
@@ -345,27 +335,44 @@ fn read_types(portion: &Portion) -> Result<Vec<TypeDeclaration>, Fault> {
 }
 
 fn read_type_declaration(
-    portion: &Portion,
-    following: Option<&Portion>,
+    pf: &Protoform,
+    following: Option<&Protoform>,
 ) -> Result<(TypeDeclaration, bool), Fault> {
-    let headed = portion_headed(portion).ok_or_else(|| fault_at(portion, Problem::Declaration))?;
-    if headed.separator != Separator::Period {
-        return Err(fault_at(portion, Problem::Declaration));
+    if let Protoform::Qualified(symbol, args) = pf
+        && let Some(dot) = symbol.find('.')
+    {
+        let name = symbol[..dot].to_owned();
+        let constructor = symbol[dot + 1..].to_owned();
+        let arguments = read_type_expression_list(args)?;
+        return Ok((
+            TypeDeclaration::Alias {
+                name,
+                target: TypeExpression::Applied {
+                    constructor,
+                    arguments,
+                },
+            },
+            false,
+        ));
     }
-    let name = headed.head.as_ref().to_owned();
-    let body = &*headed.body;
 
-    if let Some(children) = portion_braced(body) {
+    let (head, sep, body) = pf_headed(pf).ok_or_else(|| fault_here(Problem::Declaration))?;
+    if sep != Separator::Period {
+        return Err(fault_here(Problem::Declaration));
+    }
+    let name = head.to_owned();
+
+    if let Some(children) = pf_braced(body) {
         let fields = read_type_expression_list(children)?;
         return Ok((TypeDeclaration::Struct { name, fields }, false));
     }
 
-    if let Some(children) = portion_bracketed(body) {
+    if let Some(children) = pf_bracketed(body) {
         let variants = read_variants(children)?;
         return Ok((TypeDeclaration::Enum { name, variants }, false));
     }
 
-    if let Some(children) = portion_guillemets(body) {
+    if let Some(children) = pf_guillemets(body) {
         let mut exprs = Vec::new();
         let mut i = 0;
         while i < children.len() {
@@ -375,7 +382,7 @@ fn read_type_declaration(
             i += 1 + usize::from(ate);
         }
         if exprs.len() != 2 {
-            return Err(fault_at(body, Problem::Declaration));
+            return Err(fault_here(Problem::Declaration));
         }
         let value = exprs.pop().unwrap();
         let key = exprs.pop().unwrap();
@@ -386,31 +393,48 @@ fn read_type_declaration(
     Ok((TypeDeclaration::Alias { name, target }, consumed))
 }
 
-fn read_variants(portions: &[Portion]) -> Result<Vec<Variant>, Fault> {
+fn read_variants(pfs: &[Protoform]) -> Result<Vec<Variant>, Fault> {
     let mut variants = Vec::new();
     let mut index = 0;
-    while index < portions.len() {
-        let (variant, consumed) = read_variant(&portions[index], portions.get(index + 1))?;
+    while index < pfs.len() {
+        let (variant, consumed) = read_variant(&pfs[index], pfs.get(index + 1))?;
         variants.push(variant);
         index += 1 + usize::from(consumed);
     }
     Ok(variants)
 }
 
-fn read_variant(portion: &Portion, following: Option<&Portion>) -> Result<(Variant, bool), Fault> {
-    if let Some(headed) = portion_headed(portion) {
-        if headed.separator != Separator::Period {
-            return Err(fault_at(portion, Problem::Declaration));
-        }
-        let name = headed.head.as_ref().to_owned();
-        let body = &*headed.body;
+fn read_variant(pf: &Protoform, following: Option<&Protoform>) -> Result<(Variant, bool), Fault> {
+    if let Protoform::Qualified(symbol, args) = pf
+        && let Some(dot) = symbol.find('.')
+    {
+        let name = symbol[..dot].to_owned();
+        let constructor = symbol[dot + 1..].to_owned();
+        let arguments = read_type_expression_list(args)?;
+        return Ok((
+            Variant::Typed(
+                name,
+                TypeExpression::Applied {
+                    constructor,
+                    arguments,
+                },
+            ),
+            false,
+        ));
+    }
 
-        if let Some(children) = portion_braced(body) {
+    if let Some((head, sep, body)) = pf_headed(pf) {
+        if sep != Separator::Period {
+            return Err(fault_here(Problem::Declaration));
+        }
+        let name = head.to_owned();
+
+        if let Some(children) = pf_braced(body) {
             let fields = read_type_expression_list(children)?;
             return Ok((Variant::InlineStruct(name, fields), false));
         }
 
-        if let Some(children) = portion_bracketed(body) {
+        if let Some(children) = pf_bracketed(body) {
             let inner = read_variants(children)?;
             return Ok((Variant::InlineEnum(name, inner), false));
         }
@@ -419,18 +443,18 @@ fn read_variant(portion: &Portion, following: Option<&Portion>) -> Result<(Varia
         return Ok((Variant::Typed(name, ty), consumed));
     }
 
-    let name = bare_symbol(portion)
-        .map_err(|()| fault_at(portion, Problem::Declaration))?
+    let name = bare_symbol(pf)
+        .map_err(|()| fault_here(Problem::Declaration))?
         .to_owned();
     Ok((Variant::Unit(name), false))
 }
 
-fn read_type_expression_list(portions: &[Portion]) -> Result<Vec<TypeExpression>, Fault> {
+fn read_type_expression_list(pfs: &[Protoform]) -> Result<Vec<TypeExpression>, Fault> {
     let mut expressions = Vec::new();
     let mut index = 0;
-    while index < portions.len() {
+    while index < pfs.len() {
         let (expr, consumed) =
-            read_type_expression_with_following(&portions[index], portions.get(index + 1))?;
+            read_type_expression_with_following(&pfs[index], pfs.get(index + 1))?;
         expressions.push(expr);
         index += 1 + usize::from(consumed);
     }
@@ -438,14 +462,25 @@ fn read_type_expression_list(portions: &[Portion]) -> Result<Vec<TypeExpression>
 }
 
 fn read_type_expression_with_following(
-    portion: &Portion,
-    following: Option<&Portion>,
+    pf: &Protoform,
+    following: Option<&Protoform>,
 ) -> Result<(TypeExpression, bool), Fault> {
-    if let Ok(name) = bare_symbol(portion) {
+    if let Protoform::Qualified(constructor, args) = pf {
+        let arguments = read_type_expression_list(args)?;
+        return Ok((
+            TypeExpression::Applied {
+                constructor: constructor.to_owned(),
+                arguments,
+            },
+            false,
+        ));
+    }
+
+    if let Ok(name) = bare_symbol(pf) {
         if name == "Self" {
             return Ok((TypeExpression::SelfType, false));
         }
-        if let Some(angled) = following.and_then(portion_angled) {
+        if let Some(angled) = following.and_then(pf_angled) {
             let arguments = read_type_expression_list(angled)?;
             return Ok((
                 TypeExpression::Applied {
@@ -458,35 +493,40 @@ fn read_type_expression_with_following(
         return Ok((TypeExpression::Named(name.to_owned()), false));
     }
 
-    Err(fault_at(portion, Problem::TypeExpression))
+    Err(fault_here(Problem::TypeExpression))
 }
 
-fn read_kinds(portion: &Portion) -> Result<Vec<KindDeclaration>, Fault> {
-    let children = portion_bracketed(portion).ok_or_else(|| fault_at(portion, Problem::Kind))?;
+fn read_kinds(pf: &Protoform) -> Result<Vec<KindDeclaration>, Fault> {
+    let children = pf_bracketed(pf).ok_or_else(|| fault_here(Problem::Kind))?;
     children.iter().map(read_kind).collect()
 }
 
-fn read_kind(portion: &Portion) -> Result<KindDeclaration, Fault> {
-    let headed = portion_headed(portion).ok_or_else(|| fault_at(portion, Problem::Kind))?;
-    let name = headed.head.as_ref().to_owned();
-    let body = &*headed.body;
+fn read_kind(pf: &Protoform) -> Result<KindDeclaration, Fault> {
+    let (head, _sep, body) = pf_headed(pf).ok_or_else(|| fault_here(Problem::Kind))?;
+    let name = head.to_owned();
 
-    if let Some(children) = portion_bracketed(body) {
+    let head_constraints = match pf_head_qualifiers(pf) {
+        Some(quals) => read_kind_constraints(quals)?,
+        None => Vec::new(),
+    };
+
+    if let Some(children) = pf_bracketed(body) {
         let capabilities = read_capabilities(children)?;
         return Ok(KindDeclaration::Simple {
             name,
-            constraints: Vec::new(),
+            constraints: head_constraints,
             capabilities,
         });
     }
 
-    if let Some(children) = portion_braced(body) {
-        let (constraints, body_start) =
-            if let Some(angled) = children.first().and_then(portion_angled) {
-                (read_kind_constraints(angled)?, 1)
-            } else {
-                (Vec::new(), 0)
-            };
+    if let Some(children) = pf_braced(body) {
+        let (constraints, body_start) = if !head_constraints.is_empty() {
+            (head_constraints, 0)
+        } else if let Some(angled) = children.first().and_then(pf_angled) {
+            (read_kind_constraints(angled)?, 1)
+        } else {
+            (Vec::new(), 0)
+        };
 
         let body_children = &children[body_start..];
 
@@ -494,8 +534,8 @@ fn read_kind(portion: &Portion) -> Result<KindDeclaration, Fault> {
             let superkinds = read_bare_list(&body_children[0])?;
             let associated_types = read_associated_types(&body_children[1])?;
             let associated_constants = read_associated_constants(&body_children[2])?;
-            let cap_children = portion_bracketed(&body_children[3])
-                .ok_or_else(|| fault_at(&body_children[3], Problem::Kind))?;
+            let cap_children =
+                pf_bracketed(&body_children[3]).ok_or_else(|| fault_here(Problem::Kind))?;
             let capabilities = read_capabilities(cap_children)?;
             return Ok(KindDeclaration::Complex {
                 name,
@@ -508,7 +548,7 @@ fn read_kind(portion: &Portion) -> Result<KindDeclaration, Fault> {
         }
 
         if body_children.len() == 1
-            && let Some(cap_children) = portion_bracketed(&body_children[0])
+            && let Some(cap_children) = pf_bracketed(&body_children[0])
         {
             let capabilities = read_capabilities(cap_children)?;
             return Ok(KindDeclaration::Simple {
@@ -518,22 +558,22 @@ fn read_kind(portion: &Portion) -> Result<KindDeclaration, Fault> {
             });
         }
 
-        return Err(fault_at(body, Problem::Kind));
+        return Err(fault_here(Problem::Kind));
     }
 
-    Err(fault_at(portion, Problem::Kind))
+    Err(fault_here(Problem::Kind))
 }
 
-fn read_kind_constraints(portions: &[Portion]) -> Result<Vec<KindConstraint>, Fault> {
+fn read_kind_constraints(pfs: &[Protoform]) -> Result<Vec<KindConstraint>, Fault> {
     let mut constraints = Vec::new();
-    for portion in portions {
-        if let Some(children) = portion_bracketed(portion) {
+    for pf in pfs {
+        if let Some(children) = pf_bracketed(pf) {
             let bounds = children
                 .iter()
                 .map(|p| {
                     bare_symbol(p)
                         .map(str::to_owned)
-                        .map_err(|()| fault_at(p, Problem::Kind))
+                        .map_err(|()| fault_here(Problem::Kind))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             constraints.push(KindConstraint {
@@ -541,8 +581,8 @@ fn read_kind_constraints(portions: &[Portion]) -> Result<Vec<KindConstraint>, Fa
                 bounds,
             });
         } else {
-            let bound = bare_symbol(portion)
-                .map_err(|()| fault_at(portion, Problem::Kind))?
+            let bound = bare_symbol(pf)
+                .map_err(|()| fault_here(Problem::Kind))?
                 .to_owned();
             constraints.push(KindConstraint {
                 name: String::new(),
@@ -556,34 +596,34 @@ fn read_kind_constraints(portions: &[Portion]) -> Result<Vec<KindConstraint>, Fa
     Ok(constraints)
 }
 
-fn read_bare_list(portion: &Portion) -> Result<Vec<String>, Fault> {
-    let children = portion_bracketed(portion).ok_or_else(|| fault_at(portion, Problem::Kind))?;
+fn read_bare_list(pf: &Protoform) -> Result<Vec<String>, Fault> {
+    let children = pf_bracketed(pf).ok_or_else(|| fault_here(Problem::Kind))?;
     children
         .iter()
         .map(|p| {
             bare_symbol(p)
                 .map(str::to_owned)
-                .map_err(|()| fault_at(p, Problem::Kind))
+                .map_err(|()| fault_here(Problem::Kind))
         })
         .collect()
 }
 
-fn read_associated_types(portion: &Portion) -> Result<Vec<AssociatedType>, Fault> {
-    let children = portion_bracketed(portion).ok_or_else(|| fault_at(portion, Problem::Kind))?;
+fn read_associated_types(pf: &Protoform) -> Result<Vec<AssociatedType>, Fault> {
+    let children = pf_bracketed(pf).ok_or_else(|| fault_here(Problem::Kind))?;
     let mut types = Vec::new();
     let mut index = 0;
     while index < children.len() {
         let child = &children[index];
         let name = bare_symbol(child)
-            .map_err(|()| fault_at(child, Problem::Kind))?
+            .map_err(|()| fault_here(Problem::Kind))?
             .to_owned();
-        if let Some(angled) = children.get(index + 1).and_then(portion_angled) {
+        if let Some(angled) = children.get(index + 1).and_then(pf_angled) {
             let constraints = angled
                 .iter()
                 .map(|p| {
                     bare_symbol(p)
                         .map(str::to_owned)
-                        .map_err(|()| fault_at(p, Problem::Kind))
+                        .map_err(|()| fault_here(Problem::Kind))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             types.push(AssociatedType { name, constraints });
@@ -599,17 +639,17 @@ fn read_associated_types(portion: &Portion) -> Result<Vec<AssociatedType>, Fault
     Ok(types)
 }
 
-fn read_associated_constants(portion: &Portion) -> Result<Vec<AssociatedConstant>, Fault> {
-    let children = portion_guillemets(portion).ok_or_else(|| fault_at(portion, Problem::Kind))?;
+fn read_associated_constants(pf: &Protoform) -> Result<Vec<AssociatedConstant>, Fault> {
+    let children = pf_guillemets(pf).ok_or_else(|| fault_here(Problem::Kind))?;
     let mut constants = Vec::new();
     let mut index = 0;
     while index < children.len() {
         let name = bare_symbol(&children[index])
-            .map_err(|()| fault_at(&children[index], Problem::Kind))?
+            .map_err(|()| fault_here(Problem::Kind))?
             .to_owned();
         index += 1;
         if index >= children.len() {
-            return Err(fault_at(portion, Problem::Kind));
+            return Err(fault_here(Problem::Kind));
         }
         let (ty, consumed) =
             read_type_expression_with_following(&children[index], children.get(index + 1))?;
@@ -619,21 +659,20 @@ fn read_associated_constants(portion: &Portion) -> Result<Vec<AssociatedConstant
     Ok(constants)
 }
 
-fn read_capabilities(portions: &[Portion]) -> Result<Vec<Capability>, Fault> {
-    portions.iter().map(read_capability).collect()
+fn read_capabilities(pfs: &[Protoform]) -> Result<Vec<Capability>, Fault> {
+    pfs.iter().map(read_capability).collect()
 }
 
-fn read_capability(portion: &Portion) -> Result<Capability, Fault> {
-    let headed = portion_headed(portion).ok_or_else(|| fault_at(portion, Problem::Capability))?;
-    let name = headed.head.as_ref().to_owned();
-    let receiver = match headed.separator {
+fn read_capability(pf: &Protoform) -> Result<Capability, Fault> {
+    let (head, sep, body) = pf_headed(pf).ok_or_else(|| fault_here(Problem::Capability))?;
+    let name = head.to_owned();
+    let receiver = match sep {
         Separator::Period => Receiver::Shared,
         Separator::Exclamation => Receiver::Mutable,
         Separator::Colon => Receiver::None,
     };
-    let body = &*headed.body;
 
-    if let Some(children) = portion_bracketed(body) {
+    if let Some(children) = pf_bracketed(body) {
         let yield_type = read_single_type_expression(children)?;
         return Ok(Capability {
             name,
@@ -643,15 +682,15 @@ fn read_capability(portion: &Portion) -> Result<Capability, Fault> {
         });
     }
 
-    if let Some(children) = portion_braced(body) {
+    if let Some(children) = pf_braced(body) {
         if children.len() != 2 {
-            return Err(fault_at(body, Problem::Capability));
+            return Err(fault_here(Problem::Capability));
         }
-        let input_children = portion_bracketed(&children[0])
-            .ok_or_else(|| fault_at(&children[0], Problem::Capability))?;
+        let input_children =
+            pf_bracketed(&children[0]).ok_or_else(|| fault_here(Problem::Capability))?;
         let inputs = read_type_expression_list(input_children)?;
-        let yield_children = portion_bracketed(&children[1])
-            .ok_or_else(|| fault_at(&children[1], Problem::Capability))?;
+        let yield_children =
+            pf_bracketed(&children[1]).ok_or_else(|| fault_here(Problem::Capability))?;
         let yield_type = read_single_type_expression(yield_children)?;
         return Ok(Capability {
             name,
@@ -661,48 +700,46 @@ fn read_capability(portion: &Portion) -> Result<Capability, Fault> {
         });
     }
 
-    Err(fault_at(body, Problem::Capability))
+    Err(fault_here(Problem::Capability))
 }
 
-fn read_single_type_expression(portions: &[Portion]) -> Result<TypeExpression, Fault> {
-    if portions.is_empty() {
+fn read_single_type_expression(pfs: &[Protoform]) -> Result<TypeExpression, Fault> {
+    if pfs.is_empty() {
         return Err(emit_fault());
     }
-    let (expr, consumed) = read_type_expression_with_following(&portions[0], portions.get(1))?;
+    let (expr, consumed) = read_type_expression_with_following(&pfs[0], pfs.get(1))?;
     let expected_len = 1 + usize::from(consumed);
-    if portions.len() != expected_len {
-        return Err(fault_at(&portions[0], Problem::TypeExpression));
+    if pfs.len() != expected_len {
+        return Err(fault_here(Problem::TypeExpression));
     }
     Ok(expr)
 }
 
-fn read_associations(portion: &Portion) -> Result<Vec<Association>, Fault> {
-    let children =
-        portion_bracketed(portion).ok_or_else(|| fault_at(portion, Problem::Association))?;
+fn read_associations(pf: &Protoform) -> Result<Vec<Association>, Fault> {
+    let children = pf_bracketed(pf).ok_or_else(|| fault_here(Problem::Association))?;
     children.iter().map(read_association).collect()
 }
 
-fn read_association(portion: &Portion) -> Result<Association, Fault> {
-    let headed = portion_headed(portion).ok_or_else(|| fault_at(portion, Problem::Association))?;
-    if headed.separator != Separator::Period {
-        return Err(fault_at(portion, Problem::Association));
+fn read_association(pf: &Protoform) -> Result<Association, Fault> {
+    let (head, sep, body) = pf_headed(pf).ok_or_else(|| fault_here(Problem::Association))?;
+    if sep != Separator::Period {
+        return Err(fault_here(Problem::Association));
     }
-    let ty = headed.head.as_ref().to_owned();
-    let kinds_children =
-        portion_bracketed(&headed.body).ok_or_else(|| fault_at(portion, Problem::Association))?;
+    let ty = head.to_owned();
+    let kinds_children = pf_bracketed(body).ok_or_else(|| fault_here(Problem::Association))?;
     let kinds = kinds_children
         .iter()
         .map(|p| {
             bare_symbol(p)
                 .map(str::to_owned)
-                .map_err(|()| fault_at(p, Problem::Association))
+                .map_err(|()| fault_here(Problem::Association))
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Association { ty, kinds })
 }
 
-fn read_section_references(portion: &Portion) -> Result<Vec<SectionReference>, Fault> {
-    let children = portion_bracketed(portion).ok_or_else(|| fault_at(portion, Problem::Section))?;
+fn read_section_references(pf: &Protoform) -> Result<Vec<SectionReference>, Fault> {
+    let children = pf_bracketed(pf).ok_or_else(|| fault_here(Problem::Section))?;
     let mut refs = Vec::new();
     let mut index = 0;
     while index < children.len() {
@@ -715,15 +752,15 @@ fn read_section_references(portion: &Portion) -> Result<Vec<SectionReference>, F
 }
 
 fn read_section_reference(
-    portion: &Portion,
-    following: Option<&Portion>,
+    pf: &Protoform,
+    following: Option<&Protoform>,
 ) -> Result<(SectionReference, bool), Fault> {
-    let headed = portion_headed(portion).ok_or_else(|| fault_at(portion, Problem::Section))?;
-    if headed.separator != Separator::Period {
-        return Err(fault_at(portion, Problem::Section));
+    let (head, sep, body) = pf_headed(pf).ok_or_else(|| fault_here(Problem::Section))?;
+    if sep != Separator::Period {
+        return Err(fault_here(Problem::Section));
     }
-    let name = headed.head.as_ref().to_owned();
-    let (ty, consumed) = read_type_expression_with_following(&headed.body, following)?;
+    let name = head.to_owned();
+    let (ty, consumed) = read_type_expression_with_following(body, following)?;
     Ok((SectionReference { name, ty }, consumed))
 }
 
@@ -886,7 +923,7 @@ fn type_expression_tokens(expr: &TypeExpression) -> Result<proc_macro2::TokenStr
             "Integer" => quote! { protos::Integer },
             "Decimal" => quote! { protos::Decimal },
             "Boolean" => quote! { protos::Boolean },
-            "Meaning" => quote! { datomic::Meaning },
+            "Meaning" => quote! { datomic::MeaningValue },
             "Symbol" => quote! { protos::Symbol },
             _ => {
                 let name = ident(name)?;
@@ -937,11 +974,11 @@ fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStrea
             let target = type_expression_tokens(target)?;
             Ok(quote! {
                 impl datomic::Datomic for #name {
-                    fn embody(portion: &protos::Portion) -> std::result::Result<Self, datomic::Fault> {
-                        Ok(Self(<#target as datomic::Datomic>::embody(portion)?))
+                    fn incorporate(datom: datomic::Datom) -> std::result::Result<Self, datomic::Fault> {
+                        Ok(Self(<#target as datomic::Datomic>::incorporate(datom)?))
                     }
-                    fn portion(&self) -> protos::Portion {
-                        <#target as datomic::Datomic>::portion(&self.0)
+                    fn datomize(&self) -> datomic::Datom {
+                        <#target as datomic::Datomic>::datomize(&self.0)
                     }
                 }
             })
@@ -950,51 +987,47 @@ fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStrea
         TypeDeclaration::Struct { name, fields } => {
             let name = ident(name)?;
             let arity = fields.len();
-            let embodies = fields
+            let arity_i64 = arity as i64;
+            let field_incorporates = fields
                 .iter()
-                .enumerate()
-                .map(|(i, ty)| {
+                .map(|ty| {
                     let ty = type_expression_tokens(ty)?;
-                    Ok(quote! { <#ty as datomic::Datomic>::embody(&parts[#i])? })
+                    Ok(quote! { <#ty as datomic::Datomic>::incorporate(iter.next().unwrap())? })
                 })
                 .collect::<Result<Vec<_>, Fault>>()?;
-            let portions = (0..fields.len()).map(|i| {
+            let field_datomizes = (0..fields.len()).map(|i| {
                 let idx = syn::Index::from(i);
-                quote! { datomic::Datomic::portion(&self.#idx) }
+                quote! { datomic::Datomic::datomize(&self.#idx) }
             });
             Ok(quote! {
                 impl datomic::Datomic for #name {
-                    fn embody(portion: &protos::Portion) -> std::result::Result<Self, datomic::Fault> {
-                        let Some(parts) = datomic::PortionViewing::structural(
-                            portion,
-                            protos::StructuralEnclosure::Braced,
-                        ) else {
-                            return Err(datomic::PortionViewing::fault(portion, datomic::FaultProblem::Shape));
-                        };
-                        if parts.len() != #arity {
-                            return Err(datomic::PortionViewing::fault(portion, datomic::FaultProblem::Arity));
+                    fn incorporate(datom: datomic::Datom) -> std::result::Result<Self, datomic::Fault> {
+                        match datom {
+                            datomic::Datom::Struct(fields) if fields.len() == #arity => {
+                                let mut iter = fields.into_iter();
+                                Ok(Self( #( #field_incorporates, )* ))
+                            }
+                            datomic::Datom::Struct(fields) => {
+                                Err(datomic::Fault::Corporal(vec![], datomic::Problem::Arity(#arity_i64, fields.len() as i64)))
+                            }
+                            other => Err(datomic::Fault::Corporal(vec![], datomic::Problem::Shape(datomic::Expected::Struct, other))),
                         }
-                        Ok(Self( #( #embodies, )* ))
                     }
-                    fn portion(&self) -> protos::Portion {
-                        datomic::PortionBuilding::structural(
-                            "",
-                            protos::StructuralEnclosure::Braced,
-                            vec![ #( #portions, )* ],
-                        )
+                    fn datomize(&self) -> datomic::Datom {
+                        datomic::Datom::Struct(vec![ #( #field_datomizes, )* ])
                     }
                 }
             })
         }
         TypeDeclaration::Enum { name, variants } => {
             let name_ident = ident(name)?;
-            let embodies = variants
+            let incorporate_arms = variants
                 .iter()
-                .map(|v| variant_embody_arm(&name_ident, v))
+                .map(|v| variant_incorporate_arm(&name_ident, v))
                 .collect::<Result<Vec<_>, _>>()?;
-            let portions = variants
+            let datomize_arms = variants
                 .iter()
-                .map(|v| variant_portion_arm(&name_ident, v))
+                .map(|v| variant_datomize_arm(&name_ident, v))
                 .collect::<Result<Vec<_>, _>>()?;
             let nested = variants
                 .iter()
@@ -1002,13 +1035,15 @@ fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStrea
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(quote! {
                 impl datomic::Datomic for #name_ident {
-                    fn embody(portion: &protos::Portion) -> std::result::Result<Self, datomic::Fault> {
-                        #( #embodies )*
-                        Err(datomic::PortionViewing::fault(portion, datomic::FaultProblem::Shape))
+                    fn incorporate(datom: datomic::Datom) -> std::result::Result<Self, datomic::Fault> {
+                        match datom {
+                            #( #incorporate_arms )*
+                            other => Err(datomic::Fault::Corporal(vec![], datomic::Problem::Shape(datomic::Expected::Variant, other))),
+                        }
                     }
-                    fn portion(&self) -> protos::Portion {
+                    fn datomize(&self) -> datomic::Datom {
                         match self {
-                            #( #portions )*
+                            #( #datomize_arms )*
                         }
                     }
                 }
@@ -1018,7 +1053,7 @@ fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStrea
     }
 }
 
-fn variant_embody_arm(
+fn variant_incorporate_arm(
     parent: &proc_macro2::Ident,
     variant: &Variant,
 ) -> Result<proc_macro2::TokenStream, Fault> {
@@ -1026,22 +1061,15 @@ fn variant_embody_arm(
         Variant::Unit(name) => {
             let name = ident(name)?;
             quote! {
-                if datomic::PortionViewing::bare_symbol(portion) == Some(stringify!(#name)) {
-                    return Ok(Self::#name);
-                }
+                datomic::Datom::Bare(s) if s == stringify!(#name) => Ok(Self::#name),
             }
         }
         Variant::Typed(name, ty) => {
             let variant_name = ident(name)?;
             let ty = type_expression_tokens(ty)?;
             quote! {
-                if let Some(headed) = datomic::PortionViewing::headed(portion)
-                    && headed.head.as_ref() == stringify!(#variant_name)
-                    && headed.separator == protos::Separator::Period
-                {
-                    return Ok(Self::#variant_name(
-                        <#ty as datomic::Datomic>::embody(&headed.body)?
-                    ));
+                datomic::Datom::Variant(head, protos::Separator::Period, Some(body)) if head == stringify!(#variant_name) => {
+                    Ok(Self::#variant_name(<#ty as datomic::Datomic>::incorporate(*body)?))
                 }
             }
         }
@@ -1049,20 +1077,15 @@ fn variant_embody_arm(
             let variant_name = ident(name)?;
             let inline_name = format_ident!("{}{}", parent, variant_name);
             quote! {
-                if let Some(headed) = datomic::PortionViewing::headed(portion)
-                    && headed.head.as_ref() == stringify!(#variant_name)
-                    && headed.separator == protos::Separator::Period
-                {
-                    return Ok(Self::#variant_name(
-                        <#inline_name as datomic::Datomic>::embody(&headed.body)?
-                    ));
+                datomic::Datom::Variant(head, protos::Separator::Period, Some(body)) if head == stringify!(#variant_name) => {
+                    Ok(Self::#variant_name(<#inline_name as datomic::Datomic>::incorporate(*body)?))
                 }
             }
         }
     })
 }
 
-fn variant_portion_arm(
+fn variant_datomize_arm(
     _parent: &proc_macro2::Ident,
     variant: &Variant,
 ) -> Result<proc_macro2::TokenStream, Fault> {
@@ -1070,16 +1093,16 @@ fn variant_portion_arm(
         Variant::Unit(name) => {
             let name = ident(name)?;
             quote! {
-                Self::#name => datomic::PortionBuilding::bare(stringify!(#name)),
+                Self::#name => datomic::Datom::Bare(stringify!(#name).to_owned()),
             }
         }
         Variant::Typed(name, _) | Variant::InlineStruct(name, _) | Variant::InlineEnum(name, _) => {
             let variant_name = ident(name)?;
             quote! {
-                Self::#variant_name(value) => datomic::PortionBuilding::headed(
-                    stringify!(#variant_name),
+                Self::#variant_name(value) => datomic::Datom::Variant(
+                    stringify!(#variant_name).to_owned(),
                     protos::Separator::Period,
-                    datomic::Datomic::portion(value),
+                    Some(Box::new(datomic::Datomic::datomize(value))),
                 ),
             }
         }
@@ -1295,33 +1318,28 @@ fn section_enum_tokens(
         })
         .collect::<Result<Vec<_>, Fault>>()?;
 
-    let embodies = references
+    let incorporate_arms = references
         .iter()
         .map(|r| {
             let variant_name = ident(&r.name)?;
             let ty = type_expression_tokens(&r.ty)?;
             Ok(quote! {
-                if let Some(headed) = datomic::PortionViewing::headed(portion)
-                    && headed.head.as_ref() == stringify!(#variant_name)
-                    && headed.separator == protos::Separator::Period
-                {
-                    return Ok(Self::#variant_name(
-                        <#ty as datomic::Datomic>::embody(&headed.body)?
-                    ));
+                datomic::Datom::Variant(head, protos::Separator::Period, Some(body)) if head == stringify!(#variant_name) => {
+                    Ok(Self::#variant_name(<#ty as datomic::Datomic>::incorporate(*body)?))
                 }
             })
         })
         .collect::<Result<Vec<_>, Fault>>()?;
 
-    let portions = references
+    let datomize_arms = references
         .iter()
         .map(|r| {
             let variant_name = ident(&r.name)?;
             Ok(quote! {
-                Self::#variant_name(value) => datomic::PortionBuilding::headed(
-                    stringify!(#variant_name),
+                Self::#variant_name(value) => datomic::Datom::Variant(
+                    stringify!(#variant_name).to_owned(),
                     protos::Separator::Period,
-                    datomic::Datomic::portion(value),
+                    Some(Box::new(datomic::Datomic::datomize(value))),
                 ),
             })
         })
@@ -1330,12 +1348,14 @@ fn section_enum_tokens(
     Ok(quote! {
         #derive pub enum #enum_name { #( #variants, )* }
         impl datomic::Datomic for #enum_name {
-            fn embody(portion: &protos::Portion) -> std::result::Result<Self, datomic::Fault> {
-                #( #embodies )*
-                Err(datomic::PortionViewing::fault(portion, datomic::FaultProblem::Shape))
+            fn incorporate(datom: datomic::Datom) -> std::result::Result<Self, datomic::Fault> {
+                match datom {
+                    #( #incorporate_arms )*
+                    other => Err(datomic::Fault::Corporal(vec![], datomic::Problem::Shape(datomic::Expected::Variant, other))),
+                }
             }
-            fn portion(&self) -> protos::Portion {
-                match self { #( #portions )* }
+            fn datomize(&self) -> datomic::Datom {
+                match self { #( #datomize_arms )* }
             }
         }
     })
@@ -1371,82 +1391,80 @@ fn wire_envelope_tokens(signal: &Signal) -> Result<proc_macro2::TokenStream, Fau
 }
 
 // ============================================================================
-// Portion helpers
+// Protoform helpers
 // ============================================================================
 
-fn portion_headed(portion: &Portion) -> Option<&protos::Headed> {
-    match portion {
-        Portion::Headed(_, headed) => Some(headed),
+fn pf_headed(pf: &Protoform) -> Option<(&str, Separator, &Protoform)> {
+    match pf {
+        Protoform::Headed(Head::Bare(head), sep, body) => Some((head.as_str(), *sep, body)),
+        Protoform::Headed(Head::Qualified(head, _), sep, body) => Some((head.as_str(), *sep, body)),
         _ => None,
     }
 }
 
-fn portion_bare(portion: &Portion) -> Option<&str> {
-    match portion {
-        Portion::Bare(_, bare) => Some(bare.symbol.as_ref()),
+fn pf_head_qualifiers(pf: &Protoform) -> Option<&[Protoform]> {
+    match pf {
+        Protoform::Headed(Head::Qualified(_, quals), _, _) => Some(quals),
         _ => None,
     }
 }
 
-fn portion_structural(portion: &Portion, enclosure: StructuralEnclosure) -> Option<&[Portion]> {
-    match portion {
-        Portion::Enclosed(_, enclosed) if enclosed.structural_enclosure() == Some(enclosure) => {
-            enclosed.portions()
-        }
+fn pf_bare(pf: &Protoform) -> Option<&str> {
+    match pf {
+        Protoform::Bare(s) => Some(s.as_str()),
         _ => None,
     }
 }
 
-fn portion_braced(portion: &Portion) -> Option<&[Portion]> {
-    portion_structural(portion, StructuralEnclosure::Braced)
+fn pf_enclosed(pf: &Protoform, enclosure: Enclosure) -> Option<&[Protoform]> {
+    match pf {
+        Protoform::Enclosed(enc, children) if *enc == enclosure => Some(children),
+        _ => None,
+    }
 }
 
-fn portion_bracketed(portion: &Portion) -> Option<&[Portion]> {
-    portion_structural(portion, StructuralEnclosure::Bracketed)
+fn pf_braced(pf: &Protoform) -> Option<&[Protoform]> {
+    pf_enclosed(pf, Enclosure::Braced)
 }
 
-fn portion_guillemets(portion: &Portion) -> Option<&[Portion]> {
-    portion_structural(portion, StructuralEnclosure::Guillemets)
+fn pf_bracketed(pf: &Protoform) -> Option<&[Protoform]> {
+    pf_enclosed(pf, Enclosure::Bracketed)
 }
 
-fn portion_angled(portion: &Portion) -> Option<&[Portion]> {
-    portion_structural(portion, StructuralEnclosure::Angled)
+fn pf_guillemets(pf: &Protoform) -> Option<&[Protoform]> {
+    pf_enclosed(pf, Enclosure::Guillemets)
 }
 
-fn bare_symbol(portion: &Portion) -> Result<&str, ()> {
-    portion_bare(portion).ok_or(())
+fn pf_angled(pf: &Protoform) -> Option<&[Protoform]> {
+    pf_enclosed(pf, Enclosure::Angled)
 }
 
-fn bare_integer(portion: &Portion) -> Result<i64, Fault> {
-    let s = bare_symbol(portion).map_err(|()| fault_at(portion, Problem::Version))?;
-    s.parse::<i64>()
-        .map_err(|_| fault_at(portion, Problem::Version))
+fn bare_symbol(pf: &Protoform) -> Result<&str, ()> {
+    pf_bare(pf).ok_or(())
 }
 
-fn fault_at(portion: &Portion, problem: Problem) -> Fault {
-    let extent: &Extent = portion.as_ref();
+fn bare_integer(pf: &Protoform) -> Result<i64, Fault> {
+    let s = bare_symbol(pf).map_err(|()| fault_here(Problem::Version))?;
+    s.parse::<i64>().map_err(|_| fault_here(Problem::Version))
+}
+
+fn fault_here(problem: Problem) -> Fault {
     Fault {
-        extent: Extent {
-            start: extent.start,
-            end: extent.end,
-        },
+        extent: Extent(0, 0),
         problem,
     }
 }
 
 fn root_fault(source_len: usize) -> Fault {
     Fault {
-        extent: Extent {
-            start: 0,
-            end: source_len,
-        },
+        extent: Extent(0, source_len as i64),
         problem: Problem::Root,
     }
 }
 
 fn emit_fault() -> Fault {
     Fault {
-        extent: Extent { start: 0, end: 0 },
+        extent: Extent(0, 0),
         problem: Problem::Emission,
     }
 }
