@@ -21,7 +21,7 @@ path = "src/main.rs"
 
 [dependencies]
 protos = { git = "https://github.com/LiGoldragon/protos", rev = "56c683ec8d1e" }
-datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "768426ea5f34" }
+datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "a27f9b8e7789" }
 quote = "1"
 proc-macro2 = "1"
 syn = { version = "3", features = ["full"] }
