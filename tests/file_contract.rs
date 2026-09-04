@@ -626,32 +626,28 @@ fn round_trip<T: Datomic + std::fmt::Debug + PartialEq>(value: T, expected_text:
 }
 
 fn main() {
-    // Lock round-trip
+    // Lock round-trip (aliases are type aliases, not wrappers)
     round_trip(
-        Lock(
-            LockId(42),
-            LockName("MyLock".to_owned()),
-            FlowId("6329f1".to_owned()),
-            LockPaths(vec![LockPath("/abs/path".to_owned())]),
-            LockReason("testing".to_owned()),
-        ),
+        Lock(42, "MyLock".to_owned(), "6329f1".to_owned(),
+             vec!["/abs/path".to_owned()], "testing".to_owned()),
         "{ 42 MyLock 6329f1 [ /abs/path ] testing }",
+    );
+
+    // Release.42 round-trip (LockId is Integer, bare in datom)
+    round_trip(
+        Request::Release(42),
+        "Release.42",
     );
 
     // LockRequest round-trip
     round_trip(
-        LockRequest(
-            LockName("Test".to_owned()),
-            FlowId("abc".to_owned()),
-            LockPaths(vec![]),
-            LockReason("reason".to_owned()),
-        ),
+        LockRequest("Test".to_owned(), "abc".to_owned(), vec![], "reason".to_owned()),
         "{ Test abc [] reason }",
     );
 
     // Observed.Locks.[] round-trip
     round_trip(
-        Reply::Observed(Observation::Locks(Locks(vec![]))),
+        Reply::Observed(Observation::Locks(vec![])),
         "Observed.Locks.[]",
     );
 
@@ -659,6 +655,16 @@ fn main() {
     round_trip(
         Reply::ReleaseRejected(ReleaseRejection::UnknownLockId),
         "ReleaseRejected.UnknownLockId",
+    );
+
+    // Wire Refusal round-trip through datom text
+    round_trip(
+        Refusal::VersionMismatch(Version(1, 0, 0), Version(0, 9, 0)),
+        "VersionMismatch.{ { 1 0 0 } { 0 9 0 } }",
+    );
+    round_trip(
+        Refusal::Unreadable,
+        "Unreadable",
     );
 
     println!("All round-trips passed.");
