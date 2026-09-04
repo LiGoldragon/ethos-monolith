@@ -421,8 +421,11 @@ fn library_struct_emits_clone_debug_partialeq_eq_derives() {
     let concept = Potential::from(source).actualize().expect("read");
     let rust = concept.emit().expect("emit");
     assert!(
-        rust.contains("derive") && rust.contains("Clone") && rust.contains("Debug")
-            && rust.contains("PartialEq") && rust.contains("Eq"),
+        rust.contains("derive")
+            && rust.contains("Clone")
+            && rust.contains("Debug")
+            && rust.contains("PartialEq")
+            && rust.contains("Eq"),
         "Library struct should have Clone, Debug, PartialEq, Eq derives in: {rust}"
     );
     // Signal derives should not appear in Library output
@@ -438,8 +441,11 @@ fn library_enum_emits_clone_debug_partialeq_eq_derives() {
     let concept = Potential::from(source).actualize().expect("read");
     let rust = concept.emit().expect("emit");
     assert!(
-        rust.contains("derive") && rust.contains("Clone") && rust.contains("Debug")
-            && rust.contains("PartialEq") && rust.contains("Eq"),
+        rust.contains("derive")
+            && rust.contains("Clone")
+            && rust.contains("Debug")
+            && rust.contains("PartialEq")
+            && rust.contains("Eq"),
         "Library enum should have Clone, Debug, PartialEq, Eq derives in: {rust}"
     );
     assert!(
