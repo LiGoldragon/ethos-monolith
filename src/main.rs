@@ -74,11 +74,15 @@ fn run(arg: &str) -> Result<String, String> {
         format!("GenerationFailure.{{ \u{201C}{file_path}\u{201D} \u{201C}{e}\u{201D} }}")
     })?;
 
-    let concept = ethos_zero::read(&source).map_err(|f| {
-        format!("GenerationFailure.{{ \u{201C}{file_path}\u{201D} \u{201C}{f}\u{201D} }}")
-    })?;
+    use ethos_zero::{Actualizing, Emitting};
 
-    let rust = ethos_zero::emit(&concept).map_err(|f| {
+    let concept = ethos_zero::Potential::from(source.as_str())
+        .actualize()
+        .map_err(|f| {
+            format!("GenerationFailure.{{ \u{201C}{file_path}\u{201D} \u{201C}{f}\u{201D} }}")
+        })?;
+
+    let rust = concept.emit().map_err(|f| {
         format!("GenerationFailure.{{ \u{201C}{file_path}\u{201D} \u{201C}{f}\u{201D} }}")
     })?;
 

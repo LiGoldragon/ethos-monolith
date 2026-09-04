@@ -1,4 +1,4 @@
-use ethos_zero::{Concept, Version};
+use ethos_zero::{Actualizing, Concept, Emitting, Potential, Version};
 use std::fs;
 
 // ---------------------------------------------------------------------------
@@ -14,7 +14,9 @@ Library.{0 1 0}
   SinkError.[ Closed Full ] ]
 []
 []";
-    let concept = ethos_zero::read(source).expect("library sweet form");
+    let concept = Potential::from(source)
+        .actualize()
+        .expect("library sweet form");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -28,7 +30,9 @@ Library.{0 1 0}
 #[test]
 fn library_full_form_reads_identically() {
     let source = "Library.{ {0 1 0} [] [ Sink.{ Text } ] [] [] }";
-    let concept = ethos_zero::read(source).expect("library full form");
+    let concept = Potential::from(source)
+        .actualize()
+        .expect("library full form");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -44,7 +48,9 @@ Signal.{1 0 0}
 [ Lock.LockRequest Release.LockId ]
 [ Locked.Lock Released.Lock ]
 [ LockId.Integer LockRequest.{ Text Text } Lock.{ Integer Text Text } ]";
-    let concept = ethos_zero::read(source).expect("signal sweet form");
+    let concept = Potential::from(source)
+        .actualize()
+        .expect("signal sweet form");
     let Concept::Signal(signal) = &concept else {
         panic!("expected Signal");
     };
@@ -57,7 +63,7 @@ Signal.{1 0 0}
 #[test]
 fn single_import_reads_source_and_name() {
     let source = "Library.{0 1 0} [protos:Text] [] [] []";
-    let concept = ethos_zero::read(source).expect("import");
+    let concept = Potential::from(source).actualize().expect("import");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -74,7 +80,7 @@ fn single_import_reads_source_and_name() {
 #[test]
 fn multiple_import_reads_source_and_names() {
     let source = "Library.{0 1 0} [protos:[ Text Integer ]] [] [] []";
-    let concept = ethos_zero::read(source).expect("import");
+    let concept = Potential::from(source).actualize().expect("import");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -91,7 +97,7 @@ fn multiple_import_reads_source_and_names() {
 #[test]
 fn struct_declaration_reads_positional_fields() {
     let source = "Library.{0 1 0} [] [ Pair.{ Text Integer } ] [] []";
-    let concept = ethos_zero::read(source).expect("struct");
+    let concept = Potential::from(source).actualize().expect("struct");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -107,7 +113,7 @@ fn struct_declaration_reads_positional_fields() {
 #[test]
 fn enum_declaration_reads_unit_and_typed_variants() {
     let source = "Library.{0 1 0} [] [ Error.[ Closed Full NotFound.Text ] ] [] []";
-    let concept = ethos_zero::read(source).expect("enum");
+    let concept = Potential::from(source).actualize().expect("enum");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -126,7 +132,7 @@ fn enum_declaration_reads_unit_and_typed_variants() {
 #[test]
 fn alias_declaration_reads_target_type() {
     let source = "Library.{0 1 0} [] [ LockId.Integer ] [] []";
-    let concept = ethos_zero::read(source).expect("alias");
+    let concept = Potential::from(source).actualize().expect("alias");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -142,7 +148,7 @@ fn alias_declaration_reads_target_type() {
 #[test]
 fn applied_type_expression_reads_constructor_and_arguments() {
     let source = "Library.{0 1 0} [] [ Items.Vector<Text> ] [] []";
-    let concept = ethos_zero::read(source).expect("applied type");
+    let concept = Potential::from(source).actualize().expect("applied type");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -167,7 +173,7 @@ fn applied_type_expression_reads_constructor_and_arguments() {
 #[test]
 fn map_declaration_reads_key_and_value_types() {
     let source = "Library.{0 1 0} [] [ Roles.\u{00AB}Text Integer\u{00BB} ] [] []";
-    let concept = ethos_zero::read(source).expect("map");
+    let concept = Potential::from(source).actualize().expect("map");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -184,7 +190,7 @@ fn map_declaration_reads_key_and_value_types() {
 #[test]
 fn simple_kind_reads_capabilities() {
     let source = "Library.{0 1 0} [] [] [ Summarizable.[ summarize.[ Text ] ] ] []";
-    let concept = ethos_zero::read(source).expect("simple kind");
+    let concept = Potential::from(source).actualize().expect("simple kind");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -205,7 +211,9 @@ fn simple_kind_reads_capabilities() {
 #[test]
 fn capability_with_inputs_reads_receiver_and_types() {
     let source = "Library.{0 1 0} [] [] [ Fillable.[ push!{ [ Text ] [ Integer ] } ] ] []";
-    let concept = ethos_zero::read(source).expect("capability with inputs");
+    let concept = Potential::from(source)
+        .actualize()
+        .expect("capability with inputs");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -222,7 +230,9 @@ fn capability_with_inputs_reads_receiver_and_types() {
 #[test]
 fn static_capability_has_no_self() {
     let source = "Library.{0 1 0} [] [] [ Factory.[ create:[ Self ] ] ] []";
-    let concept = ethos_zero::read(source).expect("static capability");
+    let concept = Potential::from(source)
+        .actualize()
+        .expect("static capability");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -242,7 +252,7 @@ fn static_capability_has_no_self() {
 #[test]
 fn association_reads_type_and_kinds() {
     let source = "Library.{0 1 0} [] [] [] [ Sink.[ Summarizable Fillable ] ]";
-    let concept = ethos_zero::read(source).expect("association");
+    let concept = Potential::from(source).actualize().expect("association");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -254,7 +264,9 @@ fn association_reads_type_and_kinds() {
 #[test]
 fn inline_struct_variant_reads_fields() {
     let source = "Library.{0 1 0} [] [ P.[ Headed.{ Text Integer } Bare ] ] [] []";
-    let concept = ethos_zero::read(source).expect("inline struct variant");
+    let concept = Potential::from(source)
+        .actualize()
+        .expect("inline struct variant");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -272,7 +284,9 @@ fn inline_struct_variant_reads_fields() {
 #[test]
 fn inline_enum_variant_reads_inner_variants() {
     let source = "Library.{0 1 0} [] [ Outer.[ Inner.[ A B ] ] ] [] []";
-    let concept = ethos_zero::read(source).expect("inline enum variant");
+    let concept = Potential::from(source)
+        .actualize()
+        .expect("inline enum variant");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -290,12 +304,16 @@ fn inline_enum_variant_reads_inner_variants() {
 
 #[test]
 fn invalid_root_faults() {
-    assert!(ethos_zero::read("Unknown.{0 1 0} [] [] [] []").is_err());
+    assert!(
+        Potential::from("Unknown.{0 1 0} [] [] [] []")
+            .actualize()
+            .is_err()
+    );
 }
 
 #[test]
 fn empty_input_faults() {
-    assert!(ethos_zero::read("").is_err());
+    assert!(Potential::from("").actualize().is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -311,8 +329,8 @@ Library.{0 1 0}
   SinkError.[ Closed Full ] ]
 []
 []";
-    let concept = ethos_zero::read(source).expect("read");
-    let rust = ethos_zero::emit(&concept).expect("emit");
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
     syn::parse_file(&rust).expect("generated Rust parses");
 }
 
@@ -324,24 +342,24 @@ Signal.{1 0 0}
 [ Lock.LockRequest ]
 [ Locked.Lock ]
 [ LockRequest.{ Text Text } Lock.{ Integer Text Text } ]";
-    let concept = ethos_zero::read(source).expect("read");
-    let rust = ethos_zero::emit(&concept).expect("emit");
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
     syn::parse_file(&rust).expect("generated Rust parses");
 }
 
 #[test]
 fn alias_emits_type_alias() {
     let source = "Library.{0 1 0} [] [ LockId.Integer ] [] []";
-    let concept = ethos_zero::read(source).expect("read");
-    let rust = ethos_zero::emit(&concept).expect("emit");
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
     assert!(rust.contains("type LockId"));
 }
 
 #[test]
 fn struct_emits_tuple_struct() {
     let source = "Library.{0 1 0} [] [ Pair.{ Text Integer } ] [] []";
-    let concept = ethos_zero::read(source).expect("read");
-    let rust = ethos_zero::emit(&concept).expect("emit");
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
     // Verify it parses
     let syntax = syn::parse_file(&rust).expect("generated Rust parses");
     // Find the struct
@@ -355,8 +373,8 @@ fn struct_emits_tuple_struct() {
 #[test]
 fn enum_emits_variants() {
     let source = "Library.{0 1 0} [] [ Color.[ Red Green Blue ] ] [] []";
-    let concept = ethos_zero::read(source).expect("read");
-    let rust = ethos_zero::emit(&concept).expect("emit");
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
     let syntax = syn::parse_file(&rust).expect("generated Rust parses");
     let has_enum = syntax
         .items
@@ -368,8 +386,8 @@ fn enum_emits_variants() {
 #[test]
 fn kind_emits_trait() {
     let source = "Library.{0 1 0} [] [] [ Printable.[ print.[ Text ] ] ] []";
-    let concept = ethos_zero::read(source).expect("read");
-    let rust = ethos_zero::emit(&concept).expect("emit");
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
     let syntax = syn::parse_file(&rust).expect("generated Rust parses");
     let has_trait = syntax
         .items
@@ -381,16 +399,16 @@ fn kind_emits_trait() {
 #[test]
 fn datomic_impl_is_generated_for_struct() {
     let source = "Library.{0 1 0} [] [ Pair.{ Text Integer } ] [] []";
-    let concept = ethos_zero::read(source).expect("read");
-    let rust = ethos_zero::emit(&concept).expect("emit");
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
     assert!(rust.contains("impl datomic :: Datomic for Pair"));
 }
 
 #[test]
 fn datomic_impl_is_generated_for_enum() {
     let source = "Library.{0 1 0} [] [ Color.[ Red Green Blue ] ] [] []";
-    let concept = ethos_zero::read(source).expect("read");
-    let rust = ethos_zero::emit(&concept).expect("emit");
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
     assert!(rust.contains("impl datomic :: Datomic for Color"));
 }
 
@@ -401,27 +419,33 @@ fn datomic_impl_is_generated_for_enum() {
 #[test]
 fn fixture_library_reads_and_emits() {
     let source = fs::read_to_string("fixtures/example-library.ethos").expect("fixture library");
-    let concept = ethos_zero::read(&source).expect("read fixture library");
+    let concept = Potential::from(source.as_str())
+        .actualize()
+        .expect("read fixture library");
     assert!(matches!(&concept, Concept::Library(_)));
-    let rust = ethos_zero::emit(&concept).expect("emit fixture library");
+    let rust = concept.emit().expect("emit fixture library");
     syn::parse_file(&rust).expect("fixture library Rust parses");
 }
 
 #[test]
 fn fixture_signal_reads_and_emits() {
     let source = fs::read_to_string("fixtures/orchestrate.ethos").expect("fixture signal");
-    let concept = ethos_zero::read(&source).expect("read fixture signal");
+    let concept = Potential::from(source.as_str())
+        .actualize()
+        .expect("read fixture signal");
     assert!(matches!(&concept, Concept::Signal(_)));
-    let rust = ethos_zero::emit(&concept).expect("emit fixture signal");
+    let rust = concept.emit().expect("emit fixture signal");
     syn::parse_file(&rust).expect("fixture signal Rust parses");
 }
 
 #[test]
 fn self_description_reads() {
     let source = fs::read_to_string("ethos-zero.ethos").expect("self-description");
-    let concept = ethos_zero::read(&source).expect("read self-description");
-    assert!(matches!(&concept, Concept::Signal(_)));
-    let rust = ethos_zero::emit(&concept).expect("emit self-description");
+    let concept = Potential::from(source.as_str())
+        .actualize()
+        .expect("read self-description");
+    assert!(matches!(&concept, Concept::Library(_)));
+    let rust = concept.emit().expect("emit self-description");
     syn::parse_file(&rust).expect("self-description Rust parses");
 }
 
@@ -432,7 +456,7 @@ fn self_description_reads() {
 #[test]
 fn complex_kind_reads_superkinds_and_associated_types() {
     let source = "Library.{0 1 0} [] [] [ Streamable.{ [ Fillable ] [ Item ] \u{00AB}\u{00BB} [ next![ Option<Item> ] ] } ] []";
-    let concept = ethos_zero::read(source).expect("complex kind");
+    let concept = Potential::from(source).actualize().expect("complex kind");
     let Concept::Library(library) = &concept else {
         panic!("expected Library");
     };
@@ -452,4 +476,23 @@ fn complex_kind_reads_superkinds_and_associated_types() {
         }
         _ => panic!("expected Complex kind"),
     }
+}
+
+#[test]
+fn intrinsic_names_emit_fully_qualified() {
+    let source = "Library.{0 1 0} [] [ Pair.{ Integer Decimal Boolean } ] [] []";
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+    assert!(
+        rust.contains("protos :: Integer"),
+        "Integer not fully qualified in: {rust}"
+    );
+    assert!(
+        rust.contains("protos :: Decimal"),
+        "Decimal not fully qualified in: {rust}"
+    );
+    assert!(
+        rust.contains("protos :: Boolean"),
+        "Boolean not fully qualified in: {rust}"
+    );
 }

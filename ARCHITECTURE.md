@@ -1,13 +1,52 @@
 # Architecture
 
 ```text
-Ethos text -> protos delineation -> Protoform tree -> Reader -> Concept
-Concept -> Emitter -> quote tokens -> syn::File -> Rust text
+Potential  --Actualizing::actualize-->  Concept  --Emitting::emit-->  Rust text
+  |                                       |
+  text -> delineate -> portions           concept -> quote -> syn::File -> text
 ```
 
 ethos-zero has no character parser. The reader asks structural questions of
 Protos protoforms. The emitter constructs syntax nodes with `quote` and
 validates them as `syn::File`; it does not assemble Rust source strings.
+Every method call lives under a trait.
+
+## Entry kinds
+
+Declared in ethos-zero.ethos:
+
+```
+Actualizing.[ actualize.[ Result<Concept Fault> ] ]
+Emitting.[ emit.[ Result<Text Fault> ] ]
+```
+
+Target Rust:
+
+```rust
+pub trait Actualizing {
+    fn actualize(&self) -> Result<Concept, Fault>;
+}
+
+pub trait Emitting {
+    fn emit(&self) -> Result<String, Fault>;
+}
+
+impl Actualizing for Potential { /* delineate, then walk portions */ }
+impl Emitting for Concept { /* quote tokens, validate as syn::File */ }
+```
+
+Usage:
+
+```rust
+use ethos_zero::{Potential, Actualizing, Emitting};
+
+let concept = Potential::from(source).actualize()?;
+let rust = concept.emit()?;
+```
+
+`Potential` wraps a string that may be an ethos file. `Actualizing::actualize`
+descends from text to concept; `Emitting::emit` descends from concept to the
+generated Rust (the corporal layer).
 
 ## Concept types
 
@@ -25,14 +64,19 @@ Type declarations:
 | `Name.{ T1 T2 }` | `pub struct Name(pub T1, pub T2);` (tuple struct) |
 | `Name.[ V1 V2 ]` | `pub enum Name { V1, V2 }` |
 | `Name.Type` | `pub type Name = Type;` |
-| `Name.« K V »` | `pub type Name = BTreeMap<K, V>;` |
+| `Name.\u{00AB} K V \u{00BB}` | `pub type Name = BTreeMap<K, V>;` |
 
 Kind declarations (traits):
 
 | Ethos | Rust |
 |---|---|
 | `Name.[ cap.[ T ] ]` | `pub trait Name { fn cap(&self) -> T; }` |
-| `Name.{ [S] [A<B>] « C T » [cap![ T ]] }` | `pub trait Name: S { type A: B; const C: T; fn cap(&mut self) -> T; }` |
+| `Name.{ [S] [A<B>] \u{00AB} C T \u{00BB} [cap![ T ]] }` | `pub trait Name: S { type A: B; const C: T; fn cap(&mut self) -> T; }` |
+
+Intrinsic names are fully qualified: `Integer` emits as `protos::Integer`,
+`Decimal` as `protos::Decimal`, `Boolean` as `protos::Boolean`,
+`Text` as `protos::Text`, `Symbol` as `protos::Symbol`,
+`Meaning` as `datomic::Meaning`.
 
 ## Layers
 
@@ -62,12 +106,6 @@ The full form:
 
 ```
 Library.{ {0 1 0} [imports] [types] [kinds] [associations] }
-```
-
-A bracket of several ethos objects:
-
-```
-[ Library.{...} Signal.{...} ]
 ```
 
 ## Wire (Signal only)

@@ -142,6 +142,42 @@ pub enum Concept {
 }
 
 // ============================================================================
+// Potential and kinds
+// ============================================================================
+
+/// Text that may be an ethos file, ready for actualization.
+pub struct Potential(String);
+
+impl From<&str> for Potential {
+    fn from(source: &str) -> Self {
+        Self(source.to_owned())
+    }
+}
+
+impl From<String> for Potential {
+    fn from(source: String) -> Self {
+        Self(source)
+    }
+}
+
+impl Potential {
+    /// The source text.
+    pub fn text(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The reading kind: text actualizes into a Concept.
+pub trait Actualizing {
+    fn actualize(&self) -> Result<Concept, Fault>;
+}
+
+/// The emitting kind: a Concept emits generated Rust.
+pub trait Emitting {
+    fn emit(&self) -> Result<String, Fault>;
+}
+
+// ============================================================================
 // Faults
 // ============================================================================
 
@@ -179,28 +215,30 @@ impl fmt::Display for Fault {
 impl std::error::Error for Fault {}
 
 // ============================================================================
-// Reader
+// Reader (Actualizing for Potential)
 // ============================================================================
 
-pub fn read(source: &str) -> Result<Concept, Fault> {
-    let text = protos::Text::<()>::from(source);
-    let delineation = text.delineate().map_err(|f| Fault {
-        extent: f.extent,
-        problem: Problem::Protos,
-    })?;
-    let portions = &delineation.portions;
+impl Actualizing for Potential {
+    fn actualize(&self) -> Result<Concept, Fault> {
+        let text = protos::Text::<()>::from(self.0.as_str());
+        let delineation = text.delineate().map_err(|f| Fault {
+            extent: f.extent,
+            problem: Problem::Protos,
+        })?;
+        let portions = &delineation.portions;
 
-    let first = portions.first().ok_or_else(|| root_fault(source.len()))?;
+        let first = portions.first().ok_or_else(|| root_fault(self.0.len()))?;
 
-    let headed = portion_headed(first).ok_or_else(|| fault_at(first, Problem::Root))?;
-    if headed.separator != Separator::Period {
-        return Err(fault_at(first, Problem::Root));
-    }
+        let headed = portion_headed(first).ok_or_else(|| fault_at(first, Problem::Root))?;
+        if headed.separator != Separator::Period {
+            return Err(fault_at(first, Problem::Root));
+        }
 
-    match headed.head.as_ref() {
-        "Library" => read_library(&headed.body, &portions[1..]),
-        "Signal" => read_signal(&headed.body, &portions[1..]),
-        _ => Err(fault_at(first, Problem::Root)),
+        match headed.head.as_ref() {
+            "Library" => read_library(&headed.body, &portions[1..]),
+            "Signal" => read_signal(&headed.body, &portions[1..]),
+            _ => Err(fault_at(first, Problem::Root)),
+        }
     }
 }
 
@@ -690,17 +728,15 @@ fn read_section_reference(
 }
 
 // ============================================================================
-// Emitter
+// Emitter (Emitting for Concept)
 // ============================================================================
 
-pub fn emit(concept: &Concept) -> Result<String, Fault> {
-    let syntax = emit_syntax(concept)?;
-    Ok(syntax.into_token_stream().to_string())
-}
-
-pub fn emit_syntax(concept: &Concept) -> Result<syn::File, Fault> {
-    let tokens = emit_tokens(concept)?;
-    syn::parse2(tokens).map_err(|_| emit_fault())
+impl Emitting for Concept {
+    fn emit(&self) -> Result<String, Fault> {
+        let tokens = emit_tokens(self)?;
+        let syntax: syn::File = syn::parse2(tokens).map_err(|_| emit_fault())?;
+        Ok(syntax.into_token_stream().to_string())
+    }
 }
 
 fn emit_tokens(concept: &Concept) -> Result<proc_macro2::TokenStream, Fault> {
@@ -847,9 +883,9 @@ fn type_expression_tokens(expr: &TypeExpression) -> Result<proc_macro2::TokenStr
     Ok(match expr {
         TypeExpression::Named(name) => match name.as_str() {
             "Text" => quote! { protos::Text },
-            "Integer" => quote! { i64 },
-            "Decimal" => quote! { f64 },
-            "Boolean" => quote! { bool },
+            "Integer" => quote! { protos::Integer },
+            "Decimal" => quote! { protos::Decimal },
+            "Boolean" => quote! { protos::Boolean },
             "Meaning" => quote! { datomic::Meaning },
             "Symbol" => quote! { protos::Symbol },
             _ => {
