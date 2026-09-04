@@ -415,6 +415,51 @@ fn datomic_impl_is_generated_for_enum() {
     assert!(rust.contains("impl datomic :: Datomic for Color"));
 }
 
+#[test]
+fn library_struct_emits_clone_debug_partialeq_eq_derives() {
+    let source = "Library.{0 1 0} [] [ Pair.{ Text Integer } ] [] []";
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+    assert!(
+        rust.contains("derive") && rust.contains("Clone") && rust.contains("Debug")
+            && rust.contains("PartialEq") && rust.contains("Eq"),
+        "Library struct should have Clone, Debug, PartialEq, Eq derives in: {rust}"
+    );
+    // Signal derives should not appear in Library output
+    assert!(
+        !rust.contains("Archive"),
+        "Library struct should NOT have rkyv Archive derive in: {rust}"
+    );
+}
+
+#[test]
+fn library_enum_emits_clone_debug_partialeq_eq_derives() {
+    let source = "Library.{0 1 0} [] [ Color.[ Red Green Blue ] ] [] []";
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+    assert!(
+        rust.contains("derive") && rust.contains("Clone") && rust.contains("Debug")
+            && rust.contains("PartialEq") && rust.contains("Eq"),
+        "Library enum should have Clone, Debug, PartialEq, Eq derives in: {rust}"
+    );
+    assert!(
+        !rust.contains("Archive"),
+        "Library enum should NOT have rkyv Archive derive in: {rust}"
+    );
+}
+
+#[test]
+fn meaning_intrinsic_emits_datomic_meaning() {
+    let source = "Library.{0 1 0} [] [ Note.{ Text Meaning } ] [] []";
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+    assert!(
+        rust.contains("datomic :: Meaning"),
+        "Meaning should map to datomic::Meaning in: {rust}"
+    );
+    syn::parse_file(&rust).expect("generated Rust parses");
+}
+
 // ---------------------------------------------------------------------------
 // Fixture tests
 // ---------------------------------------------------------------------------
@@ -701,6 +746,112 @@ fn main() {
     );
 
     // Cleanup
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fixture_library_meaning_round_trips_in_e2e() {
+    use std::process::Command;
+
+    // Skip in sandboxed Nix builds.
+    if std::env::var("NIX_BUILD_TOP").is_ok() {
+        eprintln!("skipping e2e Meaning compile test inside Nix sandbox");
+        return;
+    }
+
+    let source = fs::read_to_string("fixtures/example-library.ethos").expect("fixture");
+    let concept = Potential::from(source.as_str()).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+
+    let dir = std::env::temp_dir().join("ethos-zero-e2e-meaning-test");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("src")).expect("create dir");
+
+    fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "e2e-meaning-test"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+
+[dependencies]
+protos = { git = "https://github.com/LiGoldragon/protos", rev = "56c683ec8d1e" }
+datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "768426ea5f34" }
+"#,
+    )
+    .expect("write Cargo.toml");
+
+    fs::write(dir.join("src").join("generated.rs"), &rust).expect("write generated.rs");
+
+    fs::write(
+        dir.join("src").join("main.rs"),
+        r#"
+mod generated;
+use generated::*;
+use datomic::{Corporal, Datomic, Textualizable};
+use protos::Structural;
+
+fn round_trip<T: Datomic + std::fmt::Debug + PartialEq>(value: T, expected_text: &str) {
+    let text = value.textualize();
+    assert_eq!(text.as_str(), expected_text, "textualize mismatch for {value:?}");
+    let delineation = text.delineate().unwrap();
+    use protos::Conceptual;
+    let datom: datomic::Datom = delineation.conceive().unwrap();
+    let recovered = <T as Corporal<datomic::Datom>>::incorporate(datom).unwrap();
+    assert_eq!(value, recovered, "round trip failed for {expected_text}");
+}
+
+fn main() {
+    use datomic::Meaning;
+    use protos::Text;
+
+    // (a meaning) text in -> Meaning::Plain -> back to (a meaning)
+    let text: Text<Meaning> = Text::from("(a meaning)");
+    use protos::Textualizing;
+    let meaning: Meaning = text.embody().unwrap();
+    assert!(
+        matches!(&meaning, Meaning::Plain(_)),
+        "expected Meaning::Plain, got {:?}", meaning
+    );
+    let roundtripped = meaning.textualize();
+    assert_eq!(roundtripped.as_str(), "(a meaning)", "Meaning round-trip mismatch");
+
+    // Note round-trip (struct with Text + Meaning)
+    round_trip(
+        Note(Text::from("author"), Meaning::Plain(Text::from("a meaning"))),
+        "{ author (a meaning) }",
+    );
+
+    println!("Meaning round-trips passed.");
+}
+"#,
+    )
+    .expect("write main.rs");
+
+    let build = Command::new("cargo")
+        .args(["build"])
+        .current_dir(&dir)
+        .output()
+        .expect("cargo build");
+    assert!(
+        build.status.success(),
+        "cargo build failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new("cargo")
+        .args(["run"])
+        .current_dir(&dir)
+        .output()
+        .expect("cargo run");
+    assert!(
+        run.status.success(),
+        "cargo run failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
     let _ = fs::remove_dir_all(&dir);
 }
 

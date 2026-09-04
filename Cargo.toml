@@ -1,6 +1,6 @@
 [package]
 name         = "ethos-zero"
-version      = "1.1.0"
+version      = "1.2.0"
 edition      = "2024"
 rust-version = "1.89"
 license      = "MIT OR Apache-2.0"
@@ -39,3 +39,4 @@ path = "tests/file_contract.rs"
 unsafe_code = "forbid"
 unused      = { level = "warn", priority = -1 }
 dead_code   = "warn"
+

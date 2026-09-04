@@ -3,7 +3,8 @@ Library.{0 1 0}
 [ protos:Text ]
 [ Sink.{ Text Vector<Text> }
   SinkError.[ Closed Full ]
-  Roles.«Text Integer» ]
+  Roles.«Text Integer»
+  Note.{ Text Meaning } ]
 [ Summarizable.[ summarize.[ Text ] ]
   Fillable.[ push!{ [ Text ] [ Result<Integer SinkError> ] }
              drain![ Vector<Text> ]

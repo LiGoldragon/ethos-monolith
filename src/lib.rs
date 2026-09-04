@@ -1206,7 +1206,7 @@ fn type_declaration_tokens(
     let derive = if signal {
         quote! { #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] }
     } else {
-        proc_macro2::TokenStream::new()
+        quote! { #[derive(Clone, Debug, PartialEq, Eq)] }
     };
 
     Ok(match decl {
@@ -1256,7 +1256,7 @@ fn emit_variant_tokens(
     let derive = if signal {
         quote! { #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] }
     } else {
-        proc_macro2::TokenStream::new()
+        quote! { #[derive(Clone, Debug, PartialEq, Eq)] }
     };
 
     let mut variant_tokens = Vec::new();
@@ -1314,7 +1314,7 @@ fn type_expression_tokens(
             "Integer" => quote! { protos::Integer },
             "Decimal" => quote! { protos::Decimal },
             "Boolean" => quote! { protos::Boolean },
-            "Meaning" => quote! { datomic::MeaningValue },
+            "Meaning" => quote! { datomic::Meaning },
             "Symbol" => quote! { protos::Symbol },
             _ => {
                 if let Some(module) = imports.get(name.as_str()) {
