@@ -1514,8 +1514,7 @@ fn datomic_impl_tokens_with_boxing(
             let nested = variants
                 .iter()
                 .filter_map(|v| {
-                    nested_datomic_impl(&name_ident, name, v, imports, recursive_boxing)
-                        .transpose()
+                    nested_datomic_impl(&name_ident, name, v, imports, recursive_boxing).transpose()
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(quote! {
