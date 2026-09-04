@@ -1223,11 +1223,22 @@ fn type_declaration_tokens(
         }
         TypeDeclaration::Enum { name, variants } => {
             let name_ident = ident(name)?;
+            // Detect self-referential variants: a position that directly names
+            // this enum requires Box indirection.
+            let recursive = variants_have_recursive_ref(variants, name);
+            let box_ctx = recursive.then_some(name.as_str());
             let (variant_tokens, inline_types) =
-                emit_variant_tokens(&name_ident, variants, signal, imports)?;
+                emit_variant_tokens(&name_ident, variants, signal, imports, box_ctx)?;
+            // When recursive, emit impl_datomic_box! so Box<Name> is Datomic.
+            let box_impl = if recursive {
+                quote! { datomic::impl_datomic_box!(#name_ident); }
+            } else {
+                proc_macro2::TokenStream::new()
+            };
             quote! {
                 #( #inline_types )*
                 #derive pub enum #name_ident { #( #variant_tokens, )* }
+                #box_impl
             }
         }
         TypeDeclaration::Alias { name, target } => {
@@ -1252,6 +1263,8 @@ fn emit_variant_tokens(
     variants: &[Variant],
     signal: bool,
     imports: &HashMap<String, String>,
+    // When Some(name), fields directly naming `name` are wrapped in Box.
+    box_name: Option<&str>,
 ) -> Result<(Vec<proc_macro2::TokenStream>, Vec<proc_macro2::TokenStream>), Fault> {
     let derive = if signal {
         quote! { #[derive(Archive, RkyvSerialize, RkyvDeserialize, Clone, Debug, PartialEq, Eq)] }
@@ -1270,7 +1283,11 @@ fn emit_variant_tokens(
             }
             Variant::Typed(name, ty) => {
                 let name = ident(name)?;
-                let ty = type_expression_tokens(ty, imports)?;
+                let ty = if let Some(bn) = box_name {
+                    type_expression_tokens_boxed(ty, imports, bn)?
+                } else {
+                    type_expression_tokens(ty, imports)?
+                };
                 variant_tokens.push(quote! { #name(#ty) });
             }
             Variant::InlineStruct(name, fields) => {
@@ -1279,7 +1296,11 @@ fn emit_variant_tokens(
                 let field_tokens = fields
                     .iter()
                     .map(|ty| {
-                        let ty = type_expression_tokens(ty, imports)?;
+                        let ty = if let Some(bn) = box_name {
+                            type_expression_tokens_boxed(ty, imports, bn)?
+                        } else {
+                            type_expression_tokens(ty, imports)?
+                        };
                         Ok(quote! { pub #ty })
                     })
                     .collect::<Result<Vec<_>, Fault>>()?;
@@ -1291,7 +1312,7 @@ fn emit_variant_tokens(
                 let variant_name = ident(name)?;
                 let inline_name = format_ident!("{}{}", parent, variant_name);
                 let (inner_variant_tokens, inner_inline_types) =
-                    emit_variant_tokens(&inline_name, inner_variants, signal, imports)?;
+                    emit_variant_tokens(&inline_name, inner_variants, signal, imports, box_name)?;
                 inline_types.extend(inner_inline_types);
                 inline_types.push(
                     quote! { #derive pub enum #inline_name { #( #inner_variant_tokens, )* } },
@@ -1354,6 +1375,12 @@ fn type_expression_tokens(
                     };
                     quote! { Result<#ok, #err> }
                 }
+                "Box" => {
+                    let [inner] = args.as_slice() else {
+                        return Err(emit_fault());
+                    };
+                    quote! { Box<#inner> }
+                }
                 _ => {
                     if let Some(module) = imports.get(constructor.as_str()) {
                         let module = ident(module)?;
@@ -1370,9 +1397,55 @@ fn type_expression_tokens(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Recursive-type helpers
+// ---------------------------------------------------------------------------
+
+/// True if `ty` directly names `enclosing` (one-step self-reference).
+fn is_direct_recursive(ty: &TypeExpression, enclosing: &str) -> bool {
+    matches!(ty, TypeExpression::Named(n) if n == enclosing)
+}
+
+/// True if any field in `fields` directly names `enclosing`.
+fn fields_have_recursive_ref(fields: &[TypeExpression], enclosing: &str) -> bool {
+    fields.iter().any(|f| is_direct_recursive(f, enclosing))
+}
+
+/// True if any variant of this enum (at any depth) has a direct recursive ref.
+fn variants_have_recursive_ref(variants: &[Variant], enclosing: &str) -> bool {
+    variants.iter().any(|v| match v {
+        Variant::Unit(_) => false,
+        Variant::Typed(_, ty) => is_direct_recursive(ty, enclosing),
+        Variant::InlineStruct(_, fields) => fields_have_recursive_ref(fields, enclosing),
+        Variant::InlineEnum(_, inner) => variants_have_recursive_ref(inner, enclosing),
+    })
+}
+
+/// Emit `ty` as tokens, wrapping it in `Box<…>` when it directly names `box_name`.
+fn type_expression_tokens_boxed(
+    expr: &TypeExpression,
+    imports: &HashMap<String, String>,
+    box_name: &str,
+) -> Result<proc_macro2::TokenStream, Fault> {
+    if is_direct_recursive(expr, box_name) {
+        let inner = type_expression_tokens(expr, imports)?;
+        return Ok(quote! { Box<#inner> });
+    }
+    type_expression_tokens(expr, imports)
+}
+
 fn datomic_impl_tokens(
     decl: &TypeDeclaration,
     imports: &HashMap<String, String>,
+) -> Result<proc_macro2::TokenStream, Fault> {
+    datomic_impl_tokens_with_boxing(decl, imports, None)
+}
+
+fn datomic_impl_tokens_with_boxing(
+    decl: &TypeDeclaration,
+    imports: &HashMap<String, String>,
+    // When Some(name), fields/variants whose type directly names `name` are wrapped in Box.
+    box_name: Option<&str>,
 ) -> Result<proc_macro2::TokenStream, Fault> {
     match decl {
         TypeDeclaration::Alias { .. } | TypeDeclaration::Map { .. } => {
@@ -1387,7 +1460,11 @@ fn datomic_impl_tokens(
             let field_incorporates = fields
                 .iter()
                 .map(|ty| {
-                    let ty = type_expression_tokens(ty, imports)?;
+                    let ty = if let Some(bn) = box_name {
+                        type_expression_tokens_boxed(ty, imports, bn)?
+                    } else {
+                        type_expression_tokens(ty, imports)?
+                    };
                     Ok(quote! { <#ty as datomic::Corporal<datomic::Datom>>::incorporate(iter.next().unwrap())? })
                 })
                 .collect::<Result<Vec<_>, Fault>>()?;
@@ -1420,9 +1497,15 @@ fn datomic_impl_tokens(
         }
         TypeDeclaration::Enum { name, variants } => {
             let name_ident = ident(name)?;
+            // Pass boxing context: recursive refs inside this enum use Box.
+            let recursive_boxing: Option<&str> = if variants_have_recursive_ref(variants, name) {
+                Some(name.as_str())
+            } else {
+                box_name
+            };
             let incorporate_arms = variants
                 .iter()
-                .map(|v| variant_incorporate_arm(&name_ident, v, imports))
+                .map(|v| variant_incorporate_arm(&name_ident, v, imports, recursive_boxing))
                 .collect::<Result<Vec<_>, _>>()?;
             let datomize_arms = variants
                 .iter()
@@ -1430,7 +1513,10 @@ fn datomic_impl_tokens(
                 .collect::<Result<Vec<_>, _>>()?;
             let nested = variants
                 .iter()
-                .filter_map(|v| nested_datomic_impl(&name_ident, name, v, imports).transpose())
+                .filter_map(|v| {
+                    nested_datomic_impl(&name_ident, name, v, imports, recursive_boxing)
+                        .transpose()
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(quote! {
                 impl datomic::Corporal<datomic::Datom> for #name_ident {
@@ -1459,6 +1545,7 @@ fn variant_incorporate_arm(
     parent: &proc_macro2::Ident,
     variant: &Variant,
     imports: &HashMap<String, String>,
+    box_name: Option<&str>,
 ) -> Result<proc_macro2::TokenStream, Fault> {
     Ok(match variant {
         Variant::Unit(name) => {
@@ -1469,10 +1556,21 @@ fn variant_incorporate_arm(
         }
         Variant::Typed(name, ty) => {
             let variant_name = ident(name)?;
-            let ty = type_expression_tokens(ty, imports)?;
-            quote! {
-                datomic::Datom::Variant(head, protos::Separator::Period, Some(body)) if head == stringify!(#variant_name) => {
-                    Ok(Self::#variant_name(<#ty as datomic::Corporal<datomic::Datom>>::incorporate(*body)?))
+            // When the field directly names the recursive type, we stored Box<T>;
+            // use Box::new(T::incorporate(body)?) to construct it.
+            let recursive = box_name.is_some_and(|bn| is_direct_recursive(ty, bn));
+            let inner_ty = type_expression_tokens(ty, imports)?;
+            if recursive {
+                quote! {
+                    datomic::Datom::Variant(head, protos::Separator::Period, Some(body)) if head == stringify!(#variant_name) => {
+                        Ok(Self::#variant_name(Box::new(<#inner_ty as datomic::Corporal<datomic::Datom>>::incorporate(*body)?)))
+                    }
+                }
+            } else {
+                quote! {
+                    datomic::Datom::Variant(head, protos::Separator::Period, Some(body)) if head == stringify!(#variant_name) => {
+                        Ok(Self::#variant_name(<#inner_ty as datomic::Corporal<datomic::Datom>>::incorporate(*body)?))
+                    }
                 }
             }
         }
@@ -1517,26 +1615,29 @@ fn nested_datomic_impl(
     parent_name: &str,
     variant: &Variant,
     imports: &HashMap<String, String>,
+    box_name: Option<&str>,
 ) -> Result<Option<proc_macro2::TokenStream>, Fault> {
     match variant {
         Variant::InlineStruct(vname, fields) => {
             let inline_name = format!("{}{}", parent_name, vname);
-            Ok(Some(datomic_impl_tokens(
+            Ok(Some(datomic_impl_tokens_with_boxing(
                 &TypeDeclaration::Struct {
                     name: inline_name,
                     fields: fields.clone(),
                 },
                 imports,
+                box_name,
             )?))
         }
         Variant::InlineEnum(vname, inner) => {
             let inline_name = format!("{}{}", parent_name, vname);
-            Ok(Some(datomic_impl_tokens(
+            Ok(Some(datomic_impl_tokens_with_boxing(
                 &TypeDeclaration::Enum {
                     name: inline_name,
                     variants: inner.clone(),
                 },
                 imports,
+                box_name,
             )?))
         }
         _ => Ok(None),

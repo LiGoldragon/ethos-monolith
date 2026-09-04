@@ -466,6 +466,23 @@ fn meaning_intrinsic_emits_datomic_meaning() {
     syn::parse_file(&rust).expect("generated Rust parses");
 }
 
+#[test]
+fn recursive_enum_emits_box_and_impl_datomic_box() {
+    // Query is recursive: Grep.{ Query Text } references the enclosing Query.
+    let source = "Library.{0 1 0} [] [ Query.[ Latest All Session.Text File.Text Grep.{ Query Text } ] ] [] []";
+    let concept = Potential::from(source).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+    assert!(
+        rust.contains("Box < Query >") || rust.contains("Box<Query>"),
+        "recursive field should be Box<Query> in: {rust}"
+    );
+    assert!(
+        rust.contains("impl_datomic_box"),
+        "recursive enum should emit impl_datomic_box! in: {rust}"
+    );
+    syn::parse_file(&rust).expect("generated Rust parses");
+}
+
 // ---------------------------------------------------------------------------
 // Fixture tests
 // ---------------------------------------------------------------------------
@@ -650,7 +667,7 @@ rust-version = "1.89"
 
 [dependencies]
 protos = { git = "https://github.com/LiGoldragon/protos", rev = "56c683ec8d1e" }
-datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "768426ea5f34" }
+datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "e4430bfe" }
 rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 "#,
     )
@@ -783,7 +800,7 @@ rust-version = "1.89"
 
 [dependencies]
 protos = { git = "https://github.com/LiGoldragon/protos", rev = "56c683ec8d1e" }
-datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "768426ea5f34" }
+datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "e4430bfe" }
 "#,
     )
     .expect("write Cargo.toml");
@@ -818,10 +835,15 @@ fn main() {
     let meaning: Meaning = text.embody().unwrap();
     assert!(
         matches!(&meaning, Meaning::Plain(_)),
-        "expected Meaning::Plain, got {:?}", meaning
+        "expected Meaning::Plain, got {:?}",
+        meaning
     );
     let roundtripped = meaning.textualize();
-    assert_eq!(roundtripped.as_str(), "(a meaning)", "Meaning round-trip mismatch");
+    assert_eq!(
+        roundtripped.as_str(),
+        "(a meaning)",
+        "Meaning round-trip mismatch"
+    );
 
     // Note round-trip (struct with Text + Meaning)
     round_trip(
@@ -829,7 +851,31 @@ fn main() {
         "{ author (a meaning) }",
     );
 
-    println!("Meaning round-trips passed.");
+    // Query round-trip: recursive enum with Box indirection
+    // Latest and All (unit variants)
+    round_trip(Query::Latest, "Latest");
+    round_trip(Query::All, "All");
+
+    // Session and File (typed variants)
+    round_trip(Query::Session(Text::from("sess-1")), "Session.sess-1");
+    round_trip(Query::File(Text::from("main.rs")), "File.main.rs");
+
+    // Grep is recursive: Grep.{ Box<Query> Text }
+    // Nested: Grep(Latest, "foo") — Query::Grep is QueryGrep(Box<Query>, Text)
+    let grep_latest = Query::Grep(QueryGrep(Box::new(Query::Latest), Text::from("foo")));
+    round_trip(grep_latest, "Grep.{ Latest foo }");
+
+    // Double-nested: Grep(Grep(All, "inner"), "outer")
+    let grep_nested = Query::Grep(QueryGrep(
+        Box::new(Query::Grep(QueryGrep(
+            Box::new(Query::All),
+            Text::from("inner"),
+        ))),
+        Text::from("outer"),
+    ));
+    round_trip(grep_nested, "Grep.{ Grep.{ All inner } outer }");
+
+    println!("Meaning and recursive round-trips passed.");
 }
 "#,
     )

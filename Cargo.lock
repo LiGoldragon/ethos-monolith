@@ -72,8 +72,8 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "datomic"
-version = "0.8.0"
-source = "git+https://github.com/LiGoldragon/datomic?rev=a27f9b8e7789#a27f9b8e778935f1fb2ec0011620cf44a96ea81b"
+version = "0.9.0"
+source = "git+https://github.com/LiGoldragon/datomic?rev=e4430bfe#e4430bfedb5c05134c1480b04e3890d3dad64c4b"
 dependencies = [
  "protos",
 ]

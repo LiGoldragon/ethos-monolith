@@ -4,7 +4,8 @@ Library.{0 1 0}
 [ Sink.{ Text Vector<Text> }
   SinkError.[ Closed Full ]
   Roles.«Text Integer»
-  Note.{ Text Meaning } ]
+  Note.{ Text Meaning }
+  Query.[ Latest All Session.Text File.Text Grep.{ Query Text } ] ]
 [ Summarizable.[ summarize.[ Text ] ]
   Fillable.[ push!{ [ Text ] [ Result<Integer SinkError> ] }
              drain![ Vector<Text> ]
