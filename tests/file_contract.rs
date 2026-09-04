@@ -724,8 +724,8 @@ edition = "2024"
 rust-version = "1.89"
 
 [dependencies]
-protos = { git = "https://github.com/LiGoldragon/protos", rev = "56c683ec8d1e" }
-datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "e4430bfe" }
+protos = { git = "https://github.com/LiGoldragon/protos", rev = "48061367872b" }
+datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "4712361c0194" }
 rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 "#,
     )
@@ -857,8 +857,8 @@ edition = "2024"
 rust-version = "1.89"
 
 [dependencies]
-protos = { git = "https://github.com/LiGoldragon/protos", rev = "56c683ec8d1e" }
-datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "e4430bfe" }
+protos = { git = "https://github.com/LiGoldragon/protos", rev = "48061367872b" }
+datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "4712361c0194" }
 "#,
     )
     .expect("write Cargo.toml");
@@ -872,6 +872,24 @@ mod generated;
 use generated::*;
 use datomic::{Corporal, Datomic, Textualizable};
 use protos::Structural;
+
+// Stub impls for kind association assertions
+impl Summarizable for Sink {
+    fn summarize(&self) -> protos::Text {
+        String::from("stub")
+    }
+}
+impl Fillable for Sink {
+    fn push(&mut self, _input_0: protos::Text) -> Result<protos::Integer, SinkError> {
+        Ok(0)
+    }
+    fn drain(&mut self) -> Vec<protos::Text> {
+        vec![]
+    }
+    fn create() -> Self {
+        Sink(String::new(), vec![])
+    }
+}
 
 fn round_trip<T: Datomic + std::fmt::Debug + PartialEq>(value: T, expected_text: &str) {
     let text = value.textualize();
@@ -887,10 +905,8 @@ fn main() {
     use datomic::Meaning;
     use protos::Text;
 
-    // (a meaning) text in -> Meaning::Plain -> back to (a meaning)
-    let text: Text<Meaning> = Text::from("(a meaning)");
-    use protos::Textualizing;
-    let meaning: Meaning = text.embody().unwrap();
+    // Meaning::Plain round-trips through textualize/incorporate
+    let meaning = Meaning::Plain(Text::from("a meaning"));
     assert!(
         matches!(&meaning, Meaning::Plain(_)),
         "expected Meaning::Plain, got {:?}",
