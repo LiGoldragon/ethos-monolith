@@ -1,13 +1,24 @@
 use std::{env, fs, path::Path, process::ExitCode};
 
-use protos::{Head, Protoform, Separator, Structural};
+use protos::{Head, Printing, Protoform, Protosizable, Separator, Structural};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.as_slice() {
         [] => {
-            print!("{}", include_str!("../ethos-zero.ethos"));
-            ExitCode::SUCCESS
+            // Read, actualize, and print the canonical form from the concept
+            let source = include_str!("../ethos-zero.ethos");
+            use ethos_zero::{Actualizing, Potential};
+            match Potential::from(source).actualize() {
+                Ok(concept) => {
+                    print!("{}", concept.protosize().print());
+                    ExitCode::SUCCESS
+                }
+                Err(fault) => {
+                    eprintln!("ethos-zero: {fault}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         [arg] if !arg.starts_with('-') => match run(arg) {
             Ok(output) => {

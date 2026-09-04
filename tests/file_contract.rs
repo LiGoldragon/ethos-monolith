@@ -1,4 +1,5 @@
 use ethos_zero::{Actualizing, Concept, Emitting, Potential, Version};
+use protos::{Printing, Protosizable};
 use std::fs;
 
 // ---------------------------------------------------------------------------
@@ -509,4 +510,188 @@ fn bootstrap_module_is_fresh() {
         emitted, committed,
         "src/generated.rs is stale: re-run the emitter on ethos-zero.ethos"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Protosizable round-trip tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn library_fixture_round_trips_through_protosize() {
+    let source = fs::read_to_string("fixtures/example-library.ethos").expect("fixture");
+    let concept = Potential::from(source.as_str()).actualize().expect("read");
+    let printed = concept.protosize().print();
+    let round_tripped = Potential::from(printed.as_str())
+        .actualize()
+        .expect("read round-tripped");
+    assert_eq!(concept, round_tripped, "round trip changed the concept");
+}
+
+#[test]
+fn signal_fixture_round_trips_through_protosize() {
+    let source = fs::read_to_string("fixtures/orchestrate.ethos").expect("fixture");
+    let concept = Potential::from(source.as_str()).actualize().expect("read");
+    let printed = concept.protosize().print();
+    let round_tripped = Potential::from(printed.as_str())
+        .actualize()
+        .expect("read round-tripped");
+    assert_eq!(concept, round_tripped, "round trip changed the concept");
+}
+
+#[test]
+fn self_description_round_trips_through_protosize() {
+    let source = fs::read_to_string("ethos-zero.ethos").expect("self-description");
+    let concept = Potential::from(source.as_str()).actualize().expect("read");
+    let printed = concept.protosize().print();
+    let round_tripped = Potential::from(printed.as_str())
+        .actualize()
+        .expect("read round-tripped");
+    assert_eq!(concept, round_tripped, "round trip changed the concept");
+}
+
+#[test]
+fn canonical_file_prints_to_itself() {
+    // A file in the full form should print canonically and read back the same
+    let source = "Library.{ { 0 1 0 } [] [ Pair.{ Text Integer } ] [] [] }";
+    let concept = Potential::from(source).actualize().expect("read");
+    let printed = concept.protosize().print();
+    // The printed text should read back to the same concept
+    let round_tripped = Potential::from(printed.as_str())
+        .actualize()
+        .expect("read round-tripped");
+    assert_eq!(concept, round_tripped);
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end compile test
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fixture_signal_generated_rust_compiles_and_round_trips_values() {
+    use std::process::Command;
+
+    // Skip in sandboxed Nix builds: the isolated Cargo project needs network
+    // access for rkyv from crates.io. The flake's other checks (build, clippy)
+    // already compile the generated code at the crate level.
+    if std::env::var("NIX_BUILD_TOP").is_ok() {
+        eprintln!("skipping e2e compile test inside Nix sandbox");
+        return;
+    }
+
+    let source = fs::read_to_string("fixtures/orchestrate.ethos").expect("fixture");
+    let concept = Potential::from(source.as_str()).actualize().expect("read");
+    let rust = concept.emit().expect("emit");
+
+    // Create an isolated Cargo project in a temp directory
+    let dir = std::env::temp_dir().join("ethos-zero-e2e-test");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("src")).expect("create dir");
+
+    fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "e2e-test"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+
+[dependencies]
+protos = { git = "https://github.com/LiGoldragon/protos", rev = "56c683ec8d1e" }
+datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "768426ea5f34" }
+rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
+"#,
+    )
+    .expect("write Cargo.toml");
+
+    // Write the generated Rust as a module
+    fs::write(dir.join("src").join("generated.rs"), &rust).expect("write generated.rs");
+
+    // Write main.rs that uses the generated code and round-trips values
+    fs::write(
+        dir.join("src").join("main.rs"),
+        r#"
+mod generated;
+use generated::*;
+use datomic::{Corporal, Datomic, Textualizable};
+use protos::Structural;
+
+fn round_trip<T: Datomic + std::fmt::Debug + PartialEq>(value: T, expected_text: &str) {
+    let text = value.textualize();
+    assert_eq!(text.as_str(), expected_text, "textualize mismatch for {value:?}");
+    let delineation = text.delineate().unwrap();
+    use protos::Conceptual;
+    let datom: datomic::Datom = delineation.conceive().unwrap();
+    let recovered = <T as Corporal<datomic::Datom>>::incorporate(datom).unwrap();
+    assert_eq!(value, recovered, "round trip failed for {expected_text}");
+}
+
+fn main() {
+    // Lock round-trip
+    round_trip(
+        Lock(
+            LockId(42),
+            LockName("MyLock".to_owned()),
+            FlowId("6329f1".to_owned()),
+            LockPaths(vec![LockPath("/abs/path".to_owned())]),
+            LockReason("testing".to_owned()),
+        ),
+        "{ 42 MyLock 6329f1 [ /abs/path ] testing }",
+    );
+
+    // LockRequest round-trip
+    round_trip(
+        LockRequest(
+            LockName("Test".to_owned()),
+            FlowId("abc".to_owned()),
+            LockPaths(vec![]),
+            LockReason("reason".to_owned()),
+        ),
+        "{ Test abc [] reason }",
+    );
+
+    // Observed.Locks.[] round-trip
+    round_trip(
+        Reply::Observed(Observation::Locks(Locks(vec![]))),
+        "Observed.Locks.[]",
+    );
+
+    // ReleaseRejected.UnknownLockId round-trip
+    round_trip(
+        Reply::ReleaseRejected(ReleaseRejection::UnknownLockId),
+        "ReleaseRejected.UnknownLockId",
+    );
+
+    println!("All round-trips passed.");
+}
+"#,
+    )
+    .expect("write main.rs");
+
+    // Build the project
+    let build = Command::new("cargo")
+        .args(["build"])
+        .current_dir(&dir)
+        .output()
+        .expect("cargo build");
+    assert!(
+        build.status.success(),
+        "cargo build failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    // Run the project
+    let run = Command::new("cargo")
+        .args(["run"])
+        .current_dir(&dir)
+        .output()
+        .expect("cargo run");
+    assert!(
+        run.status.success(),
+        "cargo run failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&dir);
 }

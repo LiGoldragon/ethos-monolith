@@ -199,14 +199,352 @@ impl protos::Conceptual<Concept> for datomic::Datom {
     }
 }
 
-/// A Concept can yield its protoform (for the textualize direction).
+/// A Concept yields its protoform in the sweet form (the reverse of the reader).
 impl protos::Protosizable for Concept {
     fn protosize(&self) -> Protoform {
-        // The concept protosizes by reconstructing the ethos file as a protoform.
-        // For now, produce a placeholder; the full implementation comes with the
-        // Corporal trait landing.
-        Protoform::Bare("Concept".to_owned())
+        match self {
+            Concept::Library(lib) => protosize_library(lib),
+            Concept::Signal(sig) => protosize_signal(sig),
+        }
     }
+}
+
+fn protosize_library(lib: &Library) -> Protoform {
+    // Sweet form: Library.{ver} [imports] [types] [kinds] [associations]
+    // The sweet form is a single Headed followed by sibling sections.
+    // But protosize yields one Protoform. So we use the full form:
+    // Library.{ {ver} [imports] [types] [kinds] [associations] }
+    Protoform::Headed(
+        Head::Bare("Library".to_owned()),
+        Separator::Period,
+        Box::new(Protoform::Enclosed(
+            Enclosure::Braced,
+            vec![
+                protosize_version(&lib.version),
+                protosize_imports(&lib.imports),
+                protosize_types(&lib.types),
+                protosize_kinds(&lib.kinds),
+                protosize_associations(&lib.associations),
+            ],
+        )),
+    )
+}
+
+fn protosize_signal(sig: &Signal) -> Protoform {
+    Protoform::Headed(
+        Head::Bare("Signal".to_owned()),
+        Separator::Period,
+        Box::new(Protoform::Enclosed(
+            Enclosure::Braced,
+            vec![
+                protosize_version(&sig.version),
+                protosize_imports(&sig.imports),
+                protosize_section_references(&sig.requests),
+                protosize_section_references(&sig.responses),
+                protosize_types(&sig.types),
+            ],
+        )),
+    )
+}
+
+fn protosize_version(v: &Version) -> Protoform {
+    Protoform::Enclosed(
+        Enclosure::Braced,
+        vec![
+            Protoform::Bare(v.0.to_string()),
+            Protoform::Bare(v.1.to_string()),
+            Protoform::Bare(v.2.to_string()),
+        ],
+    )
+}
+
+fn protosize_imports(imports: &[Import]) -> Protoform {
+    Protoform::Enclosed(
+        Enclosure::Bracketed,
+        imports.iter().map(protosize_import).collect(),
+    )
+}
+
+fn protosize_import(import: &Import) -> Protoform {
+    match import {
+        Import::Single { source, name } => Protoform::Headed(
+            Head::Bare(source.clone()),
+            Separator::Colon,
+            Box::new(Protoform::Bare(name.clone())),
+        ),
+        Import::Multiple { source, names } => Protoform::Headed(
+            Head::Bare(source.clone()),
+            Separator::Colon,
+            Box::new(Protoform::Enclosed(
+                Enclosure::Bracketed,
+                names.iter().map(|n| Protoform::Bare(n.clone())).collect(),
+            )),
+        ),
+    }
+}
+
+fn protosize_types(types: &[TypeDeclaration]) -> Protoform {
+    Protoform::Enclosed(
+        Enclosure::Bracketed,
+        types.iter().map(protosize_type_declaration).collect(),
+    )
+}
+
+fn protosize_type_declaration(decl: &TypeDeclaration) -> Protoform {
+    match decl {
+        TypeDeclaration::Struct { name, fields } => Protoform::Headed(
+            Head::Bare(name.clone()),
+            Separator::Period,
+            Box::new(Protoform::Enclosed(
+                Enclosure::Braced,
+                fields.iter().map(protosize_type_expression).collect(),
+            )),
+        ),
+        TypeDeclaration::Enum { name, variants } => Protoform::Headed(
+            Head::Bare(name.clone()),
+            Separator::Period,
+            Box::new(Protoform::Enclosed(
+                Enclosure::Bracketed,
+                variants.iter().map(protosize_variant).collect(),
+            )),
+        ),
+        TypeDeclaration::Alias { name, target } => Protoform::Headed(
+            Head::Bare(name.clone()),
+            Separator::Period,
+            Box::new(protosize_type_expression(target)),
+        ),
+        TypeDeclaration::Map { name, key, value } => Protoform::Headed(
+            Head::Bare(name.clone()),
+            Separator::Period,
+            Box::new(Protoform::Enclosed(
+                Enclosure::Guillemets,
+                vec![
+                    protosize_type_expression(key),
+                    protosize_type_expression(value),
+                ],
+            )),
+        ),
+    }
+}
+
+fn protosize_variant(variant: &Variant) -> Protoform {
+    match variant {
+        Variant::Unit(name) => Protoform::Bare(name.clone()),
+        Variant::Typed(name, ty) => Protoform::Headed(
+            Head::Bare(name.clone()),
+            Separator::Period,
+            Box::new(protosize_type_expression(ty)),
+        ),
+        Variant::InlineStruct(name, fields) => Protoform::Headed(
+            Head::Bare(name.clone()),
+            Separator::Period,
+            Box::new(Protoform::Enclosed(
+                Enclosure::Braced,
+                fields.iter().map(protosize_type_expression).collect(),
+            )),
+        ),
+        Variant::InlineEnum(name, variants) => Protoform::Headed(
+            Head::Bare(name.clone()),
+            Separator::Period,
+            Box::new(Protoform::Enclosed(
+                Enclosure::Bracketed,
+                variants.iter().map(protosize_variant).collect(),
+            )),
+        ),
+    }
+}
+
+fn protosize_type_expression(expr: &TypeExpression) -> Protoform {
+    match expr {
+        TypeExpression::Named(name) => Protoform::Bare(name.clone()),
+        TypeExpression::Applied {
+            constructor,
+            arguments,
+        } => Protoform::Qualified(
+            constructor.clone(),
+            arguments.iter().map(protosize_type_expression).collect(),
+        ),
+        TypeExpression::SelfType => Protoform::Bare("Self".to_owned()),
+    }
+}
+
+fn protosize_kinds(kinds: &[KindDeclaration]) -> Protoform {
+    Protoform::Enclosed(
+        Enclosure::Bracketed,
+        kinds.iter().map(protosize_kind_declaration).collect(),
+    )
+}
+
+fn protosize_kind_declaration(kind: &KindDeclaration) -> Protoform {
+    let (name, constraints) = match kind {
+        KindDeclaration::Simple {
+            name, constraints, ..
+        }
+        | KindDeclaration::Complex {
+            name, constraints, ..
+        } => (name, constraints),
+    };
+
+    let head = if constraints.is_empty() {
+        Head::Bare(name.clone())
+    } else {
+        Head::Qualified(
+            name.clone(),
+            constraints.iter().map(protosize_kind_constraint).collect(),
+        )
+    };
+
+    match kind {
+        KindDeclaration::Simple { capabilities, .. } => Protoform::Headed(
+            head,
+            Separator::Period,
+            Box::new(Protoform::Enclosed(
+                Enclosure::Bracketed,
+                capabilities.iter().map(protosize_capability).collect(),
+            )),
+        ),
+        KindDeclaration::Complex {
+            superkinds,
+            associated_types,
+            associated_constants,
+            capabilities,
+            ..
+        } => Protoform::Headed(
+            head,
+            Separator::Period,
+            Box::new(Protoform::Enclosed(
+                Enclosure::Braced,
+                vec![
+                    Protoform::Enclosed(
+                        Enclosure::Bracketed,
+                        superkinds
+                            .iter()
+                            .map(|s| Protoform::Bare(s.clone()))
+                            .collect(),
+                    ),
+                    Protoform::Enclosed(
+                        Enclosure::Bracketed,
+                        associated_types
+                            .iter()
+                            .map(protosize_associated_type)
+                            .collect(),
+                    ),
+                    Protoform::Enclosed(
+                        Enclosure::Guillemets,
+                        associated_constants
+                            .iter()
+                            .flat_map(|ac| {
+                                vec![
+                                    Protoform::Bare(ac.name.clone()),
+                                    protosize_type_expression(&ac.ty),
+                                ]
+                            })
+                            .collect(),
+                    ),
+                    Protoform::Enclosed(
+                        Enclosure::Bracketed,
+                        capabilities.iter().map(protosize_capability).collect(),
+                    ),
+                ],
+            )),
+        ),
+    }
+}
+
+fn protosize_kind_constraint(kc: &KindConstraint) -> Protoform {
+    if kc.bounds.len() == 1 {
+        Protoform::Bare(kc.bounds[0].clone())
+    } else {
+        Protoform::Enclosed(
+            Enclosure::Bracketed,
+            kc.bounds
+                .iter()
+                .map(|b| Protoform::Bare(b.clone()))
+                .collect(),
+        )
+    }
+}
+
+fn protosize_associated_type(at: &AssociatedType) -> Protoform {
+    if at.constraints.is_empty() {
+        Protoform::Bare(at.name.clone())
+    } else {
+        Protoform::Qualified(
+            at.name.clone(),
+            at.constraints
+                .iter()
+                .map(|c| Protoform::Bare(c.clone()))
+                .collect(),
+        )
+    }
+}
+
+fn protosize_capability(cap: &Capability) -> Protoform {
+    let sep = match cap.receiver {
+        Receiver::Shared => Separator::Period,
+        Receiver::Mutable => Separator::Exclamation,
+        Receiver::None => Separator::Colon,
+    };
+
+    let body = if cap.inputs.is_empty() {
+        Protoform::Enclosed(
+            Enclosure::Bracketed,
+            vec![protosize_type_expression(&cap.yield_type)],
+        )
+    } else {
+        Protoform::Enclosed(
+            Enclosure::Braced,
+            vec![
+                Protoform::Enclosed(
+                    Enclosure::Bracketed,
+                    cap.inputs.iter().map(protosize_type_expression).collect(),
+                ),
+                Protoform::Enclosed(
+                    Enclosure::Bracketed,
+                    vec![protosize_type_expression(&cap.yield_type)],
+                ),
+            ],
+        )
+    };
+
+    Protoform::Headed(Head::Bare(cap.name.clone()), sep, Box::new(body))
+}
+
+fn protosize_associations(associations: &[Association]) -> Protoform {
+    Protoform::Enclosed(
+        Enclosure::Bracketed,
+        associations.iter().map(protosize_association).collect(),
+    )
+}
+
+fn protosize_association(assoc: &Association) -> Protoform {
+    Protoform::Headed(
+        Head::Bare(assoc.ty.clone()),
+        Separator::Period,
+        Box::new(Protoform::Enclosed(
+            Enclosure::Bracketed,
+            assoc
+                .kinds
+                .iter()
+                .map(|k| Protoform::Bare(k.clone()))
+                .collect(),
+        )),
+    )
+}
+
+fn protosize_section_references(refs: &[SectionReference]) -> Protoform {
+    Protoform::Enclosed(
+        Enclosure::Bracketed,
+        refs.iter().map(protosize_section_reference).collect(),
+    )
+}
+
+fn protosize_section_reference(sr: &SectionReference) -> Protoform {
+    Protoform::Headed(
+        Head::Bare(sr.name.clone()),
+        Separator::Period,
+        Box::new(protosize_type_expression(&sr.ty)),
+    )
 }
 
 // ============================================================================
@@ -986,10 +1324,13 @@ fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStrea
             let name = ident(name)?;
             let target = type_expression_tokens(target)?;
             Ok(quote! {
-                impl datomic::Datomic for #name {
-                    fn incorporate(datom: datomic::Datom) -> std::result::Result<Self, datomic::Fault> {
-                        Ok(Self(<#target as datomic::Datomic>::incorporate(datom)?))
+                impl datomic::Corporal<datomic::Datom> for #name {
+                    type Fault = datomic::Fault;
+                    fn incorporate(concept: datomic::Datom) -> std::result::Result<Self, datomic::Fault> {
+                        Ok(Self(<#target as datomic::Corporal<datomic::Datom>>::incorporate(concept)?))
                     }
+                }
+                impl datomic::Datomic for #name {
                     fn datomize(&self) -> datomic::Datom {
                         <#target as datomic::Datomic>::datomize(&self.0)
                     }
@@ -1005,7 +1346,7 @@ fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStrea
                 .iter()
                 .map(|ty| {
                     let ty = type_expression_tokens(ty)?;
-                    Ok(quote! { <#ty as datomic::Datomic>::incorporate(iter.next().unwrap())? })
+                    Ok(quote! { <#ty as datomic::Corporal<datomic::Datom>>::incorporate(iter.next().unwrap())? })
                 })
                 .collect::<Result<Vec<_>, Fault>>()?;
             let field_datomizes = (0..fields.len()).map(|i| {
@@ -1013,9 +1354,10 @@ fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStrea
                 quote! { datomic::Datomic::datomize(&self.#idx) }
             });
             Ok(quote! {
-                impl datomic::Datomic for #name {
-                    fn incorporate(datom: datomic::Datom) -> std::result::Result<Self, datomic::Fault> {
-                        match datom {
+                impl datomic::Corporal<datomic::Datom> for #name {
+                    type Fault = datomic::Fault;
+                    fn incorporate(concept: datomic::Datom) -> std::result::Result<Self, datomic::Fault> {
+                        match concept {
                             datomic::Datom::Struct(fields) if fields.len() == #arity => {
                                 let mut iter = fields.into_iter();
                                 Ok(Self( #( #field_incorporates, )* ))
@@ -1026,6 +1368,8 @@ fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStrea
                             other => Err(datomic::Fault::Corporal(vec![], datomic::Problem::Shape(datomic::Expected::Struct, other))),
                         }
                     }
+                }
+                impl datomic::Datomic for #name {
                     fn datomize(&self) -> datomic::Datom {
                         datomic::Datom::Struct(vec![ #( #field_datomizes, )* ])
                     }
@@ -1047,13 +1391,16 @@ fn datomic_impl_tokens(decl: &TypeDeclaration) -> Result<proc_macro2::TokenStrea
                 .filter_map(|v| nested_datomic_impl(&name_ident, name, v).transpose())
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(quote! {
-                impl datomic::Datomic for #name_ident {
-                    fn incorporate(datom: datomic::Datom) -> std::result::Result<Self, datomic::Fault> {
-                        match datom {
+                impl datomic::Corporal<datomic::Datom> for #name_ident {
+                    type Fault = datomic::Fault;
+                    fn incorporate(concept: datomic::Datom) -> std::result::Result<Self, datomic::Fault> {
+                        match concept {
                             #( #incorporate_arms )*
                             other => Err(datomic::Fault::Corporal(vec![], datomic::Problem::Shape(datomic::Expected::Variant, other))),
                         }
                     }
+                }
+                impl datomic::Datomic for #name_ident {
                     fn datomize(&self) -> datomic::Datom {
                         match self {
                             #( #datomize_arms )*
@@ -1082,7 +1429,7 @@ fn variant_incorporate_arm(
             let ty = type_expression_tokens(ty)?;
             quote! {
                 datomic::Datom::Variant(head, protos::Separator::Period, Some(body)) if head == stringify!(#variant_name) => {
-                    Ok(Self::#variant_name(<#ty as datomic::Datomic>::incorporate(*body)?))
+                    Ok(Self::#variant_name(<#ty as datomic::Corporal<datomic::Datom>>::incorporate(*body)?))
                 }
             }
         }
@@ -1091,7 +1438,7 @@ fn variant_incorporate_arm(
             let inline_name = format_ident!("{}{}", parent, variant_name);
             quote! {
                 datomic::Datom::Variant(head, protos::Separator::Period, Some(body)) if head == stringify!(#variant_name) => {
-                    Ok(Self::#variant_name(<#inline_name as datomic::Datomic>::incorporate(*body)?))
+                    Ok(Self::#variant_name(<#inline_name as datomic::Corporal<datomic::Datom>>::incorporate(*body)?))
                 }
             }
         }
@@ -1338,7 +1685,7 @@ fn section_enum_tokens(
             let ty = type_expression_tokens(&r.ty)?;
             Ok(quote! {
                 datomic::Datom::Variant(head, protos::Separator::Period, Some(body)) if head == stringify!(#variant_name) => {
-                    Ok(Self::#variant_name(<#ty as datomic::Datomic>::incorporate(*body)?))
+                    Ok(Self::#variant_name(<#ty as datomic::Corporal<datomic::Datom>>::incorporate(*body)?))
                 }
             })
         })
@@ -1360,13 +1707,16 @@ fn section_enum_tokens(
 
     Ok(quote! {
         #derive pub enum #enum_name { #( #variants, )* }
-        impl datomic::Datomic for #enum_name {
-            fn incorporate(datom: datomic::Datom) -> std::result::Result<Self, datomic::Fault> {
-                match datom {
+        impl datomic::Corporal<datomic::Datom> for #enum_name {
+            type Fault = datomic::Fault;
+            fn incorporate(concept: datomic::Datom) -> std::result::Result<Self, datomic::Fault> {
+                match concept {
                     #( #incorporate_arms )*
                     other => Err(datomic::Fault::Corporal(vec![], datomic::Problem::Shape(datomic::Expected::Variant, other))),
                 }
             }
+        }
+        impl datomic::Datomic for #enum_name {
             fn datomize(&self) -> datomic::Datom {
                 match self { #( #datomize_arms )* }
             }
