@@ -1,5 +1,5 @@
 {
-  description = "ethos-zero — File anatomy over Protos Portion";
+  description = "ethos-zero — the ethos schema language, version zero";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -20,22 +20,9 @@
       inputs.flake-utils.follows = "flake-utils";
       inputs.rust-build.follows = "rust-build";
     };
-    signal-orchestrate-interface = {
-      url = "github:LiGoldragon/signal-orchestrate/6fc8c5b7f1880b73461a4ffa863a3f8952245c0a";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
-      inputs.rust-build.follows = "rust-build";
-    };
-    meta-signal-orchestrate-interface = {
-      url = "github:LiGoldragon/meta-signal-orchestrate/d4dd208cd6e10254075a0c311a8e8a14a1ff3f8d";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
-      inputs.rust-build.follows = "rust-build";
-    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-build, protos-map, datomic-map
-    , signal-orchestrate-interface, meta-signal-orchestrate-interface }:
+  outputs = { self, nixpkgs, flake-utils, rust-build, protos-map, datomic-map }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -50,15 +37,12 @@
         commonArguments = {
           inherit src;
           strictDeps = true;
-          cargoExtraArgs = "--locked --workspace";
           ETHOS_PROTOS_MAP = "${protos-map}/protos.ethos";
           ETHOS_DATOMIC_MAP = "${datomic-map}/datomic.ethos";
           ETHOS_PROTOS_RUST = "${protos-map}/src/lib.rs";
           ETHOS_DATOMIC_RUST = "${datomic-map}/src/lib.rs";
           ETHOS_PROTOS_CRATE = "${protos-map}";
           ETHOS_DATOMIC_CRATE = "${datomic-map}";
-          ETHOS_SIGNAL_ORCHESTRATE_SOURCE = "${signal-orchestrate-interface}/ethos/signal.ethos";
-          ETHOS_META_SIGNAL_ORCHESTRATE_SOURCE = "${meta-signal-orchestrate-interface}/ethos/signal.ethos";
         };
         cargoArtifacts = craneLib.buildDepsOnly commonArguments;
       in {

@@ -1,0 +1,20 @@
+;; Orchestrate lock signal
+Signal.{1 0 0}
+[]
+[ Lock.LockRequest Release.LockId Observe.ObserveSelection ]
+[ Locked.Lock LockRejected.LockRejection Released.Lock ReleaseRejected.ReleaseRejection Observed.Observation ]
+[ LockId.Integer
+  LockName.Text
+  FlowId.Text
+  LockPath.Text
+  LockPaths.Vector<LockPath>
+  LockReason.Text
+  LockRequest.{ LockName FlowId LockPaths LockReason }
+  Lock.{ LockId LockName FlowId LockPaths LockReason }
+  DuplicateName.Lock
+  LockOverlap.{ LockPath Lock }
+  LockRejection.[ DuplicateName.Lock PathOverlap.LockOverlap ]
+  ReleaseRejection.[ UnknownLockId ]
+  ObserveSelection.[ Locks ]
+  Locks.Vector<Lock>
+  Observation.[ Locks.Locks ] ]

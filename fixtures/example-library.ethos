@@ -1,0 +1,11 @@
+;; Example library
+Library.{0 1 0}
+[ protos:Text ]
+[ Sink.{ Text Vector<Text> }
+  SinkError.[ Closed Full ]
+  Roles.«Text Integer» ]
+[ Summarizable.[ summarize.[ Text ] ]
+  Fillable.[ push!{ [ Text ] [ Result<Integer SinkError> ] }
+             drain![ Vector<Text> ]
+             create:[ Self ] ] ]
+[ Sink.[ Summarizable Fillable ] ]

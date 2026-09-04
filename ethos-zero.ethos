@@ -1,28 +1,7 @@
-Schema.{0 1 0}
+;; ethos-zero: the ethos schema language, version zero
+Signal.{1 0 0}
 []
-Types.[
-  File.[InterfaceFile SchemaFile]
-  InterfaceFile.{Header Channel Imports Input Output Refusal Stream Types}
-  SchemaFile.{Header Imports Types Kinds Associations}
-  Header.{Version}
-  Version.{Major Minor Patch}
-  Channel.{Name Contract Wire}
-  ImportReference.[Source Local]
-  FileLocation.{Directory File}
-  ResolvedImport.{Reference Location}
-  Alias.{Name Target}
-  Struct.{Name Fields}
-  Enum.{Name Variants}
-  Field.{Name Type}
-  Variant.{Name Payload}
-  TypeExpression.[Reference Application]
-  Kind.{Name Constraints Capabilities}
-  Capability.[Yield MutableYield Standard]
-  Association.{Type Kinds}
-  SourceIndex.{Sources}
-  Assembly.{Files Imports}
-  RustGeneration.{File Syntax}
-  FileFault.{Extent Reason}
-]
-Kinds.[]
-Associations.[]
+[ Generate.Generation ]
+[ Generated.Vector<Text> GenerationFailure.GenerationFault ]
+[ Generation.{ Text Text }
+  GenerationFault.{ Text Text } ]

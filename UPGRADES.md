@@ -1,94 +1,75 @@
 # Upgrades
 
-## 0.7.1 — value semantics for unit data enums
+## 1.0.0 — ProtoformStack rewrite
 
-Data-only and D3 Schema emission gives all-unit enums the ordinary value
-semantics their closed data model supports: `Copy`, ordering, and hashing in
-addition to clone, debug, and equality. Enums with any payload deliberately do
-not receive those derives, because their payload controls those guarantees.
+ethos-zero is rewritten from scratch. The Interface/Schema roots, Channel,
+Visibility vocabulary, manifest resolution, named struct fields, the Nexus
+runtime, and both edge CLIs are removed. The replacement is the ethos schema
+language described in Vision/ethos.md.
 
-## 0.7.0 — data-only Datomic libraries
+### Roots
 
-`RustEmitter::datomic_library()` emits a Schema's public declarations and
-executable Datomic Portion anatomy while intentionally omitting Schema kinds
-and associations. It is for committed typed data libraries, not Signal
-contracts: it creates no Interface roots, frames, envelopes, channel metadata,
-or rkyv projection.
+| Old | New |
+|---|---|
+| `Interface.{ver} Channel.{name contract wire} [imports] { [in] [out] [refusal] [stream] [types] }` | `Signal.{ver} [imports] [requests] [responses] [types]` |
+| `Schema.{ver} [imports] Types.[ ] Kinds.[ ] Associations.[ ]` | `Library.{ver} [imports] [types] [kinds] [associations]` |
 
-## 0.6.0 — named record fields
+The sweet form (outer braces implied in a file) is the default for both roots.
+The full form (`Root.{ {ver} sections }`) and a bracket of several ethos
+objects are also accepted.
 
-Ethos record declarations now accept `Name.Type` field portions. The name is
-the generated Rust field name; the type is the field's Datomic anatomy; and
-the written declaration order remains the positional Datomic record order.
-Use this form whenever a record repeats a type or needs a semantic name that
-does not equal its type. Other head separators are rejected, so a source must
-use the ruled period form rather than relying on an accidental parse.
+### Type declarations
 
-## 0.7.2 — ordered Nexus subscription activation
+All struct types are positional (tuple structs). Named fields are removed.
+Map types use guillemets: `Name.<<K V>>`.
 
-Nexus now sequences each subscription's initial `Observed` reply before any
-subsequent stream event for that connection. Registration still happens before
-the snapshot is read, but an activation barrier holds actor-delivered changes
-until the socket writer has emitted the snapshot. This preserves the ordinary
-and meta wire formats while restoring the state-then-changes contract.
+### Kind declarations
 
-## 0.7.1 — Nexus socket and containment completion
+Simple kind: `Name.[ capabilities ]`.
+Complex kind: `Name.{ [superkinds] [associated-types] <<constants>> [capabilities] }`.
+Capability receivers: `.` shared, `!` mutable, `:` no self.
+Associated constants are upper case in the guillemet delimiter.
 
-Subscription connections now retain a private runtime session for their full
-Unix-socket lifetime: Subscribe, event delivery, and Unsubscribe occur on the
-same connection, foreign clients cannot remove another client's subscription,
-and disconnect removes all of that connection's registrations. On reopening a
-pre-0.7 store, Nexus atomically restores both durable socket paths to the
-currently bound XDG-derived paths while preserving the source manifest.
+### Signal wire
 
-Generation now traverses source roots through directory descriptors with
-`O_NOFOLLOW`, creates destination parents through those descriptors, and
-publishes a synced temporary artifact with `renameat`. Existing and
-prospective symlink paths are rejected with `InvalidRelativePath`; deploy the
-0.7.1 runtime before relying on generation in a shared source root.
+The contract id (Channel) is dropped; one contract per socket. The Signal's
+version is the wire version. The generated wire types are:
 
-## 0.7.0 — audited Nexus runtime boundary correction
+- `Version(u16, u16, u16)` — rkyv tuple struct
+- `Refusal.[ VersionMismatch.{ Version Version } Unreadable ]`
+- `Body.[ Request.Request Reply.Reply Refusal.Refusal ]`
+- `Frame.{ Version Body }` — rkyv tuple struct
 
-The Nexus and both CLIs now share the same XDG fallback socket directory and
-reject frames over 16 MiB before allocation. Source and artifact paths are
-canonical containment-checked, including symlink traversal. Configure now
-rejects changed socket paths until listener replacement can be atomic; it may
-still persist a changed source-manifest path. Deploy this workspace update as a
-unit: stop the old `ethos-zero-nexus`, then start the new executable so its
-socket location and persisted configuration are interpreted consistently.
+All declared types and the wire envelope carry rkyv derives.
 
-## 0.6.0 — Ethos-zero Nexus runtime
+### CLI
 
-Ethos-zero is now shipped as a Nexus workspace: `ethos-zero-nexus` owns the
-durable Sema state and serves generated ordinary and meta WireContract frames;
-`ethos-zero` and `ethos-zero-meta` are the corresponding one-Datom CLIs.  The
-runtime persists its default configuration on first open, uses the XDG state
-and runtime locations, and rejects source paths that escape their configured
-source root with the typed `InvalidRelativePath` refusal.
+The `ethos-zero` binary is a direct datom tool, not a Nexus client:
 
-## Unreleased
+```
+ethos-zero 'Generate.{ /abs/file.ethos /abs/out-dir }'
+```
 
-WireContract 0.5.0 makes every generated interface root (request, reply,
-refusal, and stream event) a Datomic anatomy as well as an rkyv projection.
-This enables source-linked textual boundary tests without a hand-maintained
-root codec.
+Prints `Generated.[ /abs/out-dir/file.rs ]` on success,
+`GenerationFailure.{ path reason }` on failure.
+With no argument, prints its own ethos (self-description).
 
-WireContract 0.4.0 frames can now carry generated refusal roots and stream
-events as `FrameBody::Refusal` and `FrameBody::Event`. Consumers that decode
-frames exhaustively must handle these additional wire variants.
+The Nexus runtime (`ethos-zero-nexus`), both edge CLIs (`ethos-zero`,
+`ethos-zero-meta`), and signal-ethos-zero are removed. Consumers that ran
+the Nexus should call the CLI directly or use the library API.
 
-WireContract 0.3.1 makes generated `String` aliases invariant-bearing: their
-fields are private and construction validates Datomic representability through
-`TryFrom`. Unsupported tuple-struct declarations now return a typed
-`FileFault` instead of emitting an empty Datomic implementation.
+### Dependencies
 
-E2 now checks the complete map-owned public declaration contract for Protos
-and Datomic through syntax projection. The map pins advance to the complete
-contract revisions. This does not change Ethos-zero's public runtime API.
+Protos moves to the ProtoformStack branch (0.15.0). Datomic moves to its
+ProtoformStack branch. Pin the revisions in `Cargo.toml` and the
+corresponding flake inputs.
 
-## 0.1.0 — ethos-zero E0–E2 replacement
+### Migration
 
-The former `ethos-monolith` package and repository are renamed `ethos-zero`.
-The legacy text parser, build/generation APIs, fixtures, and architecture
-guards are removed. Consumers must use the new `FileReader` and `RustEmitter`
-APIs and pin Protos 0.14 / Datomic 0.7 at the revisions in `Cargo.toml`.
+1. Replace `FileReader::new(&manifest).read(source)` with `ethos_zero::read(source)`.
+2. Replace `RustEmitter::new().emit(&file)` with `ethos_zero::emit(&concept)`.
+3. Rewrite `.ethos` files from Interface/Schema to Signal/Library syntax.
+4. Remove Channel declarations, Visibility labels, and named field syntax.
+5. For signal crates: remove the `signal-frame` dependency; the wire types are
+   generated directly with rkyv derives.
+6. Remove the `ethos-zero-nexus` service and its socket configuration.

@@ -1,11 +1,11 @@
 [package]
 name         = "ethos-zero"
-version      = "0.7.1"
+version      = "1.0.0"
 edition      = "2024"
 rust-version = "1.89"
 license      = "MIT OR Apache-2.0"
 repository   = "https://github.com/LiGoldragon/ethos-zero"
-description  = "Ethos File anatomy and structural Rust emission."
+description  = "Ethos schema language version zero: reads ethos, emits Rust."
 publish      = false
 autobins     = false
 autoexamples = false
@@ -14,6 +14,10 @@ autotests    = false
 [lib]
 name = "ethos_zero"
 path = "src/lib.rs"
+
+[[bin]]
+name = "ethos-zero"
+path = "src/main.rs"
 
 [dependencies]
 protos = { git = "https://github.com/LiGoldragon/protos", rev = "bfde3b878dd3de2991d7f605b59f57a13ef8f20b" }
@@ -26,20 +30,6 @@ thiserror = "2"
 [dev-dependencies]
 proptest = "1.6"
 rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
-
-[workspace]
-members = ["nexus", "cli", "meta-cli"]
-resolver = "3"
-
-[workspace.package]
-version = "0.7.2"
-edition = "2024"
-rust-version = "1.89"
-
-[workspace.lints.rust]
-unsafe_code = "forbid"
-unused = { level = "warn", priority = -1 }
-dead_code = "warn"
 
 [[test]]
 name = "file_contract"
