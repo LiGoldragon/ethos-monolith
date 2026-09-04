@@ -496,3 +496,17 @@ fn intrinsic_names_emit_fully_qualified() {
         "Boolean not fully qualified in: {rust}"
     );
 }
+
+#[test]
+fn bootstrap_module_is_fresh() {
+    let source = fs::read_to_string("ethos-zero.ethos").expect("self-description");
+    let concept = Potential::from(source.as_str())
+        .actualize()
+        .expect("read self-description");
+    let emitted = concept.emit().expect("emit self-description");
+    let committed = fs::read_to_string("src/generated.rs").expect("committed generated.rs");
+    assert_eq!(
+        emitted, committed,
+        "src/generated.rs is stale: re-run the emitter on ethos-zero.ethos"
+    );
+}
