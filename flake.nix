@@ -35,7 +35,18 @@
           root = ./.;
           extraFilters = [ ethosFilter ];
         };
-        common = { inherit src; strictDeps = true; };
+        # These limits run inside each remote derivation, so cargo, rustc,
+        # rustdoc and test children inherit them.  The Nix client limit alone
+        # would not constrain the configured remote builder.
+        resourcePolicy = ''
+          ulimit -v 8388608
+        '';
+        common = {
+          inherit src;
+          strictDeps = true;
+          preBuild = resourcePolicy;
+          preCheck = resourcePolicy;
+        };
         cargoArtifacts = craneLib.buildDepsOnly common;
         package = craneLib.buildPackage (common // { inherit cargoArtifacts; });
       in {
