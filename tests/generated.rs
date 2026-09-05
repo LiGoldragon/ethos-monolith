@@ -23,8 +23,14 @@ mod composition_types;
 #[path = "generated/entry-sema.rs"]
 mod entry_sema;
 #[rustfmt::skip]
+#[path = "generated/generic-shadow.rs"]
+mod generic_shadow;
+#[rustfmt::skip]
 #[path = "generated/multi-types.rs"]
 mod multi_types;
+#[rustfmt::skip]
+#[path = "generated/nested-collision.rs"]
+mod nested_collision;
 #[rustfmt::skip]
 #[path = "generated/orchestrate.rs"]
 mod orchestrate;

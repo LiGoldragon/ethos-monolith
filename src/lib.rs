@@ -10,7 +10,7 @@
 //! | Text, as written (the sweet form) | `protos::Text` | [`Canonicalizable`] | [`Canonical`] |
 //! | Text, canonical (the braced form) | [`Canonical`] | `protos::Protosizable` | `protos::Delineation` |
 //! | Protoform | `protos::Delineation`, `protos::Protoform` | `Conceiving<File>` | [`File`], checked whole |
-//! | Concept | [`File`] | [`Generating`] | Rust text |
+//! | Concept | [`File`] | [`Generating`] | Rust text, or a whole-file fault |
 //!
 //! `protos::Potential<File>` bears `protos::Actualizable<File>`: the
 //! whole descent in one call, its fault situated by path and extent in
@@ -104,7 +104,7 @@ impl TryFrom<&str> for Source {
             return Err(text.to_owned());
         }
         for segment in &path.segments {
-            if !segment.arguments.is_none() {
+            if segment.ident == "Self" || !segment.arguments.is_none() {
                 return Err(text.to_owned());
             }
         }
@@ -488,10 +488,10 @@ pub trait Resolving {
     fn resolve(&self, name: &Name) -> Resolution;
 }
 
-/// The kind whose capability generates the Rust module of a file; it cannot fault, the file having been checked whole.
+/// The kind whose capability checks a whole file and generates its Rust module.
 pub trait Generating {
-    /// The Rust text, formatted.
-    fn generate(&self) -> String;
+    /// The formatted Rust text, or the whole-file fault that prevents generation.
+    fn generate(&self) -> Result<String, Fault>;
 }
 
 /// The kind whose capability places a result's fault under a child index.

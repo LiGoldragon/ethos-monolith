@@ -14,7 +14,7 @@ types. Each pass is a module named for it.
 | delineation (protos) | `Protosizable` | canonical text | `Delineation` |
 | conception | `Conceivable<File>` | `Delineation`, `Protoform` | `File`, checked whole |
 | checking | `Resolving`, `Checkable` | `File` | names resolved, duplicates and undeclared names refused |
-| generation | `Generating` | `File` | Rust text |
+| generation | `Generating` | `File` | Rust text, or a whole-file fault |
 | datomization | | each declared type | its `Conceivable<Datom>`, `Datomic`, `Incorporable` interactions |
 | protosization | `Protosizable`, `Textualizable` | `File` | canonical text (the ascent, cannot fault) |
 | actualization | `Actualizable<File>` on `Potential<File>` | text | `File`, or a `Situated<Fault>` |
@@ -47,6 +47,16 @@ its declaring type is boxed, and only there. The generated Rust writes
 standard containers as `std::vec::Vec`, `std::option::Option`,
 `std::result::Result`, and `std::boxed::Box`, so a declaration cannot
 capture those names. `Name.{ T1 T2 }` is a tuple variant.
+
+Inline enum bodies receive an internal Rust type name. When concatenating the
+enclosing type and variant name would occupy an authored type name, generation
+allocates an `EthosNested` name instead; authored identities stay unchanged.
+Generated generic parameters similarly move from `A`, `B`, and so on only
+when one would capture an authored type reference.
+
+The flat declaration budget applies to the `Types` section: it refuses more
+than 512 type declarations. The other roots retain their structural reader
+bounds and are not counted against that `Types` budget.
 
 File ascent projects the File's structural Protoform and situates that
 form directly; it does not textualize and parse the result again.

@@ -17,9 +17,10 @@ use crate::{
 };
 
 /// A schema must remain small enough for complete whole-file checking to have
-/// a caller-visible, finite cost.  Deep structure has a separate reader
-/// bound; this bounds the flat declaration graph.
-const DECLARATION_LIMIT: usize = 512;
+/// a caller-visible, finite cost. Deep structure has a separate reader bound;
+/// this bounds the flat `Types` declaration graph. Other file roots have their
+/// own bounded structural readers and do not share this declaration budget.
+const TYPE_DECLARATION_LIMIT: usize = 512;
 
 // ---------------------------------------------------------------------------
 // Resolution
@@ -383,6 +384,25 @@ impl Distinct for [DeclarationSite] {
     }
 }
 
+/// The kind whose capability makes sure a name can occupy a Rust declaration
+/// position. `Self` remains a valid unsourced type reference, but is never a
+/// declaration or imported emitted name.
+trait Defining {
+    fn define(&self) -> Result<(), Fault>;
+}
+
+impl Defining for Name {
+    fn define(&self) -> Result<(), Fault> {
+        if self.0 == "Self" {
+            return Err(Fault::Conceptual(
+                vec![],
+                Problem::Name(protos::Text::try_from(self.0.clone()).expect("identifier")),
+            ));
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Checking
 // ---------------------------------------------------------------------------
@@ -413,6 +433,23 @@ impl<C: Checkable> Checking for [C] {
     }
 }
 
+impl Checkable for Import {
+    fn check(&self, scope: &Scope) -> Result<(), Fault> {
+        match self {
+            Import::One(_, imported) => imported.check(scope).place(1),
+            Import::Many(_, imported) => imported.check_children(scope).place(1),
+        }
+    }
+}
+
+impl Checkable for crate::Imported {
+    fn check(&self, _: &Scope) -> Result<(), Fault> {
+        self.name.define()?;
+        self.emitted.define()?;
+        Ok(())
+    }
+}
+
 impl Checkable for File {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
         let checked = match self {
@@ -427,12 +464,13 @@ impl Checkable for File {
 
 impl Checkable for Types {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
-        if self.types.len() > DECLARATION_LIMIT {
+        if self.types.len() > TYPE_DECLARATION_LIMIT {
             return Err(Fault::Conceptual(vec![1], Problem::Depth));
         }
         let mut names = self.imports.names_in(0);
         names.extend(self.types.names_in(1));
         names.distinct()?;
+        self.imports.check_each(scope, 0)?;
         self.types.check_each(scope, 1)?;
         self.associations.check_each(scope, 2)
     }
@@ -443,6 +481,7 @@ impl Checkable for Kinds {
         let mut names = self.imports.names_in(0);
         names.extend(self.kinds.names_in(1));
         names.distinct()?;
+        self.imports.check_each(scope, 0)?;
         self.kinds.check_each(scope, 1)
     }
 }
@@ -468,6 +507,7 @@ impl Checkable for Signal {
         names.extend(self.imports.names_in(0));
         names.extend(self.types.names_in(3));
         names.distinct()?;
+        self.imports.check_each(scope, 0)?;
         self.requests.names_in(1).distinct()?;
         self.responses.names_in(2).distinct()?;
         self.requests.check_each(scope, 1)?;
@@ -485,6 +525,7 @@ impl Checkable for Sema {
         names.extend(self.imports.names_in(0));
         names.extend(self.types.names_in(2));
         names.distinct()?;
+        self.imports.check_each(scope, 0)?;
         self.record.check_each(scope, 1)?;
         self.types.check_each(scope, 2)
     }
@@ -492,6 +533,7 @@ impl Checkable for Sema {
 
 impl Checkable for Identity {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
+        self.name.define()?;
         if self.constraints.len() > 26 {
             return Err(Fault::Conceptual(
                 vec![],
@@ -590,6 +632,12 @@ impl ReferringEach for [Reference] {
 
 impl Referring for Reference {
     fn refer(&self, scope: &Scope, role: Role) -> Result<(), Fault> {
+        if self.source.is_some() && self.name.0 == "Self" {
+            return Err(Fault::Conceptual(
+                vec![],
+                Problem::Name(protos::Text::try_from(self.name.0.clone()).expect("identifier")),
+            ));
+        }
         // A direct Protos intrinsic has the same contract whether it arrives
         // through an import or an explicit qualification. Other sources own
         // their declaration metadata.
@@ -708,12 +756,30 @@ impl Checkable for Reference {
 /// The kind whose capability tells whether an alias reaches a name through aliases and intrinsic containers alone.
 trait Cycling {
     fn cycles(&self, target: &Name, file: &File, visited: &mut Vec<Name>) -> bool;
+    fn cycles_substituting(
+        &self,
+        target: &Name,
+        file: &File,
+        visited: &mut Vec<Name>,
+        application: AliasApplication<'_>,
+    ) -> bool;
+}
+
+/// The identity and actual arguments of an alias while its body is followed.
+/// Parameter references in that body are replaced before cycle detection.
+#[derive(Clone, Copy)]
+struct AliasApplication<'a> {
+    identity: &'a Identity,
+    arguments: &'a [Reference],
 }
 
 impl Cycling for Reference {
     fn cycles(&self, target: &Name, file: &File, visited: &mut Vec<Name>) -> bool {
         if self.source.is_some() {
-            return false;
+            return self
+                .arguments
+                .iter()
+                .any(|argument| argument.cycles(target, file, visited));
         }
         if &self.name == target {
             return true;
@@ -725,9 +791,15 @@ impl Cycling for Reference {
                 }
                 visited.push(name.clone());
                 match file.declaration(&name) {
-                    Some(TypeDeclaration::Alias(_, aliased)) => {
-                        aliased.cycles(target, file, visited)
-                    }
+                    Some(TypeDeclaration::Alias(identity, aliased)) => aliased.cycles_substituting(
+                        target,
+                        file,
+                        visited,
+                        AliasApplication {
+                            identity,
+                            arguments: &self.arguments,
+                        },
+                    ),
                     _ => false,
                 }
             }
@@ -739,6 +811,59 @@ impl Cycling for Reference {
                 }
                 false
             }
+            Resolution::Kind(_)
+            | Resolution::Parameter(_)
+            | Resolution::Associated(_)
+            | Resolution::Ambiguous(_)
+            | Resolution::Undeclared => false,
+        }
+    }
+
+    fn cycles_substituting(
+        &self,
+        target: &Name,
+        file: &File,
+        visited: &mut Vec<Name>,
+        application: AliasApplication<'_>,
+    ) -> bool {
+        if self.source.is_none()
+            && self.arguments.is_empty()
+            && let Resolution::Parameter(index) = application.identity.resolve(&self.name)
+        {
+            return application.arguments[index as usize].cycles(target, file, visited);
+        }
+        if self.source.is_some() {
+            return self
+                .arguments
+                .iter()
+                .any(|argument| argument.cycles_substituting(target, file, visited, application));
+        }
+        if &self.name == target {
+            return true;
+        }
+        match file.resolve(&self.name) {
+            Resolution::Type(name) => {
+                if visited.contains(&name) {
+                    return false;
+                }
+                visited.push(name.clone());
+                match file.declaration(&name) {
+                    Some(TypeDeclaration::Alias(identity, aliased)) => aliased.cycles_substituting(
+                        target,
+                        file,
+                        visited,
+                        AliasApplication {
+                            identity,
+                            arguments: &self.arguments,
+                        },
+                    ),
+                    _ => false,
+                }
+            }
+            Resolution::Intrinsic(_) | Resolution::Imported(_, _) => self
+                .arguments
+                .iter()
+                .any(|argument| argument.cycles_substituting(target, file, visited, application)),
             Resolution::Kind(_)
             | Resolution::Parameter(_)
             | Resolution::Associated(_)
@@ -863,10 +988,17 @@ impl Checkable for TypeDeclaration {
 impl Checkable for Variant {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
         match self {
-            Variant::Bare(_) => Ok(()),
-            Variant::Typed(_, reference) => reference.check(scope).place(1),
-            Variant::Struct(_, positions) => positions.check_children(scope).place(1),
-            Variant::Enum(_, variants) => {
+            Variant::Bare(name) => name.define(),
+            Variant::Typed(name, reference) => {
+                name.define().place(0)?;
+                reference.check(scope).place(1)
+            }
+            Variant::Struct(name, positions) => {
+                name.define().place(0)?;
+                positions.check_children(scope).place(1)
+            }
+            Variant::Enum(name, variants) => {
+                name.define().place(0)?;
                 let mut names = variants.names_in(0);
                 for declared in &mut names {
                     declared.path.remove(0);
@@ -939,6 +1071,7 @@ impl Checkable for KindDeclaration {
 
 impl Checkable for AssociatedType {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
+        self.name.define()?;
         for (index, bound) in self.bounds.iter().enumerate() {
             bound.refer(scope, Role::Kind).place(index as Integer)?;
         }
@@ -948,6 +1081,7 @@ impl Checkable for AssociatedType {
 
 impl Checkable for AssociatedConstant {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
+        self.name.define().place(0)?;
         if self.name.0 != self.name.0.to_uppercase() {
             return Err(Fault::Conceptual(
                 vec![],
@@ -960,6 +1094,7 @@ impl Checkable for AssociatedConstant {
 
 impl Checkable for Capability {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
+        self.name.define().place(0)?;
         match &self.signature {
             Signature::Yielding(yields) => yields.check(scope).place(0).place(1),
             Signature::Taking(inputs, yields) => {

@@ -21,7 +21,7 @@ impl Fresh for str {
             Err(fault) => panic!("{self} does not read: {fault:?}"),
         };
         assert_eq!(
-            file.generate(),
+            file.generate().expect("checked source generates"),
             committed,
             "{generated} is stale; regenerate from {self}"
         );
@@ -49,7 +49,7 @@ fn every_fixture_module_is_fresh() {
         }
     }
     fixtures.sort();
-    assert_eq!(fixtures.len(), 11);
+    assert_eq!(fixtures.len(), 13);
     for stem in fixtures {
         format!("fixtures/{stem}.ethos").fresh(&format!("tests/generated/{stem}.rs"));
     }

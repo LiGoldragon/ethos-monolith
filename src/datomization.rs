@@ -177,7 +177,7 @@ impl Wrapping for Identity {
     ) -> TokenStream {
         let name = self.name.tokens();
         let corporate = self.parameters(scope, true);
-        let arguments = self.arguments();
+        let arguments = self.arguments(scope);
         quote! {
             impl #corporate datom_codec::Datomic for #name #arguments {
                 fn incorporate(site: datom_codec::Site<'_>) -> std::result::Result<Self, datom_codec::Fault> {

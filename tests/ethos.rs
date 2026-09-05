@@ -4,7 +4,7 @@
 
 use ethos_zero::{
     Canonicalizable, Constraint, Fault, File, Form, Generating, Identity, Import, KindBody,
-    Problem, Receiver, Reference, Signature, TypeDeclaration, Variant,
+    Problem, Receiver, Reference, Signature, TypeDeclaration, Types, Variant,
 };
 use protos::{Actualizable, Extent, Potential, Protosizable, Situated, Situation, Textualizable};
 
@@ -35,7 +35,7 @@ impl Reading for str {
     }
 
     fn rust(&self) -> String {
-        self.file().generate()
+        self.file().generate().expect("checked source generates")
     }
 }
 
@@ -678,6 +678,76 @@ fn rejects_a_bare_name_in_the_types_section_and_a_self_alias() {
 }
 
 #[test]
+fn generates_the_reviewer_nested_name_collision_without_rewriting_authored_names() {
+    let nested = "Types [] [ X.[ A.[ V ] ] XA.{ Text } ] []".rust();
+    assert!(nested.contains("pub enum XEthosNestedA"));
+    assert!(nested.contains("pub struct XA"));
+}
+
+#[test]
+fn generated_parameters_do_not_capture_authored_type_references() {
+    let rust = "Types [] [ A.{ Text } Box<Sized>.{ Sized A } ] []".rust();
+    assert!(rust.contains("pub struct Box<AEthosParameter: Sized>(pub AEthosParameter, pub A);"));
+}
+
+#[test]
+fn refuses_the_reviewer_applied_alias_cycle() {
+    let alias = "Types [] [ A<Sized>.Sized B.A<B> ] []".fault();
+    assert!(matches!(
+        alias.1,
+        Fault::Conceptual(_, Problem::Cycle(ref name)) if name.as_ref() == "B"
+    ));
+}
+
+#[test]
+fn public_generation_does_not_panic_on_unchecked_whole_file_invariants() {
+    let self_declaration = File::Types(Types {
+        imports: vec![],
+        types: vec![TypeDeclaration::Struct(
+            Identity {
+                name: ethos_zero::Name::try_from("Self").unwrap(),
+                constraints: vec![],
+            },
+            vec![],
+        )],
+        associations: vec![],
+    });
+    let self_generation = std::panic::catch_unwind(|| self_declaration.generate());
+    assert!(self_generation.is_ok());
+    assert!(matches!(
+        self_generation.unwrap(),
+        Err(Fault::Conceptual(_, Problem::Name(ref name))) if name.as_ref() == "Self"
+    ));
+
+    let sized = ethos_zero::Name::try_from("Sized").unwrap();
+    let too_many_constraints = File::Types(Types {
+        imports: vec![],
+        types: vec![TypeDeclaration::Struct(
+            Identity {
+                name: ethos_zero::Name::try_from("Value").unwrap(),
+                constraints: (0..27)
+                    .map(|_| {
+                        Constraint::One(Reference {
+                            source: None,
+                            name: sized.clone(),
+                            arguments: vec![],
+                        })
+                    })
+                    .collect(),
+            },
+            vec![],
+        )],
+        associations: vec![],
+    });
+    let constrained_generation = std::panic::catch_unwind(|| too_many_constraints.generate());
+    assert!(constrained_generation.is_ok());
+    assert!(matches!(
+        constrained_generation.unwrap(),
+        Err(Fault::Conceptual(_, Problem::Arity(26, 27)))
+    ));
+}
+
+#[test]
 fn rejects_a_wrong_intrinsic_arity() {
     let fault = "Types\n[]\n[ Pair.Result<Text> ]\n[]".fault();
     assert_eq!(fault.problem(), (vec![0, 1, 1, 0, 1], Problem::Arity(2, 1)));
@@ -738,6 +808,18 @@ fn rejects_local_arity_lowercase_constants_and_unbounded_alias_graphs() {
     }
     let graph = format!("Types\n[]\n[ {declarations} ]\n[]").fault();
     assert!(matches!(graph.1, Fault::Conceptual(_, Problem::Depth)));
+}
+
+#[test]
+fn types_declaration_budget_does_not_cap_supported_kinds() {
+    let mut declarations = String::new();
+    for index in 0..513 {
+        declarations.push_str(&format!("K{index}.[ ] "));
+    }
+    let File::Kinds(kinds) = format!("Kinds [] [ {declarations} ]").file() else {
+        panic!("expected Kinds");
+    };
+    assert_eq!(kinds.kinds.len(), 513);
 }
 
 #[test]
@@ -838,6 +920,12 @@ fn programmatic_names_and_sources_are_validated_before_ascent() {
     assert!(ethos_zero::Name::try_from("r#escaped").is_err());
     assert!(ethos_zero::Source::try_from("std::clone").is_ok());
     assert!(ethos_zero::Source::try_from("std::vec::<Text>").is_err());
+    assert!(ethos_zero::Source::try_from("Self").is_err());
+    let module_self = "Types [ Self:Text ] [] []".fault();
+    assert!(matches!(
+        module_self.1,
+        Fault::Conceptual(_, Problem::Name(_))
+    ));
 }
 
 #[test]

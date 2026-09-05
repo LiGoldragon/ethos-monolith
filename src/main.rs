@@ -75,7 +75,13 @@ impl Serving for Generation {
                 protos::Text::try_from(error.to_string()).expect("error message"),
             );
         }
-        match std::fs::write(&target, file.generate()) {
+        let generated = match file.generate() {
+            Ok(generated) => generated,
+            Err(fault) => {
+                return Response::Faulty(source.clone(), datom_codec::Extent(0, 0), fault);
+            }
+        };
+        match std::fs::write(&target, generated) {
             Ok(()) => Response::Generated(vec![protos::Text::try_from(written).expect("path")]),
             Err(error) => Response::Unwritable(
                 protos::Text::try_from(written).expect("path"),

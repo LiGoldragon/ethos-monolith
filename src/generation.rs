@@ -16,7 +16,7 @@
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
-use crate::checking::Declaring;
+use crate::checking::{Checkable, Declaring};
 use crate::datomization::{Datomizing, Uniform};
 use crate::{
     AssociatedConstant, AssociatedType, Association, Capability, Constraint, File, Generating,
@@ -67,13 +67,25 @@ impl Tokening for Intrinsic {
 
 /// The kind whose capability yields the name of the parameter at an index: A, B, C.
 trait Lettering {
-    fn letter(&self) -> Ident;
+    fn letter(&self, scope: &Scope) -> Ident;
 }
 
 impl Lettering for usize {
-    fn letter(&self) -> Ident {
+    fn letter(&self, scope: &Scope) -> Ident {
         let letter = char::from(b'A' + *self as u8);
-        Ident::new(&letter.to_string(), Span::call_site())
+        let simple = Name::try_from(letter.to_string()).expect("static identifier");
+        let allocated = if scope.file.declaration(&simple).is_none() {
+            simple
+        } else {
+            let mut allocated = Name::try_from(format!("{}EthosParameter", simple.0))
+                .expect("parameter identifiers are identifiers");
+            while scope.file.declaration(&allocated).is_some() {
+                allocated = Name::try_from(format!("{}X", allocated.0))
+                    .expect("parameter identifiers are identifiers");
+            }
+            allocated
+        };
+        Ident::new(&allocated.0, Span::call_site())
     }
 }
 
@@ -135,7 +147,7 @@ impl Emitting for Reference {
                 quote! { #name #applied }
             }
             Resolution::Parameter(index) => {
-                let letter = (index as usize).letter();
+                let letter = (index as usize).letter(scope);
                 quote! { #letter }
             }
             Resolution::Associated(name) => {
@@ -174,7 +186,7 @@ impl Bounding for [Reference] {
 /// The kind whose capabilities yield an identity's generics: the parameters with their bounds, and the arguments.
 pub(crate) trait Parametrizing {
     fn parameters(&self, scope: &Scope, corporate: bool) -> TokenStream;
-    fn arguments(&self) -> TokenStream;
+    fn arguments(&self, scope: &Scope) -> TokenStream;
 }
 
 impl Parametrizing for Identity {
@@ -190,7 +202,7 @@ impl Parametrizing for Identity {
         };
         let mut parameters = Vec::with_capacity(self.constraints.len());
         for (index, constraint) in self.constraints.iter().enumerate() {
-            let letter = index.letter();
+            let letter = index.letter(scope);
             let bounds = constraint.bounds(&outer);
             if corporate {
                 parameters.push(quote! { #letter: #bounds + datom_codec::Datomic });
@@ -201,13 +213,13 @@ impl Parametrizing for Identity {
         quote! { < #( #parameters ),* > }
     }
 
-    fn arguments(&self) -> TokenStream {
+    fn arguments(&self, scope: &Scope) -> TokenStream {
         if self.constraints.is_empty() {
             return TokenStream::new();
         }
         let mut letters = Vec::with_capacity(self.constraints.len());
         for index in 0..self.constraints.len() {
-            letters.push(index.letter());
+            letters.push(index.letter(scope));
         }
         quote! { < #( #letters ),* > }
     }
@@ -340,14 +352,26 @@ trait Varianted {
 
 /// The kind whose capability names the enum type an inline enum variant declares.
 trait Nesting {
-    fn nested_identity(&self, name: &Name) -> Identity;
+    fn nested_identity(&self, name: &Name, scope: &Scope) -> Identity;
 }
 
 impl Nesting for Identity {
-    fn nested_identity(&self, name: &Name) -> Identity {
+    fn nested_identity(&self, name: &Name, scope: &Scope) -> Identity {
+        let joined = format!("{}{}", self.name.0, name.0);
+        let name = match Name::try_from(joined.clone()) {
+            Ok(joined) if scope.file.declaration(&joined).is_none() => joined,
+            Ok(_) | Err(_) => {
+                let mut allocated = Name::try_from(format!("{}EthosNested{}", self.name.0, name.0))
+                    .expect("nested identifiers are an identifier");
+                while scope.file.declaration(&allocated).is_some() {
+                    allocated = Name::try_from(format!("{}X", allocated.0))
+                        .expect("nested identifiers are an identifier");
+                }
+                allocated
+            }
+        };
         Identity {
-            name: Name::try_from(format!("{}{}", self.name.0, name.0))
-                .expect("joined identifiers are an identifier"),
+            name,
             constraints: self.constraints.clone(),
         }
     }
@@ -371,9 +395,9 @@ impl Varianted for Variant {
                 quote! { #name( #( #types ),* ) }
             }
             Variant::Enum(name, _) => {
-                let nested = enclosing.nested_identity(name);
+                let nested = enclosing.nested_identity(name, scope);
                 let ty = nested.name.tokens();
-                let arguments = nested.arguments();
+                let arguments = nested.arguments(scope);
                 let name = name.tokens();
                 quote! { #name(#ty #arguments) }
             }
@@ -383,7 +407,7 @@ impl Varianted for Variant {
     fn nested(&self, scope: &Scope, owner: &Name, enclosing: &Identity) -> TokenStream {
         match self {
             Variant::Enum(name, variants) => {
-                let nested = enclosing.nested_identity(name);
+                let nested = enclosing.nested_identity(name, scope);
                 variants.enumeration(scope, owner, &nested)
             }
             Variant::Bare(_) | Variant::Typed(_, _) | Variant::Struct(_, _) => TokenStream::new(),
@@ -623,7 +647,7 @@ impl Emitting for Association {
             arguments: vec![],
         };
         let ty = subject.emit(scope);
-        let arguments = self.identity.arguments();
+        let arguments = self.identity.arguments(&inner);
         let parameters = self.identity.parameters(&inner, false);
         let mut assertions = Vec::with_capacity(self.kinds.len());
         for kind in &self.kinds {
@@ -715,14 +739,15 @@ impl Emitting for File {
 }
 
 impl Generating for File {
-    fn generate(&self) -> String {
+    fn generate(&self) -> Result<String, crate::Fault> {
         let scope = Scope {
             file: self,
             identity: None,
             associated: &[],
         };
+        self.check(&scope)?;
         let tokens = self.emit(&scope);
         let file: syn::File = syn::parse2(tokens).expect("generated tokens are a Rust file");
-        prettyplease::unparse(&file)
+        Ok(prettyplease::unparse(&file))
     }
 }
