@@ -13,36 +13,37 @@ use protos::{
 use crate::conception::Conceiving;
 use crate::{Canonicalizable, Fault, File, Resituating};
 
-/// Walk an ethos fault path alongside the protoform tree, translating the
-/// ethos convention (headed body = child 0) to the protos convention
-/// (headed body = child 1), and look up the resulting extent.
-fn locate_fault(situation: &Situation, protoform: &Protoform, path: &[Integer]) -> Extent {
-    let mut here_sit = situation;
-    let mut here_form = protoform;
-    for &index in path {
-        match here_form {
-            Protoform::Headed(_, _, body) if index == 0 => {
-                // Ethos body = 0 -> protos body = 1
-                here_sit = here_sit.part(1);
-                here_form = body;
-            }
-            Protoform::Enclosed(_, children) => {
-                here_sit = here_sit.part(index);
-                if let Some(child) = children.get(index as usize) {
-                    here_form = child;
-                } else {
-                    return here_sit.extent;
+/// The kind whose capability locates a fault extent in a situated protoform,
+/// translating the ethos path convention (headed body = child 0) to the protos
+/// convention (headed body = child 1).
+trait Faulted {
+    fn fault_extent(&self, path: &[Integer]) -> Extent;
+}
+
+impl Faulted for Situated<Protoform> {
+    fn fault_extent(&self, path: &[Integer]) -> Extent {
+        let Situated(situation, form) = self;
+        let mut here_sit: &Situation = situation;
+        let mut here_form: &Protoform = form;
+        for &index in path {
+            match here_form {
+                Protoform::Headed(_, _, body) if index == 0 => {
+                    here_sit = here_sit.part(1);
+                    here_form = body;
                 }
+                Protoform::Enclosed(_, children) => {
+                    here_sit = here_sit.part(index);
+                    if let Some(child) = children.get(index as usize) {
+                        here_form = child;
+                    } else {
+                        return here_sit.extent;
+                    }
+                }
+                _ => return here_sit.extent,
             }
-            Protoform::Headed(head, _, _) if index == 0 => {
-                // head reference (shouldn't happen in ethos paths)
-                here_sit = here_sit.part(0);
-                return here_sit.extent;
-            }
-            _ => return here_sit.extent,
         }
+        here_sit.extent
     }
-    here_sit.extent
 }
 
 impl Actualizable<File> for Potential<File> {
@@ -78,7 +79,7 @@ impl Actualizable<File> for Potential<File> {
         match Conceiving::<File>::conceive(&delineation) {
             Ok(file) => Ok(file),
             Err(fault) => {
-                let extent = if let Some(protos::Situated(root, form)) = delineation.0.first() {
+                let extent = if let Some(situated) = delineation.0.first() {
                     let path = fault.path();
                     // Skip the first index (delineation element, always 0)
                     let inner = if path.first() == Some(&0) {
@@ -86,7 +87,7 @@ impl Actualizable<File> for Potential<File> {
                     } else {
                         path
                     };
-                    canonical.resituate(locate_fault(root, form, inner))
+                    canonical.resituate(situated.fault_extent(inner))
                 } else {
                     Extent(0, 0)
                 };

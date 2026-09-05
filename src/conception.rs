@@ -344,35 +344,36 @@ impl Conceiving<Import> for Protoform {
             && let Some(colon) = word.rfind(':')
         {
             let source: Source = word[..colon].conceive()?;
-            let imported = imported_from_word(&word[colon + 1..])?;
+            let imported = Conceiving::<Imported>::conceive(&word[colon + 1..])?;
             return Ok(Import::One(source, imported));
         }
         Err(Problem::Expected(Form::Import).here())
     }
 }
 
-/// Parse an imported name from a word: `Name` or `Name.Emitted`.
-fn imported_from_word(word: &str) -> Result<Imported, Fault> {
-    if let Some(dot) = word.find('.') {
-        let ethos_name = &word[..dot];
-        let source_name = &word[dot + 1..];
-        Ok(Imported {
-            name: Conceiving::<Name>::conceive(ethos_name)?,
-            emitted: Conceiving::<Name>::conceive(source_name).place(0)?,
-        })
-    } else {
-        let name: Name = Conceiving::<Name>::conceive(word)?;
-        Ok(Imported {
-            emitted: name.clone(),
-            name,
-        })
+impl Conceiving<Imported> for str {
+    fn conceive(&self) -> Result<Imported, Fault> {
+        if let Some(dot) = self.find('.') {
+            let ethos_name = &self[..dot];
+            let source_name = &self[dot + 1..];
+            Ok(Imported {
+                name: Conceiving::<Name>::conceive(ethos_name)?,
+                emitted: Conceiving::<Name>::conceive(source_name).place(0)?,
+            })
+        } else {
+            let name: Name = Conceiving::<Name>::conceive(self)?;
+            Ok(Imported {
+                emitted: name.clone(),
+                name,
+            })
+        }
     }
 }
 
 impl Conceiving<Imported> for Protoform {
     fn conceive(&self) -> Result<Imported, Fault> {
         if let Some(Head::Symbol(symbol)) = self.bare() {
-            return imported_from_word(symbol);
+            return Conceiving::<Imported>::conceive(symbol.as_str());
         }
         if let Some((Head::Symbol(symbol), Separator::Period, body)) = self.headed()
             && let Some(Head::Symbol(emitted)) = body.bare()
