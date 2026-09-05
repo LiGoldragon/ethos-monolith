@@ -1,6 +1,6 @@
-; Streamable complex kind from Vision/ethos.md
+; Streamable complex kind from Vision/ethos.md; its superkind and bound are the enclosing module's
 Kinds
-[]
+[ super:[ Fillable Serializable ] ]
 [ Streamable.{ [ Fillable ]
                [ Item<Serializable> ]
                [ CAPACITY.Integer ]

@@ -1,573 +1,648 @@
-//! Tests for ethos-zero: every example from Vision/ethos.md.
+//! The reader and the generator on every shape of Vision/ethos.md and
+//! every adversarial input of the audit. A fault is asserted with its
+//! path and, where the delineation situates it, its extent.
 
 use ethos_zero::{
-    Canonicalizing, File, Generating, KindDeclaration,
-    Receiver, TypeDeclaration, TypeExpression, Variant,
+    Canonicalizable, Constraint, Fault, File, Form, Generating, Identity, Import, KindBody,
+    Problem, Receiver, Reference, Signature, TypeDeclaration, Variant,
 };
-use protos::{Conceivable, Protosizable, Textualizable};
+use protos::{Actualizable, Conceivable, Extent, Potential, Protosizable, Situated, Textualizable};
 
-// ============================================================================
-// Helper: read and generate
-// ============================================================================
+// ---------------------------------------------------------------------------
+// Reading helpers, as kinds on the text
+// ---------------------------------------------------------------------------
 
-fn read(source: &str) -> File {
-    let canonical = source.canonicalize();
-    let delineation = canonical.protosize().expect("delineation");
-    delineation.conceive().expect("conceive")
+/// The kind whose capabilities read an ethos text, or fault on it.
+trait Reading {
+    fn file(&self) -> File;
+    fn fault(&self) -> Situated<Fault>;
+    fn rust(&self) -> String;
 }
 
-fn generate(source: &str) -> String {
-    let file = read(source);
-    file.generate().expect("generate")
+impl Reading for str {
+    fn file(&self) -> File {
+        match Potential::<File>::from(self).actualize() {
+            Ok(file) => file,
+            Err(fault) => panic!("{self}\ndoes not read: {fault:?}"),
+        }
+    }
+
+    fn fault(&self) -> Situated<Fault> {
+        match Potential::<File>::from(self).actualize() {
+            Ok(file) => panic!("{self}\nwas expected to fault, read as {file:?}"),
+            Err(fault) => fault,
+        }
+    }
+
+    fn rust(&self) -> String {
+        self.file().generate()
+    }
 }
 
-fn format_rust(source: &str) -> String {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    let mut child = Command::new("rustfmt")
-        .arg("--edition=2024")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("rustfmt");
-    child.stdin.take().unwrap().write_all(source.as_bytes()).unwrap();
-    let output = child.wait_with_output().unwrap();
-    String::from_utf8(output.stdout).unwrap()
+/// The kind whose capability yields the conceptual problem and path of a situated fault.
+trait Problematic {
+    fn problem(&self) -> (Vec<i64>, Problem);
 }
 
-/// Assert that generated Rust is syntactically valid by parsing it with syn.
-fn assert_compiles(ethos_source: &str, _test_name: &str) {
-    let rust = generate(ethos_source);
-    let formatted = format_rust(&rust);
-
-    // Verify the generated code parses as valid Rust syntax
-    syn::parse_str::<syn::File>(&formatted).unwrap_or_else(|e| {
-        panic!(
-            "Generated Rust failed to parse:\n{e}\n\nGenerated code:\n{formatted}"
-        );
-    });
+impl Problematic for Situated<Fault> {
+    fn problem(&self) -> (Vec<i64>, Problem) {
+        match &self.1 {
+            Fault::Conceptual(path, problem) => (path.clone(), problem.clone()),
+            Fault::Structural(fault) => panic!("structural fault, not conceptual: {fault:?}"),
+        }
+    }
 }
 
-// ============================================================================
-// Sweet-to-canonical conversion
-// ============================================================================
+// ---------------------------------------------------------------------------
+// Canonicalization: the sweet form opened, faithfully situated
+// ---------------------------------------------------------------------------
 
 #[test]
-fn sweet_to_canonical_types() {
-    let sweet = "Types\n[]\n[ Record.{ Text } ]\n[]";
-    let canonical = sweet.canonicalize();
-    assert!(canonical.starts_with("Types.{"));
-    assert!(canonical.ends_with("}"));
-
-    // Both forms should read identically
-    let from_sweet = read(sweet);
-    let from_canonical = read("Types.{ [] [ Record.{ Text } ] [] }");
-    assert_eq!(from_sweet, from_canonical);
+fn sweet_form_opens_into_the_braced_form() {
+    let canonical = "Types\n[]\n[ Record.{ Text } ]\n[]"
+        .to_owned()
+        .canonicalize()
+        .unwrap();
+    assert_eq!(canonical.text, "Types.{\n[]\n[ Record.{ Text } ]\n[]\n}");
+    assert_eq!(canonical.seam, Extent(5, 7));
 }
 
 #[test]
-fn already_canonical_unchanged() {
+fn braced_form_is_left_as_it_is() {
     let source = "Types.{ [] [ Record.{ Text } ] [] }";
-    let canonical = source.canonicalize();
-    // Should be identical to the original
-    assert_eq!(canonical, source);
-}
-
-// ============================================================================
-// Reader: Types variant
-// ============================================================================
-
-#[test]
-fn types_reads_struct() {
-    let file = read("Types\n[]\n[ Record.{ Text Integer } ]\n[]");
-    let File::Types(types) = &file else { panic!("expected Types"); };
-    assert_eq!(types.types.len(), 1);
-    match &types.types[0] {
-        TypeDeclaration::Struct(name, fields) => {
-            assert_eq!(name, "Record");
-            assert_eq!(fields.len(), 2);
-        }
-        _ => panic!("expected Struct"),
-    }
+    let canonical = source.to_owned().canonicalize().unwrap();
+    assert_eq!(canonical.text, source);
+    assert_eq!(canonical.seam, Extent(0, 0));
+    assert_eq!(source.file(), "Types\n[]\n[ Record.{ Text } ]\n[]".file());
 }
 
 #[test]
-fn types_reads_enum() {
-    let file = read("Types\n[]\n[ SinkError.[ Closed Full ] ]\n[]");
-    let File::Types(types) = &file else { panic!("expected Types"); };
-    match &types.types[0] {
-        TypeDeclaration::Enum(name, variants) => {
-            assert_eq!(name, "SinkError");
-            assert_eq!(variants.len(), 2);
-            assert!(matches!(&variants[0], Variant::Unit(n) if n == "Closed"));
-            assert!(matches!(&variants[1], Variant::Unit(n) if n == "Full"));
-        }
-        _ => panic!("expected Enum"),
-    }
+fn a_comment_on_the_head_line_reads() {
+    let file = "Types ; the head\n[]\n[ Record.{ Text } ]\n[]".file();
+    assert!(matches!(file, File::Types(_)));
 }
 
 #[test]
-fn types_reads_alias() {
-    let file = read("Types\n[]\n[ LockId.Integer ]\n[]");
-    let File::Types(types) = &file else { panic!("expected Types"); };
-    match &types.types[0] {
-        TypeDeclaration::Alias(name, target) => {
-            assert_eq!(name, "LockId");
-            assert!(matches!(target, TypeExpression::Named(n) if n == "Integer"));
-        }
-        _ => panic!("expected Alias"),
-    }
+fn a_trailing_comment_without_a_final_newline_reads() {
+    let file = "Types\n[]\n[ Record.{ Text } ]\n[] ; trailing".file();
+    assert!(matches!(file, File::Types(_)));
 }
 
 #[test]
-fn types_reads_import_single() {
-    let file = read("Types\n[ protos:Text ]\n[]\n[]");
-    let File::Types(types) = &file else { panic!("expected Types"); };
-    assert_eq!(types.imports.len(), 1);
-    match &types.imports[0] {
-        ethos_zero::Import::Single(source, name) => {
-            assert_eq!(source, "protos");
-            assert_eq!(name, "Text");
-        }
-        _ => panic!("expected Single import"),
-    }
+fn a_leading_comment_before_the_head_reads() {
+    let file = "; about\n; more\nTypes\n[]\n[]\n[]".file();
+    assert!(matches!(file, File::Types(_)));
 }
 
 #[test]
-fn types_reads_import_multiple() {
-    let file = read("Types\n[ protos:[ Text Integer ] ]\n[]\n[]");
-    let File::Types(types) = &file else { panic!("expected Types"); };
-    match &types.imports[0] {
-        ethos_zero::Import::Multiple(source, names) => {
-            assert_eq!(source, "protos");
-            assert_eq!(names, &["Text", "Integer"]);
-        }
-        _ => panic!("expected Multiple import"),
-    }
+fn faults_are_situated_in_the_source_text() {
+    let source = "Types\n[]\n[ Record.{ Text Bogus } ]\n[]";
+    let fault = source.fault();
+    let Situated(Some(Extent(start, end)), _) = fault else {
+        panic!("unsituated: {fault:?}");
+    };
+    assert_eq!(&source[start as usize..end as usize], "Bogus");
+    assert_eq!(
+        fault.problem(),
+        (
+            vec![0, 0, 1, 0, 0, 1],
+            Problem::Undeclared("Bogus".to_owned())
+        )
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The four variants
+// ---------------------------------------------------------------------------
+
+#[test]
+fn types_reads_its_three_sections() {
+    let File::Types(types) = "Types\n[ protos:Text ]\n[ Record.{ Text Integer } SinkError.[ Closed Full ] LockId.Integer ]\n[]".file() else {
+        panic!("expected Types");
+    };
+    assert_eq!(
+        types.imports,
+        vec![Import::One(
+            ethos_zero::Source("protos".to_owned()),
+            ethos_zero::Imported {
+                name: ethos_zero::Name("Text".to_owned()),
+                emitted: ethos_zero::Name("Text".to_owned()),
+            }
+        )]
+    );
+    assert_eq!(types.types.len(), 3);
+    assert!(
+        matches!(&types.types[0], TypeDeclaration::Struct(identity, positions) if identity.name.0 == "Record" && positions.len() == 2)
+    );
+    assert!(
+        matches!(&types.types[1], TypeDeclaration::Enum(_, variants) if variants == &[Variant::Bare(ethos_zero::Name("Closed".to_owned())), Variant::Bare(ethos_zero::Name("Full".to_owned()))])
+    );
+    assert!(
+        matches!(&types.types[2], TypeDeclaration::Alias(_, aliased) if aliased.name.0 == "Integer")
+    );
 }
 
 #[test]
-fn types_reads_associations() {
-    let file = read("Types\n[]\n[ Sink.{ Text } ]\n[ Sink.[ Summarizable Fillable ] ]");
-    let File::Types(types) = &file else { panic!("expected Types"); };
-    assert_eq!(types.associations.len(), 1);
-    assert_eq!(types.associations[0].ty, "Sink");
-    assert_eq!(types.associations[0].kinds, vec!["Summarizable", "Fillable"]);
-}
-
-// ============================================================================
-// Reader: Kinds variant
-// ============================================================================
-
-#[test]
-fn kinds_reads_simple_kind() {
-    let file = read("Kinds\n[]\n[ Summarizable.[ summarize.[ Text ] ] ]");
-    let File::Kinds(kinds) = &file else { panic!("expected Kinds"); };
-    assert_eq!(kinds.kinds.len(), 1);
-    match &kinds.kinds[0] {
-        KindDeclaration::Simple { name, capabilities, .. } => {
-            assert_eq!(name, "Summarizable");
-            assert_eq!(capabilities.len(), 1);
-            assert_eq!(capabilities[0].name, "summarize");
-            assert_eq!(capabilities[0].receiver, Receiver::Shared);
-        }
-        _ => panic!("expected Simple kind"),
-    }
-}
-
-#[test]
-fn kinds_reads_complex_kind() {
-    let source = "Kinds\n[]\n[ Streamable.{ [ Fillable ] [ Item<Serializable> ] [ CAPACITY.Integer ] [ next![ Option<Item> ] ] } ]";
-    let file = read(source);
-    let File::Kinds(kinds) = &file else { panic!("expected Kinds"); };
-    match &kinds.kinds[0] {
-        KindDeclaration::Complex {
-            name, superkinds, associated_types, associated_constants, capabilities, ..
-        } => {
-            assert_eq!(name, "Streamable");
-            assert_eq!(superkinds, &["Fillable"]);
-            assert_eq!(associated_types.len(), 1);
-            assert_eq!(associated_types[0].name, "Item");
-            assert_eq!(associated_types[0].constraints, vec!["Serializable"]);
-            assert_eq!(associated_constants.len(), 1);
-            assert_eq!(associated_constants[0].name, "CAPACITY");
-            assert_eq!(capabilities.len(), 1);
-            assert_eq!(capabilities[0].name, "next");
-            assert_eq!(capabilities[0].receiver, Receiver::Mutable);
-        }
-        _ => panic!("expected Complex kind"),
-    }
+fn kinds_reads_simple_and_complex_kinds() {
+    let File::Kinds(kinds) = "Kinds\n[ super:[ Fillable Serializable ] ]\n[ Summarizable.[ summarize.[ Text ] ] Streamable.{ [ Fillable ] [ Item<Serializable> ] [ CAPACITY.Integer ] [ next![ Option<Item> ] ] } ]".file() else {
+        panic!("expected Kinds");
+    };
+    let KindBody::Simple(capabilities) = &kinds.kinds[0].body else {
+        panic!("expected a simple kind");
+    };
+    assert_eq!(capabilities[0].receiver, Receiver::Shared);
+    assert!(
+        matches!(&capabilities[0].signature, Signature::Yielding(yields) if yields.name.0 == "Text")
+    );
+    let KindBody::Complex {
+        superkinds,
+        types,
+        constants,
+        capabilities,
+    } = &kinds.kinds[1].body
+    else {
+        panic!("expected a complex kind");
+    };
+    assert_eq!(superkinds[0].name.0, "Fillable");
+    assert_eq!(types[0].name.0, "Item");
+    assert_eq!(types[0].bounds[0].name.0, "Serializable");
+    assert_eq!(constants[0].name.0, "CAPACITY");
+    assert_eq!(capabilities[0].receiver, Receiver::Mutable);
 }
 
 #[test]
-fn kinds_reads_constrained_kind_identity() {
-    let source = "Kinds\n[]\n[ Processable<[Clonable Sendable] Serializable>.[ process.[ Text ] ] ]";
-    let file = read(source);
-    let File::Kinds(kinds) = &file else { panic!("expected Kinds"); };
-    match &kinds.kinds[0] {
-        KindDeclaration::Simple { name, constraints, capabilities } => {
-            assert_eq!(name, "Processable");
-            assert_eq!(constraints.len(), 2);
-            assert_eq!(constraints[0].bounds, vec!["Clonable", "Sendable"]);
-            assert_eq!(constraints[1].bounds, vec!["Serializable"]);
-            assert_eq!(capabilities.len(), 1);
-        }
-        _ => panic!("expected Simple kind with constraints"),
-    }
+fn kind_identity_carries_its_constraints() {
+    let File::Kinds(kinds) = "Kinds\n[ std::clone:Clonable.Clone std::marker:Sendable.Send serde:Serializable.Serialize ]\n[ Processable<[Clonable Sendable] Serializable>.[ process.[ Text ] ] ]".file() else {
+        panic!("expected Kinds");
+    };
+    let identity = &kinds.kinds[0].identity;
+    assert_eq!(identity.name.0, "Processable");
+    assert!(matches!(&identity.constraints[0], Constraint::Many(bounds) if bounds.len() == 2));
+    assert!(
+        matches!(&identity.constraints[1], Constraint::One(bound) if bound.name.0 == "Serializable")
+    );
 }
 
-// ============================================================================
-// Reader: Signal variant
-// ============================================================================
-
 #[test]
-fn signal_reads_requests_and_responses() {
-    let source = "\
-Signal
-[]
-[ Lock.LockRequest Release.LockId ]
-[ Locked.Lock Released.Lock ]
-[ LockId.Integer LockRequest.{ Text Text } Lock.{ Integer Text Text } ]";
-    let file = read(source);
-    let File::Signal(signal) = &file else { panic!("expected Signal"); };
+fn signal_reads_requests_responses_and_types() {
+    let File::Signal(signal) = "Signal\n[]\n[ Lock.LockRequest Release.LockId ]\n[ Locked.Lock Released.Lock ]\n[ LockId.Integer LockRequest.{ Text Text } Lock.{ Integer Text Text } ]".file() else {
+        panic!("expected Signal");
+    };
     assert_eq!(signal.requests.len(), 2);
     assert_eq!(signal.responses.len(), 2);
     assert_eq!(signal.types.len(), 3);
-    assert!(matches!(&signal.requests[0], Variant::Typed(n, _) if n == "Lock"));
-    assert!(matches!(&signal.requests[1], Variant::Typed(n, _) if n == "Release"));
 }
 
-// ============================================================================
-// Reader: Sema variant
-// ============================================================================
-
 #[test]
-fn sema_reads_types() {
-    let source = "Sema\n[]\n[ Entry.{ Text Integer } ]";
-    let file = read(source);
-    let File::Sema(sema) = &file else { panic!("expected Sema"); };
+fn sema_reads_the_record_positions_and_types() {
+    let File::Sema(sema) = "Sema\n[]\n{ Text Vector<Entry> }\n[ Entry.{ Text Integer } ]".file()
+    else {
+        panic!("expected Sema");
+    };
+    assert_eq!(sema.record.len(), 2);
     assert_eq!(sema.types.len(), 1);
 }
 
-// ============================================================================
-// Reader: capability receivers
-// ============================================================================
-
 #[test]
-fn capability_receivers() {
-    let source = "Kinds\n[]\n[ Test.[ read.[ Text ] write![ Text ] create:[ Self ] ] ]";
-    let file = read(source);
-    let File::Kinds(kinds) = &file else { panic!("expected Kinds"); };
-    let KindDeclaration::Simple { capabilities, .. } = &kinds.kinds[0] else {
-        panic!("expected Simple");
+fn capability_receivers_follow_the_separator() {
+    let File::Kinds(kinds) =
+        "Kinds\n[]\n[ Test.[ read.[ Text ] write![ Text ] create:[ Self ] ] ]".file()
+    else {
+        panic!("expected Kinds");
+    };
+    let KindBody::Simple(capabilities) = &kinds.kinds[0].body else {
+        panic!("expected a simple kind");
     };
     assert_eq!(capabilities[0].receiver, Receiver::Shared);
     assert_eq!(capabilities[1].receiver, Receiver::Mutable);
-    assert_eq!(capabilities[2].receiver, Receiver::None);
+    assert_eq!(capabilities[2].receiver, Receiver::Static);
 }
 
 #[test]
-fn capability_with_inputs() {
-    let source = "Kinds\n[]\n[ Fillable.[ push!{ [ Text ] [ Result<Integer SinkError> ] } ] ]";
-    let file = read(source);
-    let File::Kinds(kinds) = &file else { panic!("expected Kinds"); };
-    let KindDeclaration::Simple { capabilities, .. } = &kinds.kinds[0] else {
-        panic!("expected Simple");
+fn inline_qualification_reads_as_a_sourced_reference() {
+    let File::Types(types) =
+        "Types\n[]\n[ Fault.[ Structural.protos:Fault Own.Problem ] Problem.[ Root ] ]\n[]".file()
+    else {
+        panic!("expected Types");
     };
-    assert_eq!(capabilities[0].name, "push");
-    assert_eq!(capabilities[0].receiver, Receiver::Mutable);
-    assert_eq!(capabilities[0].inputs.len(), 1);
+    let TypeDeclaration::Enum(_, variants) = &types.types[0] else {
+        panic!("expected an enum");
+    };
+    assert_eq!(
+        variants[0],
+        Variant::Typed(
+            ethos_zero::Name("Structural".to_owned()),
+            Reference {
+                source: Some(ethos_zero::Source("protos".to_owned())),
+                name: ethos_zero::Name("Fault".to_owned()),
+                arguments: vec![],
+            }
+        )
+    );
 }
 
-// ============================================================================
-// Generator: generated Rust content
-// ============================================================================
+// ---------------------------------------------------------------------------
+// Generated Rust: the vision's examples, line for line
+// ---------------------------------------------------------------------------
 
 #[test]
-fn generates_struct() {
-    let rust = generate("Types\n[]\n[ Record.{ Text Integer } ]\n[]");
-    assert!(rust.contains("pub struct Record"));
-    assert!(rust.contains("protos :: Text"));
-    assert!(rust.contains("protos :: Integer"));
-}
-
-#[test]
-fn generates_enum() {
-    let rust = generate("Types\n[]\n[ SinkError.[ Closed Full ] ]\n[]");
-    assert!(rust.contains("pub enum SinkError"));
-    assert!(rust.contains("Closed"));
-    assert!(rust.contains("Full"));
-}
-
-#[test]
-fn generates_alias() {
-    let rust = generate("Types\n[]\n[ LockId.Integer ]\n[]");
-    assert!(rust.contains("pub type LockId = protos :: Integer"));
-}
-
-#[test]
-fn generates_trait() {
-    let rust = generate("Kinds\n[]\n[ Summarizable.[ summarize.[ Text ] ] ]");
-    assert!(rust.contains("pub trait Summarizable"));
-    assert!(rust.contains("fn summarize"));
-    assert!(rust.contains("protos :: Text"));
+fn generates_the_vision_types() {
+    let rust = "Types\n[]\n[ Record.{ Text Integer } Report.{ Text Vector<Integer> } SinkError.[ Closed Full ] LockId.Integer ]\n[]".rust();
+    assert!(rust.contains("pub struct Record(pub protos::Text, pub protos::Integer);"));
+    assert!(rust.contains("pub struct Report(pub protos::Text, pub Vec<protos::Integer>);"));
+    assert!(rust.contains("pub enum SinkError {\n    Closed,\n    Full,\n}"));
+    assert!(rust.contains("pub type LockId = protos::Integer;"));
+    assert!(!rust.contains("use "));
 }
 
 #[test]
-fn generates_complex_trait() {
-    let source = "Kinds\n[]\n[ Streamable.{ [ Fillable ] [ Item<Serializable> ] [ CAPACITY.Integer ] [ next![ Option<Item> ] ] } ]";
-    let rust = generate(source);
-    assert!(rust.contains("pub trait Streamable"));
-    assert!(rust.contains("Fillable"));
-    assert!(rust.contains("type Item"));
-    assert!(rust.contains("Serializable"));
-    assert!(rust.contains("const CAPACITY"));
-    assert!(rust.contains("fn next"));
+fn generates_the_vision_kinds() {
+    let rust = "Kinds\n[ super:SinkError ]\n[ Summarizable.[ summarize.[ Text ] ] Fillable.[ push!{ [ Text ] [ Result<Integer SinkError> ] } drain![ Vector<Text> ] create:[ Self ] ] ]".rust();
+    assert!(rust.contains("pub trait Summarizable {\n    fn summarize(&self) -> protos::Text;\n}"));
+    assert!(rust.contains(
+        "fn push(&mut self, input: protos::Text) -> Result<protos::Integer, super::SinkError>;"
+    ));
+    assert!(rust.contains("fn drain(&mut self) -> Vec<protos::Text>;"));
+    assert!(rust.contains("fn create() -> Self;"));
 }
 
 #[test]
-fn generates_association_assertion() {
-    let rust = generate("Types\n[]\n[ Sink.{ Text } ]\n[ Sink.[ Summarizable Fillable ] ]");
-    assert!(rust.contains("assert_sink_summarizable"));
-    assert!(rust.contains("assert_sink_fillable"));
+fn generates_the_streamable_kind_with_self_qualified_associated_types() {
+    let rust = "Kinds\n[ super:[ Fillable Serializable ] ]\n[ Streamable.{ [ Fillable ] [ Item<Serializable> ] [ CAPACITY.Integer ] [ next![ Option<Item> ] ] } ]".rust();
+    assert!(rust.contains("pub trait Streamable: super::Fillable {"));
+    assert!(rust.contains("type Item: super::Serializable;"));
+    assert!(rust.contains("const CAPACITY: protos::Integer;"));
+    assert!(rust.contains("fn next(&mut self) -> Option<Self::Item>;"));
 }
 
 #[test]
-fn generates_signal_request_response() {
-    let source = "\
-Signal
-[]
-[ Lock.LockRequest Release.LockId ]
-[ Locked.Lock Released.Lock ]
-[ LockId.Integer LockRequest.{ Text Text } Lock.{ Integer Text Text } ]";
-    let rust = generate(source);
-    assert!(rust.contains("pub enum Request"));
-    assert!(rust.contains("pub enum Response"));
-    assert!(!rust.contains("pub enum Reply"));
-    // Token spacing: Lock (LockRequest)
-    assert!(rust.contains("Lock (LockRequest)"));
-    assert!(rust.contains("Release (LockId)"));
-    assert!(rust.contains("Locked (Lock)"));
-    assert!(rust.contains("Released (Lock)"));
+fn generates_the_identity_with_the_sources_names() {
+    let rust = "Kinds\n[ std::clone:Clonable.Clone std::marker:Sendable.Send serde:Serializable.Serialize ]\n[ Processable<[Clonable Sendable] Serializable>.[ process.[ Text ] ] ]".rust();
+    assert!(rust.contains(
+        "pub trait Processable<A: std::clone::Clone + std::marker::Send, B: serde::Serialize> {"
+    ));
 }
 
 #[test]
-fn generates_datomic_impls_for_struct() {
-    let rust = generate("Types\n[]\n[ Record.{ Text Integer } ]\n[]");
-    assert!(rust.contains("impl protos :: Conceivable < datomic :: Datom > for Record"));
-    assert!(rust.contains("impl datomic :: Datomic for Record"));
-    assert!(rust.contains("impl protos :: Incorporable < Record > for datomic :: Datom"));
-    assert!(rust.contains("incorporate_from"));
+fn generates_the_vision_association() {
+    let rust = "Types\n[ super:[ Summarizable Fillable ] ]\n[ Sink.{ Text } ]\n[ Sink.[ Summarizable Fillable ] ]".rust();
+    assert!(rust.contains("const _: () = {\n    fn assert_sink_summarizable<T: super::Summarizable>() {}\n    let _ = assert_sink_summarizable::<Sink>;\n    fn assert_sink_fillable<T: super::Fillable>() {}\n    let _ = assert_sink_fillable::<Sink>;\n};"));
 }
 
 #[test]
-fn generates_datomic_impls_for_enum() {
-    let rust = generate("Types\n[]\n[ SinkError.[ Closed Full ] ]\n[]");
-    assert!(rust.contains("impl protos :: Conceivable < datomic :: Datom > for SinkError"));
-    assert!(rust.contains("impl datomic :: Datomic for SinkError"));
-    assert!(rust.contains("impl protos :: Incorporable < SinkError > for datomic :: Datom"));
+fn generates_a_constrained_association_as_a_generic_assertion() {
+    let rust = "Types\n[ datomic:[ Datomic Situated ] ]\n[ Own.{ Text } ]\n[ Situated<Datomic>.[ Datomic ] Text.[ Datomic ] ]".rust();
+    assert!(rust.contains("fn assert_situated_datomic<A: datomic::Datomic>() {\n        fn assertion<T: datomic::Datomic>() {}\n        let _ = assertion::<datomic::Situated<A>>;\n    }"));
+    assert!(rust.contains("let _ = assert_text_datomic::<protos::Text>;"));
 }
 
 #[test]
-fn generates_constrained_trait() {
-    let source = "Kinds\n[]\n[ Processable<[Clonable Sendable] Serializable>.[ process.[ Text ] ] ]";
-    let rust = generate(source);
-    assert!(rust.contains("pub trait Processable"));
-    assert!(rust.contains("Clonable"));
-    assert!(rust.contains("Sendable"));
-    assert!(rust.contains("Serializable"));
-}
-
-// ============================================================================
-// Protosizable: round-trip sweet → canonical → conceive → protosize → text
-// ============================================================================
-
-#[test]
-fn round_trip_types() {
-    let source = "Types\n[ protos:Text ]\n[ Record.{ Text Integer } ]\n[]";
-    let file = read(source);
-    let delineation = file.protosize().unwrap();
-    let text = delineation.textualize();
-    // Round-trip: the textualized form should be readable
-    let delineation2 = text.protosize().unwrap();
-    let file2: File = delineation2.conceive().unwrap();
-    assert_eq!(file, file2);
+fn generates_the_vision_request_enum() {
+    let rust = "Signal\n[]\n[ Lock.LockRequest Release.LockId Observe.ObserveSelection ]\n[ Done ]\n[ LockRequest.{ Text } LockId.Integer ObserveSelection.[ Locks ] ]".rust();
+    assert!(rust.contains("pub enum Request {\n    Lock(LockRequest),\n    Release(LockId),\n    Observe(ObserveSelection),\n}"));
+    assert!(rust.contains("pub enum Response {\n    Done,\n}"));
 }
 
 #[test]
-fn round_trip_kinds() {
-    let source = "Kinds\n[]\n[ Summarizable.[ summarize.[ Text ] ] ]";
-    let file = read(source);
-    let delineation = file.protosize().unwrap();
-    let text = delineation.textualize();
-    let delineation2 = text.protosize().unwrap();
-    let file2: File = delineation2.conceive().unwrap();
-    assert_eq!(file, file2);
+fn generates_tuple_variants_and_boxes_only_where_rust_needs_it() {
+    let rust = "Types\n[]\n[ Tree.[ Leaf.Integer Node.{ Tree Tree } Many.Vector<Tree> Maybe.Option<Tree> ] Chain.{ Text Option<Chain> } ]\n[]".rust();
+    assert!(rust.contains("Node(Box<Tree>, Box<Tree>)"));
+    assert!(rust.contains("Many(Vec<Tree>)"));
+    assert!(rust.contains("Maybe(Box<Option<Tree>>)"));
+    assert!(rust.contains("pub struct Chain(pub protos::Text, pub Box<Option<Chain>>);"));
+    assert!(!rust.contains("TreeNode"));
 }
 
 #[test]
-fn round_trip_signal() {
-    let source = "Signal\n[]\n[ Lock.LockRequest ]\n[ Locked.Lock ]\n[ LockRequest.{ Text } Lock.{ Integer Text } ]";
-    let file = read(source);
-    let delineation = file.protosize().unwrap();
-    let text = delineation.textualize();
-    let delineation2 = text.protosize().unwrap();
-    let file2: File = delineation2.conceive().unwrap();
-    assert_eq!(file, file2);
-}
-
-// ============================================================================
-// Compilation tests: generated Rust compiles
-// ============================================================================
-
-#[test]
-fn record_types_compile() {
-    assert_compiles("Types\n[]\n[ Record.{ Text Integer } ]\n[]", "record_types");
+fn generates_a_constrained_type_with_its_parameter() {
+    let rust = "Types\n[]\n[ Placed<Sized>.{ Option<Integer> Sized } ]\n[]".rust();
+    assert!(rust.contains("pub struct Placed<A: Sized>(pub Option<protos::Integer>, pub A);"));
+    assert!(rust.contains("impl<A: Sized + datomic::Datomic> datomic::Datomic for Placed<A> {"));
 }
 
 #[test]
-fn multi_types_compile() {
-    assert_compiles(
-        "Types\n[]\n[ Record.{ Text Integer } Report.{ Text Vector<Integer> } SinkError.[ Closed Full ] LockId.Integer ]\n[]",
-        "multi_types",
+fn generates_eq_unless_decimal_is_reached() {
+    let rust =
+        "Types\n[]\n[ Score.{ Decimal } Wrapped.{ Option<Score> } Plain.{ Integer } ]\n[]".rust();
+    assert!(rust.contains("#[derive(Clone, Debug, PartialEq)]\npub struct Score"));
+    assert!(rust.contains("#[derive(Clone, Debug, PartialEq)]\npub struct Wrapped"));
+    assert!(rust.contains("#[derive(Clone, Debug, PartialEq, Eq)]\npub struct Plain"));
+}
+
+#[test]
+fn generates_the_position_index_into_every_fault_path() {
+    let rust = "Types\n[]\n[ Record.{ Text Integer } ]\n[]".rust();
+    assert!(rust.contains("Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),"));
+    assert!(rust.contains("Err(fault) => Err(datomic::Prepending::prepend(fault, 1)),"));
+    assert!(rust.contains("datomic::Problem::Arity(2, fields.len() as protos::Integer)"));
+}
+
+#[test]
+fn generates_a_constant_of_a_container_type() {
+    let rust = "Kinds\n[]\n[ Naming.{ [] [] [ NAMES.Vector<Text> ] [ name.[ Text ] ] } ]".rust();
+    assert!(rust.contains("const NAMES: Vec<protos::Text>;"));
+}
+
+// ---------------------------------------------------------------------------
+// The ascent: File -> Text -> File
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_variant_round_trips_through_its_canonical_text() {
+    for source in [
+        "Types\n[ protos:Text ]\n[ Record.{ Text Integer } ]\n[]",
+        "Kinds\n[ super:SinkError ]\n[ Fillable.[ push!{ [ Text ] [ Result<Integer SinkError> ] } drain![ Vector<Text> ] ] Streamable.{ [ Fillable ] [ Item<Fillable> ] [ CAPACITY.Integer ] [ next![ Option<Item> ] ] } Processable<[Fillable Streamable] Fillable>.[ process.[ Text ] ] ]",
+        "Signal\n[ ethos_zero:Fault ]\n[ Lock.LockRequest ]\n[ Locked.Lock Faulty.{ Text Fault } Structural.protos:Fault ]\n[ LockRequest.{ Text } Lock.{ Integer Text } ]",
+        "Sema\n[]\n{ Text Vector<Entry> }\n[ Entry.{ Text Integer } ]",
+    ] {
+        let file = source.file();
+        let text = file.textualize();
+        let again: File = text.protosize().unwrap().conceive().unwrap();
+        assert_eq!(file, again, "{text}");
+        let delineation = Protosizable::protosize(&file).unwrap();
+        assert_eq!(delineation.textualize(), text);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial inputs: each a typed, situated fault; none aborts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rejects_an_undeclared_name_in_a_type_position() {
+    let fault = "Types\n[]\n[ Record.{ Text Bogus } ]\n[]".fault();
+    assert_eq!(
+        fault.problem(),
+        (
+            vec![0, 0, 1, 0, 0, 1],
+            Problem::Undeclared("Bogus".to_owned())
+        )
     );
 }
 
 #[test]
-fn signal_compile() {
-    assert_compiles(
-        &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/orchestrate.ethos")).unwrap(),
-        "signal",
+fn rejects_an_undeclared_superkind_and_bound_and_constraint() {
+    let fault = "Kinds\n[]\n[ Streamable.{ [ Fillable ] [] [] [ next![ Text ] ] } ]".fault();
+    assert_eq!(
+        fault.problem(),
+        (
+            vec![0, 0, 1, 0, 0, 0, 0],
+            Problem::Undeclared("Fillable".to_owned())
+        )
+    );
+    let fault =
+        "Kinds\n[]\n[ Streamable.{ [] [ Item<Serializable> ] [] [ next![ Text ] ] } ]".fault();
+    assert_eq!(
+        fault.problem(),
+        (
+            vec![0, 0, 1, 0, 0, 1, 0, 0],
+            Problem::Undeclared("Serializable".to_owned())
+        )
+    );
+    let fault = "Kinds\n[]\n[ Processable<Clonable>.[ process.[ Text ] ] ]".fault();
+    assert_eq!(
+        fault.problem(),
+        (
+            vec![0, 0, 1, 0, 0],
+            Problem::Undeclared("Clonable".to_owned())
+        )
     );
 }
 
 #[test]
-fn sema_compile() {
-    assert_compiles("Sema\n[]\n[ Entry.{ Text Integer } ]", "sema");
+fn rejects_an_association_to_an_undeclared_kind_or_type() {
+    let fault = "Types\n[]\n[ Sink.{ Text } ]\n[ Sink.[ Summarizable ] ]".fault();
+    assert_eq!(
+        fault.problem(),
+        (
+            vec![0, 0, 2, 0, 0, 0],
+            Problem::Undeclared("Summarizable".to_owned())
+        )
+    );
+    let fault = "Types\n[ super:Summarizable ]\n[]\n[ Sink.[ Summarizable ] ]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 2, 0], Problem::Undeclared("Sink".to_owned()))
+    );
 }
 
-// ============================================================================
-// Self-description: ethos-zero reads its own .ethos
-// ============================================================================
+#[test]
+fn rejects_a_type_where_a_kind_is_asked_and_the_reverse() {
+    let fault =
+        "Types\n[ datomic:Datomic ]\n[ Sink.{ Text } ]\n[ Vector<Sink>.[ Datomic ] ]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 2, 0, 0], Problem::Role("Sink".to_owned()))
+    );
+    let fault = "Kinds\n[]\n[ Own.[ own.[ Sized ] ] ]".fault();
+    assert_eq!(
+        fault.problem(),
+        (
+            vec![0, 0, 1, 0, 0, 0, 0, 0],
+            Problem::Role("Sized".to_owned())
+        )
+    );
+}
 
 #[test]
-fn self_description_reads() {
-    let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ethos-zero.ethos"));
-    let file = read(source);
-    let File::Signal(_) = &file else {
+fn rejects_a_duplicate_type_kind_variant_or_import() {
+    let fault = "Types\n[]\n[ Record.{ Text } Record.{ Integer } ]\n[]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 1, 1], Problem::Duplicate("Record".to_owned()))
+    );
+    let fault = "Kinds\n[]\n[ Own.[ own.[ Text ] ] Own.[ own.[ Text ] ] ]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 1, 1], Problem::Duplicate("Own".to_owned()))
+    );
+    let fault = "Types\n[]\n[ Twice.[ A B A ] ]\n[]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 1, 0, 0, 2], Problem::Duplicate("A".to_owned()))
+    );
+    let fault = "Types\n[ protos:Text ]\n[ Text.{ Integer } ]\n[]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 1, 0], Problem::Duplicate("Text".to_owned()))
+    );
+    let fault = "Signal\n[]\n[ Go ]\n[ Done ]\n[ Request.{ Text } ]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 3, 0], Problem::Duplicate("Request".to_owned()))
+    );
+}
+
+#[test]
+fn rejects_a_capability_without_a_yield() {
+    let fault = "Kinds\n[]\n[ Own.[ run.[] ] ]".fault();
+    assert_eq!(fault.problem(), (vec![0, 0, 1, 0, 0, 0, 0], Problem::Yield));
+    let fault = "Kinds\n[]\n[ Own.[ run.{ [ Text ] [] } ] ]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 1, 0, 0, 0, 0, 1], Problem::Yield)
+    );
+    let fault = "Kinds\n[]\n[ Own.[ run.[ Text Text ] ] ]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 1, 0, 0, 0, 0], Problem::Arity(1, 2))
+    );
+}
+
+#[test]
+fn rejects_a_signal_with_an_empty_requests_or_responses_section() {
+    let fault = "Signal\n[]\n[]\n[ Done ]\n[]".fault();
+    assert_eq!(fault.problem(), (vec![0, 0, 1], Problem::Empty));
+    let fault = "Signal\n[]\n[ Go ]\n[]\n[]".fault();
+    assert_eq!(fault.problem(), (vec![0, 0, 2], Problem::Empty));
+}
+
+#[test]
+fn rejects_a_head_not_among_the_four() {
+    let fault = "Library\n[]\n[]\n[]".fault();
+    assert_eq!(fault.problem(), (vec![0], Problem::Root));
+    let fault = "Library.{ 0 1 0 }\n[]\n[]\n[]\n[]".fault();
+    assert_eq!(fault.problem(), (vec![], Problem::Root));
+    let fault = "".fault();
+    assert_eq!(fault.problem(), (vec![], Problem::Root));
+    let fault = "Types.[ [] [] [] ]".fault();
+    assert_eq!(fault.problem(), (vec![0, 0], Problem::Expected(Form::File)));
+}
+
+#[test]
+fn rejects_a_wrong_section_count() {
+    let fault = "Types\n[]\n[]".fault();
+    assert_eq!(fault.problem(), (vec![0, 0], Problem::Arity(3, 2)));
+    let fault = "Kinds\n[]\n[]\n[]".fault();
+    assert_eq!(fault.problem(), (vec![0, 0], Problem::Arity(2, 3)));
+}
+
+#[test]
+fn rejects_a_name_that_is_not_an_identifier_without_panicking() {
+    let fault = "Types\n[]\n[ weird-name.{ Text } ]\n[]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 1, 0], Problem::Name("weird-name".to_owned()))
+    );
+    let fault = "Kinds\n[]\n[ Own.[ match.[ Text ] ] ]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 1, 0, 0, 0], Problem::Name("match".to_owned()))
+    );
+    let fault = "Types\n[ 1bad:Text ]\n[]\n[]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 0, 0], Problem::Name("1bad".to_owned()))
+    );
+}
+
+#[test]
+fn rejects_a_kind_declared_with_the_wrong_separator() {
+    let fault = "Kinds\n[]\n[ Summarizable:[ summarize.[ Text ] ] ]".fault();
+    assert_eq!(
+        fault.problem(),
+        (
+            vec![0, 0, 1, 0],
+            Problem::Separator(protos::Separator::Colon)
+        )
+    );
+    let fault = "Types\n[]\n[ Record!{ Text } ]\n[]".fault();
+    assert_eq!(
+        fault.problem(),
+        (
+            vec![0, 0, 1, 0],
+            Problem::Separator(protos::Separator::Exclamation)
+        )
+    );
+}
+
+#[test]
+fn rejects_a_bare_name_in_the_types_section_and_a_self_alias() {
+    let fault = "Types\n[]\n[ Text Integer Bogus ]\n[]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 1, 0], Problem::Expected(Form::Declaration))
+    );
+    let fault = "Types\n[]\n[ Bogus.Bogus ]\n[]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 1, 0, 0], Problem::Cycle("Bogus".to_owned()))
+    );
+    let fault = "Types\n[]\n[ A.B B.Option<A> ]\n[]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 1, 0, 0], Problem::Cycle("A".to_owned()))
+    );
+}
+
+#[test]
+fn rejects_a_wrong_intrinsic_arity() {
+    let fault = "Types\n[]\n[ Pair.Result<Text> ]\n[]".fault();
+    assert_eq!(fault.problem(), (vec![0, 0, 1, 0, 0], Problem::Arity(2, 1)));
+    let fault = "Types\n[]\n[ Own.{ Text<Integer> } ]\n[]".fault();
+    assert_eq!(
+        fault.problem(),
+        (vec![0, 0, 1, 0, 0, 0], Problem::Arity(0, 1))
+    );
+}
+
+#[test]
+fn rejects_a_structural_fault_with_its_source_extent() {
+    let source = "Types\n[]\n[ Record.{ Text ]\n[]";
+    let fault = source.fault();
+    let Situated(Some(Extent(start, end)), Fault::Structural(structural)) = fault else {
+        panic!("expected a situated structural fault: {fault:?}");
+    };
+    assert_eq!(structural.problem, protos::Problem::Unopened);
+    assert_eq!(&source[start as usize..end as usize], "]");
+}
+
+#[test]
+fn deep_nesting_faults_typed_and_never_aborts() {
+    let depth = 2000;
+    let mut inner = "Text".to_owned();
+    for _ in 0..depth {
+        inner = format!("Vector<{inner}>");
+    }
+    let fault = format!("Types\n[]\n[ Deep.{inner} ]\n[]").fault();
+    let (path, problem) = fault.problem();
+    assert_eq!(problem, Problem::Depth);
+    assert!(path.len() > 100);
+    let mut inner = "X".to_owned();
+    for _ in 0..depth {
+        inner = format!("Wrap.[ {inner} ]");
+    }
+    let fault = format!("Types\n[]\n[ Deep.[ {inner} ] ]\n[]").fault();
+    assert_eq!(fault.problem().1, Problem::Depth);
+}
+
+#[test]
+fn moderate_nesting_reads_generates_and_round_trips() {
+    let source = "Types\n[]\n[ Deep.Vector<Vector<Vector<Option<Result<Text Integer>>>>> Six.[ A.[ B.[ C.[ D.[ E.[ F.Integer ] ] ] ] ] ] ]\n[]";
+    let rust = source.rust();
+    assert!(rust.contains("pub enum SixABCDE"));
+    let file = source.file();
+    let again: File = file.textualize().protosize().unwrap().conceive().unwrap();
+    assert_eq!(file, again);
+}
+
+#[test]
+fn a_lowercase_type_name_reads_as_written() {
+    let File::Types(types) = "Types\n[]\n[ record.{ Text } ]\n[]".file() else {
+        panic!("expected Types");
+    };
+    assert!(
+        matches!(&types.types[0], TypeDeclaration::Struct(Identity { name, .. }, _) if name.0 == "record")
+    );
+}
+
+#[test]
+fn the_crate_reads_its_own_ethos() {
+    let contract = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ethos-zero.ethos")).file();
+    let File::Signal(signal) = &contract else {
         panic!("expected Signal");
     };
-}
-
-#[test]
-fn self_description_generates() {
-    let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ethos-zero.ethos"));
-    let rust = generate(source);
-    assert!(rust.contains("pub enum Request"));
-    assert!(rust.contains("pub enum Response"));
-    assert!(rust.contains("GenerateRequest"));
-}
-
-// ============================================================================
-// Fixture files: read and generate from fixture files
-// ============================================================================
-
-#[test]
-fn fixture_record_types() {
-    let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/record-types.ethos"));
-    let file = read(source);
-    let File::Types(types) = &file else { panic!("expected Types"); };
-    assert_eq!(types.types.len(), 1);
-    let rust = generate(source);
-    assert!(rust.contains("pub struct Record"));
-}
-
-#[test]
-fn fixture_multi_types() {
-    let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/multi-types.ethos"));
-    let file = read(source);
-    let File::Types(types) = &file else { panic!("expected Types"); };
-    assert_eq!(types.types.len(), 4);
-}
-
-#[test]
-fn fixture_processable() {
-    let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/processable-kinds.ethos"));
-    let file = read(source);
-    let File::Kinds(kinds) = &file else { panic!("expected Kinds"); };
-    assert_eq!(kinds.kinds.len(), 1);
-    let rust = generate(source);
-    assert!(rust.contains("pub trait Processable"));
-}
-
-#[test]
-fn fixture_capability_kinds() {
-    let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/capability-kinds.ethos"));
-    let file = read(source);
-    let File::Kinds(kinds) = &file else { panic!("expected Kinds"); };
-    assert_eq!(kinds.kinds.len(), 2);
-    let rust = generate(source);
-    assert!(rust.contains("pub trait Summarizable"));
-    assert!(rust.contains("pub trait Fillable"));
-    assert!(rust.contains("fn push"));
-    assert!(rust.contains("fn drain"));
-    assert!(rust.contains("fn create"));
-}
-
-#[test]
-fn fixture_streamable() {
-    let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/streamable-kind.ethos"));
-    let rust = generate(source);
-    assert!(rust.contains("pub trait Streamable"));
-    assert!(rust.contains("Fillable"));
-    assert!(rust.contains("const CAPACITY"));
-}
-
-#[test]
-fn fixture_sink_associations() {
-    let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/sink-associations.ethos"));
-    let rust = generate(source);
-    assert!(rust.contains("assert_sink_summarizable"));
-    assert!(rust.contains("assert_sink_fillable"));
-}
-
-#[test]
-fn fixture_orchestrate() {
-    let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/orchestrate.ethos"));
-    let file = read(source);
-    let File::Signal(signal) = &file else { panic!("expected Signal"); };
-    assert_eq!(signal.requests.len(), 3);
-    assert_eq!(signal.responses.len(), 5);
-    let rust = generate(source);
-    assert!(rust.contains("pub enum Request"));
-    assert!(rust.contains("pub enum Response"));
-}
-
-#[test]
-fn fixture_sema() {
-    let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/entry-sema.ethos"));
-    let file = read(source);
-    let File::Sema(sema) = &file else { panic!("expected Sema"); };
-    assert_eq!(sema.types.len(), 1);
-}
-
-// ============================================================================
-// No version in file
-// ============================================================================
-
-#[test]
-fn no_version_field() {
-    // The old Library.{0 1 0} form should fail — no version
-    let result = std::panic::catch_unwind(|| read("Library.{0 1 0}\n[]\n[]\n[]\n[]"));
-    assert!(result.is_err() || {
-        // Even if it doesn't panic, it should fail on conceive
-        let canonical = "Library.{0 1 0}\n[]\n[]\n[]\n[]".canonicalize();
-        let d = canonical.protosize();
-        d.is_err() || {
-            let d = d.unwrap();
-            let r: Result<File, _> = d.conceive();
-            r.is_err()
-        }
-    });
+    assert_eq!(signal.requests.len(), 1);
+    let faults = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/fault.ethos")).file();
+    assert!(matches!(faults, File::Types(_)));
 }

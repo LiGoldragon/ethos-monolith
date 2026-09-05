@@ -8,22 +8,23 @@
       url = "github:LiGoldragon/rust-build";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    protos-map = {
-      url = "github:LiGoldragon/protos/2cb88849f3b160333f2757fd7c776e68c279fe51";
+    # The dependencies' own ethos declarations, read by the built tool as a check.
+    protos = {
+      url = "github:LiGoldragon/protos/bf808deee5ee6c1b756ad33111ba05fdd7f725aa";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
       inputs.rust-build.follows = "rust-build";
     };
-    datomic-map = {
-      url = "github:LiGoldragon/datomic/cf59b01bbbc8ebc784bcde4806654c64916136c7";
+    datomic = {
+      url = "github:LiGoldragon/datomic/bad18213302c86416b2950ce0259d11d9f3ff4ec";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
       inputs.rust-build.follows = "rust-build";
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-build, protos-map, datomic-map }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs = { self, nixpkgs, flake-utils, rust-build, protos, datomic }:
+    flake-utils.lib.eachSystem [ "x86_64-linux" ] (system:
       let
         pkgs = import nixpkgs { inherit system; };
         rust = rust-build.lib.${system}.fromPkgs pkgs;
@@ -34,31 +35,32 @@
           root = ./.;
           extraFilters = [ ethosFilter ];
         };
-        commonArguments = {
-          inherit src;
-          strictDeps = true;
-          ETHOS_PROTOS_MAP = "${protos-map}/protos.ethos";
-          ETHOS_DATOMIC_MAP = "${datomic-map}/datomic.ethos";
-          ETHOS_PROTOS_RUST = "${protos-map}/src/lib.rs";
-          ETHOS_DATOMIC_RUST = "${datomic-map}/src/lib.rs";
-          ETHOS_PROTOS_CRATE = "${protos-map}";
-          ETHOS_DATOMIC_CRATE = "${datomic-map}";
-        };
-        cargoArtifacts = craneLib.buildDepsOnly commonArguments;
+        common = { inherit src; strictDeps = true; };
+        cargoArtifacts = craneLib.buildDepsOnly common;
+        package = craneLib.buildPackage (common // { inherit cargoArtifacts; });
       in {
-        packages.default = craneLib.buildPackage (commonArguments // { inherit cargoArtifacts; });
+        packages.default = package;
         checks = {
-          build = craneLib.cargoBuild (commonArguments // { inherit cargoArtifacts; });
-          test = craneLib.cargoTest (commonArguments // { inherit cargoArtifacts; });
+          build = craneLib.cargoBuild (common // { inherit cargoArtifacts; });
+          test = craneLib.cargoTest (common // { inherit cargoArtifacts; });
           fmt = craneLib.cargoFmt { inherit src; };
-          clippy = craneLib.cargoClippy (commonArguments // {
+          clippy = craneLib.cargoClippy (common // {
             inherit cargoArtifacts;
             cargoClippyExtraArgs = "--all-targets -- -D warnings";
           });
-          doc = craneLib.cargoDoc (commonArguments // {
+          doc = craneLib.cargoDoc (common // {
             inherit cargoArtifacts;
             RUSTDOCFLAGS = "-D warnings";
           });
+          dependency-ethos = pkgs.runCommand "ethos-zero-dependency-ethos" {
+            inherit package;
+            declarations = [
+              "${protos}/protos.ethos" "${protos}/protos-kinds.ethos"
+              "${datomic}/datomic.ethos" "${datomic}/datomic-kinds.ethos"
+            ];
+          } (builtins.readFile ./checks/dependency-ethos.sh);
+          no-free-functions = pkgs.runCommand "ethos-zero-no-free-functions" { inherit src; } (builtins.readFile ./checks/no-free-functions.sh);
+          no-inherent-methods = pkgs.runCommand "ethos-zero-no-inherent-methods" { inherit src; } (builtins.readFile ./checks/no-inherent-methods.sh);
         };
         devShells.default = pkgs.mkShell {
           name = "ethos-zero";

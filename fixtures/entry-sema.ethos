@@ -1,4 +1,5 @@
-; Minimal sema file
+; A sema file: the record's positions in braces, then the types it stores
 Sema
 []
+{ Text Vector<Entry> }
 [ Entry.{ Text Integer } ]

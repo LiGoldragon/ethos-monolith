@@ -1,6 +1,6 @@
-; Summarizable and Fillable from Vision/ethos.md
+; Summarizable and Fillable from Vision/ethos.md; SinkError is the enclosing module's
 Kinds
-[]
+[ super:SinkError ]
 [ Summarizable.[ summarize.[ Text ] ]
   Fillable.[ push!{ [ Text ] [ Result<Integer SinkError> ] }
              drain![ Vector<Text> ]

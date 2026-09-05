@@ -1,6 +1,6 @@
-; Sink associations from Vision/ethos.md
+; Sink associations from Vision/ethos.md; the kinds are the enclosing module's, the interactions hand-written there
 Types
-[]
+[ super:[ Summarizable Fillable ] ]
 [ Sink.{ Text Vector<Text> }
   SinkError.[ Closed Full ] ]
 [ Sink.[ Summarizable Fillable ] ]

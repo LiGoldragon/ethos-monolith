@@ -1,11 +1,11 @@
 [package]
 name         = "ethos-zero"
-version      = "2.0.0"
+version      = "3.0.0"
 edition      = "2024"
 rust-version = "1.89"
 license      = "MIT OR Apache-2.0"
 repository   = "https://github.com/LiGoldragon/ethos-zero"
-description  = "Ethos schema language version zero: reads ethos, emits Rust."
+description  = "Ethos schema language version zero: reads ethos, generates Rust."
 publish      = false
 autobins     = false
 autoexamples = false
@@ -20,15 +20,31 @@ name = "ethos-zero"
 path = "src/main.rs"
 
 [dependencies]
-protos  = { git = "https://github.com/LiGoldragon/protos",  rev = "c5594f9d6f73" }
-datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "2c2e2073fd34" }
+protos      = { git = "https://github.com/LiGoldragon/protos",  rev = "bf808deee5ee" }
+datomic     = { git = "https://github.com/LiGoldragon/datomic", rev = "bad18213302c" }
 quote       = "1"
 proc-macro2 = "1"
 syn         = { version = "3", features = ["full"] }
+prettyplease = "0.3"
+
+[dev-dependencies]
+serde = "1"
 
 [[test]]
 name = "ethos"
 path = "tests/ethos.rs"
+
+[[test]]
+name = "generated"
+path = "tests/generated.rs"
+
+[[test]]
+name = "freshness"
+path = "tests/freshness.rs"
+
+[[test]]
+name = "cli"
+path = "tests/cli.rs"
 
 [lints.rust]
 unsafe_code = "forbid"

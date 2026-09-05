@@ -1,0 +1,6 @@
+; A type identified with a constraint: one parameter, bounded by the kind, Datomic when the parameter is
+Types
+[]
+[ Placed<Sized>.{ Option<Integer> Sized }
+  Score.{ Decimal Boolean Meaning } ]
+[]
