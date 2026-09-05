@@ -9,7 +9,7 @@
 //! |---|---|---|---|
 //! | Text, as written (the sweet form) | `protos::Text` | [`Canonicalizable`] | [`Canonical`] |
 //! | Text, canonical (the braced form) | [`Canonical`] | `protos::Protosizable` | `protos::Delineation` |
-//! | Protoform | `protos::Delineation`, `protos::Protoform` | `protos::Conceivable<File>` | [`File`], checked whole |
+//! | Protoform | `protos::Delineation`, `protos::Protoform` | `Conceiving<File>` | [`File`], checked whole |
 //! | Concept | [`File`] | [`Generating`] | Rust text |
 //!
 //! `protos::Potential<File>` bears `protos::Actualizable<File>`: the
@@ -19,16 +19,14 @@
 //! fault.
 //!
 //! Every fault the reader raises is a [`Fault`] carrying the path of
-//! the structure at fault, in the path convention of datomic: a
+//! the structure at fault, in the path convention of datom-codec: a
 //! headed structure's body is child 0, an enclosure's children are
 //! numbered from 0, and each container prepends its child's index on
-//! the way up (`datomic::Prepending`).
+//! the way up (`protos::Pathed::within`).
 //!
-//! The generated Rust for a declared type has the shape datomic gives
-//! its own intrinsics: the type, `protos::Conceivable<datomic::Datom>`
-//! with an infallible fault, `datomic::Datomic` whose incorporation
-//! prepends every position's index to a nested fault, and
-//! `protos::Incorporable<Type>` for `datomic::Datom`.
+//! The generated Rust for a declared type has the shape datom-codec
+//! gives its own intrinsics: `datom_codec::Datomic` with
+//! `incorporate(site: Site<'_>)` and `conceive(&self) -> Datom`.
 
 // A walk over the variants of an enum is written as the loop it is, not
 // as an iterator adaptor with an inlined closure: no closure beyond what
@@ -37,7 +35,7 @@
 
 use std::convert::Infallible;
 
-use protos::{Delineation, Extent, Integer, Text};
+use protos::{Delineation, Extent, Integer, Pathed};
 
 // ---------------------------------------------------------------------------
 // The faults: declared in fault.ethos, generated into fault.rs
@@ -54,11 +52,11 @@ pub use fault::{Fault, Form, Problem};
 
 /// A validated identifier: the name of a type, kind, variant, capability or constant.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Name(pub Text);
+pub struct Name(pub String);
 
 /// The source of an import: a Rust path prefix such as `protos`, `crate` or `std::clone`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Source(pub Text);
+pub struct Source(pub String);
 
 /// The unit of declaration: one file, one Rust module; an enum of its four variants.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -294,7 +292,7 @@ pub struct Association {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Canonical {
     /// The braced form the reader sees.
-    pub text: Text,
+    pub text: String,
     /// The bytes inserted after the head, empty when the text was already canonical.
     pub seam: Extent,
 }
@@ -314,7 +312,7 @@ pub enum Intrinsic {
     Decimal,
     /// `protos::Boolean`.
     Boolean,
-    /// `datomic::Meaning`.
+    /// `datom_codec::Meaning`.
     Meaning,
     /// `Vec`.
     Vector,
@@ -410,7 +408,7 @@ pub trait Resolving {
 /// The kind whose capability generates the Rust module of a file; it cannot fault, the file having been checked whole.
 pub trait Generating {
     /// The Rust text, formatted.
-    fn generate(&self) -> Text;
+    fn generate(&self) -> String;
 }
 
 /// The kind whose capability places a result's fault under a child index.
@@ -423,23 +421,21 @@ pub trait Placing {
 // Fault interactions
 // ---------------------------------------------------------------------------
 
-impl datomic::Prepending for Fault {
-    fn prepend(self, index: Integer) -> Self {
+impl Pathed for Fault {
+    fn path(&self) -> &[Integer] {
+        match self {
+            Fault::Structural(_) => &[],
+            Fault::Conceptual(path, _) => path,
+        }
+    }
+
+    fn within(self, index: Integer) -> Self {
         match self {
             Fault::Structural(fault) => Fault::Structural(fault),
             Fault::Conceptual(mut path, problem) => {
                 path.insert(0, index);
                 Fault::Conceptual(path, problem)
             }
-        }
-    }
-}
-
-impl protos::Pathed for Fault {
-    fn path(&self) -> &[Integer] {
-        match self {
-            Fault::Structural(_) => &[],
-            Fault::Conceptual(path, _) => path,
         }
     }
 }
@@ -454,14 +450,14 @@ impl<T> Placing for Result<T, Fault> {
     fn place(self, index: Integer) -> Self {
         match self {
             Ok(value) => Ok(value),
-            Err(fault) => Err(datomic::Prepending::prepend(fault, index)),
+            Err(fault) => Err(fault.within(index)),
         }
     }
 }
 
 impl std::fmt::Display for Fault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", datomic::Datomic::textualize(self))
+        write!(f, "{}", datom_codec::Datomic::textualize(self))
     }
 }
 
@@ -552,7 +548,7 @@ impl protos::Protosizable for File {
 
     fn protosize(&self) -> Result<Delineation, Infallible> {
         let text = protos::Textualizable::textualize(self);
-        Ok(<Text as protos::Protosizable>::protosize(&text).expect("canonical text delineates"))
+        Ok(<str as protos::Protosizable>::protosize(&text).expect("canonical text delineates"))
     }
 }
 

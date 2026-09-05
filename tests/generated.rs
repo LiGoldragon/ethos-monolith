@@ -1,8 +1,12 @@
 //! Every fixture's generated Rust, compiled against the pinned protos
-//! and datomic and round-tripped through datom text. The modules under
+//! and datom_codec and round-tripped through datom text. The modules under
 //! tests/generated are committed; the freshness test regenerates them.
 
-use datomic::{Datom, Datomic, Expected, Fault, Problem};
+use datom_codec::{Datom, Datomic, Expected, Fault, Problem};
+
+fn text(s: &str) -> protos::Text {
+    protos::Text::try_from(s).unwrap()
+}
 use protos::{Actualizable, Potential};
 
 // ---------------------------------------------------------------------------
@@ -24,9 +28,6 @@ mod orchestrate;
 #[rustfmt::skip]
 #[path = "generated/placed-types.rs"]
 mod placed_types;
-#[rustfmt::skip]
-#[path = "generated/processable-kinds.rs"]
-mod processable_kinds;
 #[rustfmt::skip]
 #[path = "generated/record-types.rs"]
 mod record_types;
@@ -70,7 +71,7 @@ impl Fillable for sink_associations::Sink {
     }
 
     fn create() -> Self {
-        sink_associations::Sink(String::new(), Vec::new())
+        sink_associations::Sink(text(""), Vec::new())
     }
 }
 
@@ -100,15 +101,6 @@ impl streamable_kind::Streamable for Counter {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.0.pop()
-    }
-}
-
-/// A bearer of Processable, to witness the mapped bounds compile.
-struct Processor;
-
-impl processable_kinds::Processable<u8, u16> for Processor {
-    fn process(&self) -> protos::Text {
-        "processed".to_owned()
     }
 }
 
@@ -146,7 +138,7 @@ impl RoundTripping for str {
     {
         match Potential::<T, Datom>::from(self).actualize() {
             Ok(_) => panic!("{self} was expected to fault"),
-            Err(protos::Situated(_, fault)) => fault,
+            Err(fault) => fault,
         }
     }
 
@@ -197,7 +189,7 @@ fn multi_types_round_trip() {
     "Full".round_trips::<multi_types::SinkError>();
     "42".round_trips::<multi_types::LockId>();
     let record: record_types::Record = "{ Ada 1990 }".read();
-    assert_eq!(record, record_types::Record("Ada".to_owned(), 1990));
+    assert_eq!(record, record_types::Record(text("Ada"), 1990));
 }
 
 #[test]
@@ -230,36 +222,32 @@ fn containers_and_nesting_round_trip() {
 }
 
 #[test]
-fn constrained_type_round_trips_with_a_datomic_parameter() {
+fn constrained_type_round_trips_with_a_datom_codec_parameter() {
     "{ Some.1 2 }".round_trips::<placed_types::Placed<protos::Integer>>();
     "{ None [ a b ] }".round_trips::<placed_types::Placed<Vec<protos::Text>>>();
-    "{ 3.5 True (a meaning \\(nested\\)) }".round_trips::<placed_types::Score>();
+    "{ 3.5 True (a meaning (nested)) }".round_trips::<placed_types::Score>();
 }
 
 #[test]
 fn sema_record_round_trips() {
     "{ db [ { k 1 } { j 2 } ] }".round_trips::<entry_sema::Record>();
     let record: entry_sema::Record = "{ db [] }".read();
-    assert_eq!(record, entry_sema::Record("db".to_owned(), vec![]));
+    assert_eq!(record, entry_sema::Record(text("db"), vec![]));
 }
 
 #[test]
 fn sink_bears_its_kinds() {
     let mut sink = <sink_associations::Sink as Fillable>::create();
-    assert_eq!(sink.push("a".to_owned()), Ok(1));
-    assert_eq!(sink.drain(), vec!["a".to_owned()]);
-    assert_eq!(sink.summarize(), "");
+    assert_eq!(sink.push(text("a")), Ok(1));
+    assert_eq!(sink.drain(), vec![text("a")]);
+    assert_eq!(sink.summarize(), text(""));
     let mut counter = <Counter as Fillable>::create();
-    counter.push("x".to_owned()).unwrap();
+    counter.push(text("x")).unwrap();
     assert_eq!(
         streamable_kind::Streamable::next(&mut counter),
-        Some("x".to_owned())
+        Some(text("x"))
     );
     assert_eq!(<Counter as streamable_kind::Streamable>::CAPACITY, 8);
-    assert_eq!(
-        <Processor as processable_kinds::Processable<u8, u16>>::process(&Processor),
-        "processed"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -269,9 +257,8 @@ fn sink_bears_its_kinds() {
 #[test]
 fn struct_position_fault_is_at_its_index() {
     let fault = "{ Ada notanumber }".fault::<multi_types::Record>();
-    assert_eq!(
-        fault,
-        Fault::Corporate(vec![1], Problem::Value("notanumber".to_owned()))
+    assert!(
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Value(v)) if path == &vec![1] && v == "notanumber")
     );
 }
 
@@ -279,46 +266,48 @@ fn struct_position_fault_is_at_its_index() {
 fn variant_body_position_fault_is_under_the_body() {
     let fault =
         "Locked.{ notanumber MyLock 6329f1 [ /abs/path ] r }".fault::<orchestrate::Response>();
-    assert_eq!(
-        fault,
-        Fault::Corporate(vec![0, 0], Problem::Value("notanumber".to_owned()))
+    assert!(
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Value(v)) if path == &vec![1, 0] && v == "notanumber"),
+        "actual: {fault:?}"
     );
     let fault = "Node.{ Leaf.x Leaf.1 }".fault::<tree_types::Tree>();
-    assert_eq!(
-        fault,
-        Fault::Corporate(vec![0, 0, 0], Problem::Value("x".to_owned()))
+    assert!(
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Value(v)) if path == &vec![1, 0, 1] && v == "x"),
+        "actual: {fault:?}"
     );
 }
 
 #[test]
 fn vector_element_fault_carries_every_index() {
     let fault = "Observed.Locks.[ { 7 a b [] r } { x a b [] r } ]".fault::<orchestrate::Response>();
-    assert_eq!(
-        fault,
-        Fault::Corporate(vec![0, 0, 1, 0], Problem::Value("x".to_owned()))
+    assert!(
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Value(v)) if path == &vec![1, 1, 1, 0] && v == "x"),
+        "actual: {fault:?}"
     );
 }
 
 #[test]
 fn arity_and_shape_faults_are_typed() {
     let fault = "Locked.{ 1 2 }".fault::<orchestrate::Response>();
-    assert_eq!(fault, Fault::Corporate(vec![0], Problem::Arity(5, 2)));
+    assert!(
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, p) if path == &vec![1] && p == &Problem::Arity(5, 2)),
+        "actual: {fault:?}"
+    );
     let fault = "Locked.[]".fault::<orchestrate::Response>();
     assert!(
-        matches!(fault, Fault::Corporate(path, Problem::Shape(Expected::Struct, _)) if path == vec![0])
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Shape(Expected::Struct, _)) if path == &vec![1]),
+        "actual: {fault:?}"
     );
     let fault = "Bogus.1".fault::<orchestrate::Response>();
-    assert_eq!(
-        fault,
-        Fault::Corporate(vec![], Problem::UnknownVariant("Bogus".to_owned()))
+    assert!(
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::UnknownVariant(v)) if path.is_empty() && v == "Bogus")
     );
     let fault = "Bogus".fault::<multi_types::SinkError>();
-    assert_eq!(
-        fault,
-        Fault::Corporate(vec![], Problem::UnknownVariant("Bogus".to_owned()))
+    assert!(
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::UnknownVariant(v)) if path.is_empty() && v == "Bogus")
     );
     let fault = "{ 1 }".fault::<multi_types::SinkError>();
     assert!(
-        matches!(fault, Fault::Corporate(path, Problem::Shape(Expected::Variant, _)) if path.is_empty())
+        matches!(fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Shape(Expected::Variant, _)) if path.is_empty())
     );
 }

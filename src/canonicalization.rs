@@ -7,16 +7,15 @@
 //! inserted right after it and a closing brace appended on its own
 //! line. A text already in the braced form is left as it is.
 
-use protos::{Extent, Head, Protoform, Protosizable, Situating, Text};
+use protos::{Extent, Head, Protoform, Protosizable, Situated};
 
 use crate::{Canonical, Canonicalizable, Resituating};
 
-impl Canonicalizable for Text {
+impl Canonicalizable for String {
     fn canonicalize(&self) -> Result<Canonical, protos::Fault> {
-        let delineation = <Text as Protosizable>::protosize(self)?;
-        if let Some(Protoform::Bare(Head::Bare(_))) = delineation.protoforms.first()
-            && let Some(Extent(_, end)) = delineation.situate(&[0])
-        {
+        let delineation = <str as Protosizable>::protosize(self)?;
+        if let Some(Situated(situation, Protoform::Bare(Head::Symbol(_)))) = delineation.0.first() {
+            let Extent(_, end) = situation.extent;
             let end = end as usize;
             let mut text = String::with_capacity(self.len() + 4);
             text.push_str(&self[..end]);
@@ -44,7 +43,6 @@ impl Shifting for Canonical {
     fn shift(&self, position: protos::Integer) -> protos::Integer {
         let Extent(start, end) = self.seam;
         let inserted = end - start;
-        // The appended closer is as long as the seam; the source ends before both.
         let source_end = self.text.len() as protos::Integer - 2 * inserted;
         if position <= start {
             position

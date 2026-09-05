@@ -9,9 +9,9 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use datomic::{Datom, Datomic};
+use datom_codec::{Datom, Datomic};
 use ethos_zero::{File, Generating};
-use protos::{Actualizable, Potential, Text};
+use protos::{Actualizable, Potential, Situated};
 
 /// The crate's contract, declared in ethos-zero.ethos and generated into contract.rs.
 #[rustfmt::skip]
@@ -26,17 +26,14 @@ const ETHOS: &str = include_str!("../ethos-zero.ethos");
 // Kinds
 // ---------------------------------------------------------------------------
 
-/// The kind whose capability serves a request, yielding the response.
 trait Serving {
     fn serve(&self) -> Response;
 }
 
-/// The kind whose capability yields the process exit code a response ends with.
 trait Exiting {
     fn exit(&self) -> ExitCode;
 }
 
-/// The kind whose capability answers the command line as a whole.
 trait Invoking {
     fn invoke(&self) -> ExitCode;
 }
@@ -48,27 +45,42 @@ trait Invoking {
 impl Serving for Generation {
     fn serve(&self) -> Response {
         let Generation(source, directory) = self;
-        let text = match std::fs::read_to_string(source) {
+        let source_str: &str = source;
+        let directory_str: &str = directory;
+        let text = match std::fs::read_to_string(source_str) {
             Ok(text) => text,
-            Err(error) => return Response::Unreadable(source.clone(), error.to_string()),
+            Err(error) => {
+                return Response::Unreadable(
+                    source.clone(),
+                    protos::Text::try_from(error.to_string()).expect("error message"),
+                );
+            }
         };
         let file = match Potential::<File>::from(text).actualize() {
             Ok(file) => file,
-            Err(fault) => return Response::Faulty(source.clone(), fault),
+            Err(Situated(situation, fault)) => {
+                return Response::Faulty(source.clone(), situation.extent, fault);
+            }
         };
-        let stem = Path::new(source)
+        let stem = Path::new(source_str)
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        let target = Path::new(directory).join(format!("{stem}.rs"));
+        let target = Path::new(directory_str).join(format!("{stem}.rs"));
         let written = target.to_string_lossy().into_owned();
-        if let Err(error) = std::fs::create_dir_all(directory) {
-            return Response::Unwritable(directory.clone(), error.to_string());
+        if let Err(error) = std::fs::create_dir_all(directory_str) {
+            return Response::Unwritable(
+                directory.clone(),
+                protos::Text::try_from(error.to_string()).expect("error message"),
+            );
         }
         match std::fs::write(&target, file.generate()) {
-            Ok(()) => Response::Generated(vec![written]),
-            Err(error) => Response::Unwritable(written, error.to_string()),
+            Ok(()) => Response::Generated(vec![protos::Text::try_from(written).expect("path")]),
+            Err(error) => Response::Unwritable(
+                protos::Text::try_from(written).expect("path"),
+                protos::Text::try_from(error.to_string()).expect("error message"),
+            ),
         }
     }
 }
@@ -97,13 +109,13 @@ impl Exiting for Response {
             Response::Arguments(_)
             | Response::Malformed(_)
             | Response::Unreadable(_, _)
-            | Response::Faulty(_, _)
+            | Response::Faulty(_, _, _)
             | Response::Unwritable(_, _) => ExitCode::FAILURE,
         }
     }
 }
 
-impl Invoking for [Text] {
+impl Invoking for [String] {
     fn invoke(&self) -> ExitCode {
         let response = match self {
             [] => {
@@ -122,6 +134,6 @@ impl Invoking for [Text] {
 }
 
 fn main() -> ExitCode {
-    let arguments: Vec<Text> = std::env::args().skip(1).collect();
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
     arguments.invoke()
 }

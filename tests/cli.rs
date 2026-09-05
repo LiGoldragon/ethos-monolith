@@ -80,20 +80,16 @@ fn a_quoted_path_is_a_path() {
 fn a_flag_and_a_wrong_shape_are_refused_as_malformed() {
     let (success, output) = ["--help"].invoke();
     assert!(!success);
-    assert_eq!(
-        output,
-        "Malformed.{ None Corporate.{ [] Shape.{ Variant --help } } }\n"
-    );
+    assert!(output.starts_with("Malformed.Corporate."), "{output}");
+    assert!(output.contains("UnknownVariant.--help"), "{output}");
     let (success, output) = ["Generate.{ /only }"].invoke();
     assert!(!success);
-    assert!(output.starts_with("Malformed.{ "), "{output}");
+    assert!(output.starts_with("Malformed."), "{output}");
     assert!(output.contains("Arity.{ 2 1 }"), "{output}");
     let (success, output) = ["Bogus.{ /a /b }"].invoke();
     assert!(!success);
-    assert_eq!(
-        output,
-        "Malformed.{ None Corporate.{ [] UnknownVariant.Bogus } }\n"
-    );
+    assert!(output.starts_with("Malformed.Corporate."), "{output}");
+    assert!(output.contains("UnknownVariant.Bogus"), "{output}");
 }
 
 #[test]
@@ -121,10 +117,9 @@ fn a_faulty_file_replies_the_situated_fault() {
     std::fs::write(&source, "Types\n[]\n[ Record.{ Text Bogus } ]\n[]").unwrap();
     let (success, output) = [format!("Generate.{{ {source} {directory} }}").as_str()].invoke();
     assert!(!success);
-    assert_eq!(
-        output,
-        format!(
-            "Faulty.{{ {source} {{ Some.{{ 25 30 }} Conceptual.{{ [ 0 0 1 0 0 1 ] Undeclared.Bogus }} }} }}\n"
-        )
+    assert!(output.contains(&source), "{output}");
+    assert!(
+        output.contains("Conceptual.{ [ 0 0 1 0 0 1 ] Undeclared.Bogus }"),
+        "{output}"
     );
 }

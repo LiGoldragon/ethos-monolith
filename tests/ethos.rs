@@ -6,7 +6,7 @@ use ethos_zero::{
     Canonicalizable, Constraint, Fault, File, Form, Generating, Identity, Import, KindBody,
     Problem, Receiver, Reference, Signature, TypeDeclaration, Variant,
 };
-use protos::{Actualizable, Conceivable, Extent, Potential, Protosizable, Situated, Textualizable};
+use protos::{Actualizable, Extent, Potential, Protosizable, Situated, Situation, Textualizable};
 
 // ---------------------------------------------------------------------------
 // Reading helpers, as kinds on the text
@@ -98,15 +98,19 @@ fn a_leading_comment_before_the_head_reads() {
 fn faults_are_situated_in_the_source_text() {
     let source = "Types\n[]\n[ Record.{ Text Bogus } ]\n[]";
     let fault = source.fault();
-    let Situated(Some(Extent(start, end)), _) = fault else {
-        panic!("unsituated: {fault:?}");
-    };
-    assert_eq!(&source[start as usize..end as usize], "Bogus");
+    let Situated(
+        protos::Situation {
+            extent: Extent(start, end),
+            ..
+        },
+        _,
+    ) = &fault;
+    assert_eq!(&source[*start as usize..*end as usize], "Bogus");
     assert_eq!(
         fault.problem(),
         (
             vec![0, 0, 1, 0, 0, 1],
-            Problem::Undeclared("Bogus".to_owned())
+            Problem::Undeclared(protos::Text::try_from("Bogus").unwrap())
         )
     );
 }
@@ -172,7 +176,7 @@ fn kinds_reads_simple_and_complex_kinds() {
 
 #[test]
 fn kind_identity_carries_its_constraints() {
-    let File::Kinds(kinds) = "Kinds\n[ std::clone:Clonable.Clone std::marker:Sendable.Send serde:Serializable.Serialize ]\n[ Processable<[Clonable Sendable] Serializable>.[ process.[ Text ] ] ]".file() else {
+    let File::Kinds(kinds) = "Kinds\n[ super:Clonable super:Sendable super:Serializable ]\n[ Processable<[Clonable Sendable] Serializable>.[ process.[ Text ] ] ]".file() else {
         panic!("expected Kinds");
     };
     let identity = &kinds.kinds[0].identity;
@@ -277,9 +281,9 @@ fn generates_the_streamable_kind_with_self_qualified_associated_types() {
 
 #[test]
 fn generates_the_identity_with_the_sources_names() {
-    let rust = "Kinds\n[ std::clone:Clonable.Clone std::marker:Sendable.Send serde:Serializable.Serialize ]\n[ Processable<[Clonable Sendable] Serializable>.[ process.[ Text ] ] ]".rust();
+    let rust = "Kinds\n[ super:Clonable super:Sendable super:Serializable ]\n[ Processable<[Clonable Sendable] Serializable>.[ process.[ Text ] ] ]".rust();
     assert!(rust.contains(
-        "pub trait Processable<A: std::clone::Clone + std::marker::Send, B: serde::Serialize> {"
+        "pub trait Processable<A: super::Clonable + super::Sendable, B: super::Serializable> {"
     ));
 }
 
@@ -317,7 +321,9 @@ fn generates_tuple_variants_and_boxes_only_where_rust_needs_it() {
 fn generates_a_constrained_type_with_its_parameter() {
     let rust = "Types\n[]\n[ Placed<Sized>.{ Option<Integer> Sized } ]\n[]".rust();
     assert!(rust.contains("pub struct Placed<A: Sized>(pub Option<protos::Integer>, pub A);"));
-    assert!(rust.contains("impl<A: Sized + datomic::Datomic> datomic::Datomic for Placed<A> {"));
+    assert!(
+        rust.contains("impl<A: Sized + datom_codec::Datomic> datom_codec::Datomic for Placed<A> {")
+    );
 }
 
 #[test]
@@ -332,9 +338,8 @@ fn generates_eq_unless_decimal_is_reached() {
 #[test]
 fn generates_the_position_index_into_every_fault_path() {
     let rust = "Types\n[]\n[ Record.{ Text Integer } ]\n[]".rust();
-    assert!(rust.contains("Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),"));
-    assert!(rust.contains("Err(fault) => Err(datomic::Prepending::prepend(fault, 1)),"));
-    assert!(rust.contains("datomic::Problem::Arity(2, fields.len() as protos::Integer)"));
+    assert!(rust.contains("datom_codec::Positional::position"));
+    assert!(rust.contains("datom_codec::Sited::positions(site, 2)"));
 }
 
 #[test]
@@ -357,7 +362,7 @@ fn every_variant_round_trips_through_its_canonical_text() {
     ] {
         let file = source.file();
         let text = file.textualize();
-        let again: File = text.protosize().unwrap().conceive().unwrap();
+        let again: File = Potential::<File>::from(text.clone()).actualize().unwrap();
         assert_eq!(file, again, "{text}");
         let delineation = Protosizable::protosize(&file).unwrap();
         assert_eq!(delineation.textualize(), text);
@@ -375,7 +380,7 @@ fn rejects_an_undeclared_name_in_a_type_position() {
         fault.problem(),
         (
             vec![0, 0, 1, 0, 0, 1],
-            Problem::Undeclared("Bogus".to_owned())
+            Problem::Undeclared(protos::Text::try_from("Bogus").unwrap())
         )
     );
 }
@@ -387,7 +392,7 @@ fn rejects_an_undeclared_superkind_and_bound_and_constraint() {
         fault.problem(),
         (
             vec![0, 0, 1, 0, 0, 0, 0],
-            Problem::Undeclared("Fillable".to_owned())
+            Problem::Undeclared(protos::Text::try_from("Fillable").unwrap())
         )
     );
     let fault =
@@ -396,7 +401,7 @@ fn rejects_an_undeclared_superkind_and_bound_and_constraint() {
         fault.problem(),
         (
             vec![0, 0, 1, 0, 0, 1, 0, 0],
-            Problem::Undeclared("Serializable".to_owned())
+            Problem::Undeclared(protos::Text::try_from("Serializable").unwrap())
         )
     );
     let fault = "Kinds\n[]\n[ Processable<Clonable>.[ process.[ Text ] ] ]".fault();
@@ -404,7 +409,7 @@ fn rejects_an_undeclared_superkind_and_bound_and_constraint() {
         fault.problem(),
         (
             vec![0, 0, 1, 0, 0],
-            Problem::Undeclared("Clonable".to_owned())
+            Problem::Undeclared(protos::Text::try_from("Clonable").unwrap())
         )
     );
 }
@@ -416,30 +421,36 @@ fn rejects_an_association_to_an_undeclared_kind_or_type() {
         fault.problem(),
         (
             vec![0, 0, 2, 0, 0, 0],
-            Problem::Undeclared("Summarizable".to_owned())
+            Problem::Undeclared(protos::Text::try_from("Summarizable").unwrap())
         )
     );
     let fault = "Types\n[ super:Summarizable ]\n[]\n[ Sink.[ Summarizable ] ]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 2, 0], Problem::Undeclared("Sink".to_owned()))
+        (
+            vec![0, 0, 2, 0],
+            Problem::Undeclared(protos::Text::try_from("Sink").unwrap())
+        )
     );
 }
 
 #[test]
 fn rejects_a_type_where_a_kind_is_asked_and_the_reverse() {
     let fault =
-        "Types\n[ datomic:Datomic ]\n[ Sink.{ Text } ]\n[ Vector<Sink>.[ Datomic ] ]".fault();
+        "Types\n[ datom_codec:Datomic ]\n[ Sink.{ Text } ]\n[ Vector<Sink>.[ Datomic ] ]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 2, 0, 0], Problem::Role("Sink".to_owned()))
+        (
+            vec![0, 0, 2, 0, 0],
+            Problem::Role(protos::Text::try_from("Sink").unwrap())
+        )
     );
     let fault = "Kinds\n[]\n[ Own.[ own.[ Sized ] ] ]".fault();
     assert_eq!(
         fault.problem(),
         (
             vec![0, 0, 1, 0, 0, 0, 0, 0],
-            Problem::Role("Sized".to_owned())
+            Problem::Role(protos::Text::try_from("Sized").unwrap())
         )
     );
 }
@@ -449,27 +460,42 @@ fn rejects_a_duplicate_type_kind_variant_or_import() {
     let fault = "Types\n[]\n[ Record.{ Text } Record.{ Integer } ]\n[]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 1, 1], Problem::Duplicate("Record".to_owned()))
+        (
+            vec![0, 0, 1, 1],
+            Problem::Duplicate(protos::Text::try_from("Record").unwrap())
+        )
     );
     let fault = "Kinds\n[]\n[ Own.[ own.[ Text ] ] Own.[ own.[ Text ] ] ]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 1, 1], Problem::Duplicate("Own".to_owned()))
+        (
+            vec![0, 0, 1, 1],
+            Problem::Duplicate(protos::Text::try_from("Own").unwrap())
+        )
     );
     let fault = "Types\n[]\n[ Twice.[ A B A ] ]\n[]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 1, 0, 0, 2], Problem::Duplicate("A".to_owned()))
+        (
+            vec![0, 0, 1, 0, 0, 2],
+            Problem::Duplicate(protos::Text::try_from("A").unwrap())
+        )
     );
     let fault = "Types\n[ protos:Text ]\n[ Text.{ Integer } ]\n[]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 1, 0], Problem::Duplicate("Text".to_owned()))
+        (
+            vec![0, 0, 1, 0],
+            Problem::Duplicate(protos::Text::try_from("Text").unwrap())
+        )
     );
     let fault = "Signal\n[]\n[ Go ]\n[ Done ]\n[ Request.{ Text } ]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 3, 0], Problem::Duplicate("Request".to_owned()))
+        (
+            vec![0, 0, 3, 0],
+            Problem::Duplicate(protos::Text::try_from("Request").unwrap())
+        )
     );
 }
 
@@ -522,17 +548,26 @@ fn rejects_a_name_that_is_not_an_identifier_without_panicking() {
     let fault = "Types\n[]\n[ weird-name.{ Text } ]\n[]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 1, 0], Problem::Name("weird-name".to_owned()))
+        (
+            vec![0, 0, 1, 0],
+            Problem::Name(protos::Text::try_from("weird-name").unwrap())
+        )
     );
     let fault = "Kinds\n[]\n[ Own.[ match.[ Text ] ] ]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 1, 0, 0, 0], Problem::Name("match".to_owned()))
+        (
+            vec![0, 0, 1, 0, 0, 0],
+            Problem::Name(protos::Text::try_from("match").unwrap())
+        )
     );
     let fault = "Types\n[ 1bad:Text ]\n[]\n[]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 0, 0], Problem::Name("1bad".to_owned()))
+        (
+            vec![0, 0, 0, 0],
+            Problem::Name(protos::Text::try_from("1bad").unwrap())
+        )
     );
 }
 
@@ -566,12 +601,18 @@ fn rejects_a_bare_name_in_the_types_section_and_a_self_alias() {
     let fault = "Types\n[]\n[ Bogus.Bogus ]\n[]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 1, 0, 0], Problem::Cycle("Bogus".to_owned()))
+        (
+            vec![0, 0, 1, 0, 0],
+            Problem::Cycle(protos::Text::try_from("Bogus").unwrap())
+        )
     );
     let fault = "Types\n[]\n[ A.B B.Option<A> ]\n[]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 1, 0, 0], Problem::Cycle("A".to_owned()))
+        (
+            vec![0, 0, 1, 0, 0],
+            Problem::Cycle(protos::Text::try_from("A").unwrap())
+        )
     );
 }
 
@@ -590,11 +631,18 @@ fn rejects_a_wrong_intrinsic_arity() {
 fn rejects_a_structural_fault_with_its_source_extent() {
     let source = "Types\n[]\n[ Record.{ Text ]\n[]";
     let fault = source.fault();
-    let Situated(Some(Extent(start, end)), Fault::Structural(structural)) = fault else {
-        panic!("expected a situated structural fault: {fault:?}");
+    let Situated(Situation { extent, .. }, ref inner) = fault;
+    let Fault::Structural(structural) = inner else {
+        panic!("expected a structural fault: {fault:?}");
     };
-    assert_eq!(structural.problem, protos::Problem::Unopened);
-    assert_eq!(&source[start as usize..end as usize], "]");
+    assert_eq!(
+        structural.problem,
+        protos::Problem::Unopened(protos::Enclosure::Bracketed)
+    );
+    assert!(
+        extent.0 < extent.1,
+        "extent should be non-empty: {extent:?}"
+    );
 }
 
 #[test]
@@ -622,7 +670,9 @@ fn moderate_nesting_reads_generates_and_round_trips() {
     let rust = source.rust();
     assert!(rust.contains("pub enum SixABCDE"));
     let file = source.file();
-    let again: File = file.textualize().protosize().unwrap().conceive().unwrap();
+    let again: File = Potential::<File>::from(file.textualize())
+        .actualize()
+        .unwrap();
     assert_eq!(file, again);
 }
 

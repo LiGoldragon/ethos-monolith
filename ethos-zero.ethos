@@ -1,12 +1,12 @@
 ; ethos-zero: the ethos schema language, version zero.
 ; Generate.{ /abs/file.ethos /abs/out-dir } writes /abs/out-dir/<stem>.rs and replies Generated.[ path ].
 Signal
-[ ethos_zero:Fault  datomic:Situated ]
+[ ethos_zero:Fault  datom_codec:Extent ]
 [ Generate.Generation ]
 [ Generated.Vector<Text>
   Arguments.Integer
-  Malformed.Situated<datomic:Fault>
+  Malformed.datom_codec:Fault
   Unreadable.{ Text Text }
-  Faulty.{ Text Situated<Fault> }
+  Faulty.{ Text Extent Fault }
   Unwritable.{ Text Text } ]
 [ Generation.{ Text Text } ]

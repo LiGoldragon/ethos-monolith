@@ -299,7 +299,9 @@ impl Distinct for [(Name, Path)] {
                 if earlier == name {
                     return Err(Fault::Conceptual(
                         path.clone(),
-                        Problem::Duplicate(name.0.clone()),
+                        Problem::Duplicate(
+                            protos::Text::try_from(name.0.clone()).expect("identifier"),
+                        ),
                     ));
                 }
             }
@@ -476,7 +478,9 @@ impl Referring for Reference {
                 Resolution::Undeclared => {
                     return Err(Fault::Conceptual(
                         vec![],
-                        Problem::Undeclared(self.name.0.clone()),
+                        Problem::Undeclared(
+                            protos::Text::try_from(self.name.0.clone()).expect("identifier"),
+                        ),
                     ));
                 }
                 Resolution::Intrinsic(intrinsic) => (intrinsic.role(), Some(intrinsic.arity())),
@@ -488,7 +492,7 @@ impl Referring for Reference {
             if found != role {
                 return Err(Fault::Conceptual(
                     vec![],
-                    Problem::Role(self.name.0.clone()),
+                    Problem::Role(protos::Text::try_from(self.name.0.clone()).expect("identifier")),
                 ));
             }
             if let Some(expected) = expected
@@ -606,7 +610,9 @@ impl Checkable for TypeDeclaration {
                 if aliased.cycles(&identity.name, scope.file, &mut vec![]) {
                     return Err(Fault::Conceptual(
                         vec![0],
-                        Problem::Cycle(identity.name.0.clone()),
+                        Problem::Cycle(
+                            protos::Text::try_from(identity.name.0.clone()).expect("identifier"),
+                        ),
                     ));
                 }
                 Ok(())
@@ -689,7 +695,9 @@ impl Checkable for Association {
         if scope.resolve(&self.identity.name) == Resolution::Undeclared {
             return Err(Fault::Conceptual(
                 vec![],
-                Problem::Undeclared(self.identity.name.0.clone()),
+                Problem::Undeclared(
+                    protos::Text::try_from(self.identity.name.0.clone()).expect("identifier"),
+                ),
             ));
         }
         self.identity.check(scope)?;

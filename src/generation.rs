@@ -53,7 +53,7 @@ impl Tokening for Intrinsic {
             Intrinsic::Integer => quote! { protos::Integer },
             Intrinsic::Decimal => quote! { protos::Decimal },
             Intrinsic::Boolean => quote! { protos::Boolean },
-            Intrinsic::Meaning => quote! { datomic::Meaning },
+            Intrinsic::Meaning => quote! { datom_codec::Meaning },
             Intrinsic::Vector => quote! { Vec },
             Intrinsic::Option => quote! { Option },
             Intrinsic::Result => quote! { Result },
@@ -188,7 +188,7 @@ impl Parametrizing for Identity {
             let letter = index.letter();
             let bounds = constraint.bounds(&outer);
             if corporate {
-                parameters.push(quote! { #letter: #bounds + datomic::Datomic });
+                parameters.push(quote! { #letter: #bounds + datom_codec::Datomic });
             } else {
                 parameters.push(quote! { #letter: #bounds });
             }
@@ -679,7 +679,7 @@ impl Emitting for File {
 }
 
 impl Generating for File {
-    fn generate(&self) -> protos::Text {
+    fn generate(&self) -> String {
         let scope = Scope {
             file: self,
             identity: None,

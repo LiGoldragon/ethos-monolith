@@ -4,7 +4,7 @@
 //! reverse of conception; the file's text is the canonical print of
 //! its protoform, the braced form on one line.
 
-use protos::{Enclosure, Head, Protoform, Separator, Text, Textualizable};
+use protos::{Enclosure, Head, Protoform, Separator, Textualizable};
 
 use crate::{
     AssociatedConstant, AssociatedType, Association, Capability, Constraint, File, Identity,
@@ -78,18 +78,20 @@ impl Protosizing for File {
                 sema.types.bracketed(),
             ],
         };
-        Protoform::Enclosed(Enclosure::Braced, sections)
-            .under(Head::Bare(self.root().name().to_owned()), Separator::Period)
+        Protoform::Enclosed(Enclosure::Braced, sections).under(
+            Head::Symbol(self.root().name().to_owned()),
+            Separator::Period,
+        )
     }
 }
 
 impl Protosizing for Imported {
     fn protoform(&self) -> Protoform {
         if self.name == self.emitted {
-            Protoform::Bare(Head::Bare(self.name.0.clone()))
+            Protoform::Bare(Head::Symbol(self.name.0.to_string()))
         } else {
-            Protoform::Bare(Head::Bare(self.emitted.0.clone()))
-                .under(Head::Bare(self.name.0.clone()), Separator::Period)
+            Protoform::Bare(Head::Symbol(self.emitted.0.to_string()))
+                .under(Head::Symbol(self.name.0.to_string()), Separator::Period)
         }
     }
 }
@@ -99,10 +101,10 @@ impl Protosizing for Import {
         match self {
             Import::One(source, imported) => imported
                 .protoform()
-                .under(Head::Bare(source.0.clone()), Separator::Colon),
+                .under(Head::Symbol(source.0.to_string()), Separator::Colon),
             Import::Many(source, imports) => imports
                 .bracketed()
-                .under(Head::Bare(source.0.clone()), Separator::Colon),
+                .under(Head::Symbol(source.0.to_string()), Separator::Colon),
         }
     }
 }
@@ -110,13 +112,13 @@ impl Protosizing for Import {
 impl Heading for Reference {
     fn head(&self) -> Head {
         if self.arguments.is_empty() {
-            Head::Bare(self.name.0.clone())
+            Head::Symbol(self.name.0.to_string())
         } else {
             let mut arguments = Vec::with_capacity(self.arguments.len());
             for argument in &self.arguments {
                 arguments.push(argument.protoform());
             }
-            Head::Qualified(self.name.0.clone(), arguments)
+            Head::Qualified(self.name.0.to_string(), arguments)
         }
     }
 }
@@ -125,7 +127,7 @@ impl Protosizing for Reference {
     fn protoform(&self) -> Protoform {
         let bare = Protoform::Bare(self.head());
         match &self.source {
-            Some(source) => bare.under(Head::Bare(source.0.clone()), Separator::Colon),
+            Some(source) => bare.under(Head::Symbol(source.0.to_string()), Separator::Colon),
             None => bare,
         }
     }
@@ -134,13 +136,13 @@ impl Protosizing for Reference {
 impl Heading for Identity {
     fn head(&self) -> Head {
         if self.constraints.is_empty() {
-            Head::Bare(self.name.0.clone())
+            Head::Symbol(self.name.0.to_string())
         } else {
             let mut constraints = Vec::with_capacity(self.constraints.len());
             for constraint in &self.constraints {
                 constraints.push(constraint.protoform());
             }
-            Head::Qualified(self.name.0.clone(), constraints)
+            Head::Qualified(self.name.0.to_string(), constraints)
         }
     }
 }
@@ -173,16 +175,16 @@ impl Protosizing for TypeDeclaration {
 impl Protosizing for Variant {
     fn protoform(&self) -> Protoform {
         match self {
-            Variant::Bare(name) => Protoform::Bare(Head::Bare(name.0.clone())),
+            Variant::Bare(name) => Protoform::Bare(Head::Symbol(name.0.to_string())),
             Variant::Typed(name, reference) => reference
                 .protoform()
-                .under(Head::Bare(name.0.clone()), Separator::Period),
+                .under(Head::Symbol(name.0.to_string()), Separator::Period),
             Variant::Struct(name, positions) => positions
                 .braced()
-                .under(Head::Bare(name.0.clone()), Separator::Period),
+                .under(Head::Symbol(name.0.to_string()), Separator::Period),
             Variant::Enum(name, variants) => variants
                 .bracketed()
-                .under(Head::Bare(name.0.clone()), Separator::Period),
+                .under(Head::Symbol(name.0.to_string()), Separator::Period),
         }
     }
 }
@@ -213,13 +215,13 @@ impl Protosizing for KindDeclaration {
 impl Protosizing for AssociatedType {
     fn protoform(&self) -> Protoform {
         if self.bounds.is_empty() {
-            Protoform::Bare(Head::Bare(self.name.0.clone()))
+            Protoform::Bare(Head::Symbol(self.name.0.to_string()))
         } else {
             let mut bounds = Vec::with_capacity(self.bounds.len());
             for bound in &self.bounds {
                 bounds.push(bound.protoform());
             }
-            Protoform::Bare(Head::Qualified(self.name.0.clone(), bounds))
+            Protoform::Bare(Head::Qualified(self.name.0.to_string(), bounds))
         }
     }
 }
@@ -228,7 +230,7 @@ impl Protosizing for AssociatedConstant {
     fn protoform(&self) -> Protoform {
         self.ty
             .protoform()
-            .under(Head::Bare(self.name.0.clone()), Separator::Period)
+            .under(Head::Symbol(self.name.0.to_string()), Separator::Period)
     }
 }
 
@@ -246,7 +248,7 @@ impl Protosizing for Capability {
                 vec![inputs.bracketed(), std::slice::from_ref(yields).bracketed()],
             ),
         };
-        body.under(Head::Bare(self.name.0.clone()), separator)
+        body.under(Head::Symbol(self.name.0.to_string()), separator)
     }
 }
 
@@ -259,7 +261,7 @@ impl Protosizing for Association {
 }
 
 impl Textualizable for File {
-    fn textualize(&self) -> Text {
+    fn textualize(&self) -> String {
         self.protoform().textualize()
     }
 }

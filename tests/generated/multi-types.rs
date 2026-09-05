@@ -1,122 +1,38 @@
 #![allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record(pub protos::Text, pub protos::Integer);
-impl protos::Conceivable<datomic::Datom> for Record {
-    type Fault = std::convert::Infallible;
-    fn conceive(&self) -> Result<datomic::Datom, std::convert::Infallible> {
-        Ok(
-            datomic::Datom::Struct(
-                Vec::from([
-                    protos::Conceivable::<datomic::Datom>::conceive(&self.0)?,
-                    protos::Conceivable::<datomic::Datom>::conceive(&self.1)?,
-                ]),
-            ),
+impl datom_codec::Datomic for Record {
+    fn incorporate(site: datom_codec::Site<'_>) -> Result<Self, datom_codec::Fault> {
+        let mut p = datom_codec::Sited::positions(site, 2)?;
+        let p0: protos::Text = datom_codec::Positional::position(&mut p)?;
+        let p1: protos::Integer = datom_codec::Positional::position(&mut p)?;
+        Ok(Self(p0, p1))
+    }
+    fn conceive(&self) -> datom_codec::Datom {
+        datom_codec::Datom::Struct(
+            vec![
+                datom_codec::Datomic::conceive(& self.0),
+                datom_codec::Datomic::conceive(& self.1)
+            ],
         )
-    }
-}
-impl datomic::Datomic for Record {
-    fn incorporate_from(datom: datomic::Datom) -> Result<Self, datomic::Fault> {
-        match datom {
-            datomic::Datom::Struct(fields) => {
-                match <[datomic::Datom; 2]>::try_from(fields) {
-                    Ok([d0, d1]) => {
-                        match <protos::Text as datomic::Datomic>::incorporate_from(d0) {
-                            Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                            Ok(p0) => {
-                                match <protos::Integer as datomic::Datomic>::incorporate_from(
-                                    d1,
-                                ) {
-                                    Err(fault) => Err(datomic::Prepending::prepend(fault, 1)),
-                                    Ok(p1) => Ok(Self(p0, p1)),
-                                }
-                            }
-                        }
-                    }
-                    Err(fields) => {
-                        Err(
-                            datomic::Fault::Corporate(
-                                vec![],
-                                datomic::Problem::Arity(2, fields.len() as protos::Integer),
-                            ),
-                        )
-                    }
-                }
-            }
-            other => {
-                Err(
-                    datomic::Fault::Corporate(
-                        vec![],
-                        datomic::Problem::Shape(datomic::Expected::Struct, other),
-                    ),
-                )
-            }
-        }
-    }
-}
-impl protos::Incorporable<Record> for datomic::Datom {
-    type Fault = datomic::Fault;
-    fn incorporate(self) -> Result<Record, datomic::Fault> {
-        <Record as datomic::Datomic>::incorporate_from(self)
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report(pub protos::Text, pub Vec<protos::Integer>);
-impl protos::Conceivable<datomic::Datom> for Report {
-    type Fault = std::convert::Infallible;
-    fn conceive(&self) -> Result<datomic::Datom, std::convert::Infallible> {
-        Ok(
-            datomic::Datom::Struct(
-                Vec::from([
-                    protos::Conceivable::<datomic::Datom>::conceive(&self.0)?,
-                    protos::Conceivable::<datomic::Datom>::conceive(&self.1)?,
-                ]),
-            ),
+impl datom_codec::Datomic for Report {
+    fn incorporate(site: datom_codec::Site<'_>) -> Result<Self, datom_codec::Fault> {
+        let mut p = datom_codec::Sited::positions(site, 2)?;
+        let p0: protos::Text = datom_codec::Positional::position(&mut p)?;
+        let p1: Vec<protos::Integer> = datom_codec::Positional::position(&mut p)?;
+        Ok(Self(p0, p1))
+    }
+    fn conceive(&self) -> datom_codec::Datom {
+        datom_codec::Datom::Struct(
+            vec![
+                datom_codec::Datomic::conceive(& self.0),
+                datom_codec::Datomic::conceive(& self.1)
+            ],
         )
-    }
-}
-impl datomic::Datomic for Report {
-    fn incorporate_from(datom: datomic::Datom) -> Result<Self, datomic::Fault> {
-        match datom {
-            datomic::Datom::Struct(fields) => {
-                match <[datomic::Datom; 2]>::try_from(fields) {
-                    Ok([d0, d1]) => {
-                        match <protos::Text as datomic::Datomic>::incorporate_from(d0) {
-                            Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                            Ok(p0) => {
-                                match <Vec<
-                                    protos::Integer,
-                                > as datomic::Datomic>::incorporate_from(d1) {
-                                    Err(fault) => Err(datomic::Prepending::prepend(fault, 1)),
-                                    Ok(p1) => Ok(Self(p0, p1)),
-                                }
-                            }
-                        }
-                    }
-                    Err(fields) => {
-                        Err(
-                            datomic::Fault::Corporate(
-                                vec![],
-                                datomic::Problem::Arity(2, fields.len() as protos::Integer),
-                            ),
-                        )
-                    }
-                }
-            }
-            other => {
-                Err(
-                    datomic::Fault::Corporate(
-                        vec![],
-                        datomic::Problem::Shape(datomic::Expected::Struct, other),
-                    ),
-                )
-            }
-        }
-    }
-}
-impl protos::Incorporable<Report> for datomic::Datom {
-    type Fault = datomic::Fault;
-    fn incorporate(self) -> Result<Report, datomic::Fault> {
-        <Report as datomic::Datomic>::incorporate_from(self)
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,49 +40,33 @@ pub enum SinkError {
     Closed,
     Full,
 }
-impl protos::Conceivable<datomic::Datom> for SinkError {
-    type Fault = std::convert::Infallible;
-    fn conceive(&self) -> Result<datomic::Datom, std::convert::Infallible> {
-        Ok(
-            match self {
-                Self::Closed => datomic::Datom::Bare("Closed".to_owned()),
-                Self::Full => datomic::Datom::Bare("Full".to_owned()),
-            },
-        )
-    }
-}
-impl datomic::Datomic for SinkError {
-    fn incorporate_from(datom: datomic::Datom) -> Result<Self, datomic::Fault> {
-        match datom {
-            datomic::Datom::Bare(symbol) => {
-                match symbol.as_str() {
-                    "Closed" => Ok(Self::Closed),
-                    "Full" => Ok(Self::Full),
-                    _ => {
-                        Err(
-                            datomic::Fault::Corporate(
-                                vec![],
-                                datomic::Problem::UnknownVariant(symbol),
-                            ),
-                        )
-                    }
-                }
+impl datom_codec::Datomic for SinkError {
+    fn incorporate(site: datom_codec::Site<'_>) -> Result<Self, datom_codec::Fault> {
+        let v = datom_codec::Sited::variant(site)?;
+        match v.name {
+            "Closed" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Closed)
             }
-            other => {
+            "Full" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Full)
+            }
+            _ => {
                 Err(
-                    datomic::Fault::Corporate(
-                        vec![],
-                        datomic::Problem::Shape(datomic::Expected::Variant, other),
+                    datom_codec::Sited::refuse(
+                        site,
+                        datom_codec::Problem::UnknownVariant(v.name.to_owned()),
                     ),
                 )
             }
         }
     }
-}
-impl protos::Incorporable<SinkError> for datomic::Datom {
-    type Fault = datomic::Fault;
-    fn incorporate(self) -> Result<SinkError, datomic::Fault> {
-        <SinkError as datomic::Datomic>::incorporate_from(self)
+    fn conceive(&self) -> datom_codec::Datom {
+        match self {
+            Self::Closed => datom_codec::Datom::Word("Closed".to_owned()),
+            Self::Full => datom_codec::Datom::Word("Full".to_owned()),
+        }
     }
 }
 pub type LockId = protos::Integer;

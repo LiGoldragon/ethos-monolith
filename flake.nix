@@ -10,20 +10,20 @@
     };
     # The dependencies' own ethos declarations, read by the built tool as a check.
     protos = {
-      url = "github:LiGoldragon/protos/bf808deee5ee6c1b756ad33111ba05fdd7f725aa";
+      url = "github:LiGoldragon/protos/205408679738d92d1182fe7c6f5c0eeb278ce318";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
       inputs.rust-build.follows = "rust-build";
     };
-    datomic = {
-      url = "github:LiGoldragon/datomic/bad18213302c86416b2950ce0259d11d9f3ff4ec";
+    datom-codec = {
+      url = "github:LiGoldragon/datom-codec/cd43574d8ef61e4c18d768310f67079bf58b0835";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
       inputs.rust-build.follows = "rust-build";
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-build, protos, datomic }:
+  outputs = { self, nixpkgs, flake-utils, rust-build, protos, datom-codec }:
     flake-utils.lib.eachSystem [ "x86_64-linux" ] (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -56,7 +56,7 @@
             inherit package;
             declarations = [
               "${protos}/protos.ethos" "${protos}/protos-kinds.ethos"
-              "${datomic}/datomic.ethos" "${datomic}/datomic-kinds.ethos"
+              "${datom-codec}/datom-codec.ethos" "${datom-codec}/datom-codec-kinds.ethos"
             ];
           } (builtins.readFile ./checks/dependency-ethos.sh);
           no-free-functions = pkgs.runCommand "ethos-zero-no-free-functions" { inherit src; } (builtins.readFile ./checks/no-free-functions.sh);

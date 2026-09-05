@@ -6,34 +6,97 @@
 //! source text, the canonical seam mapped back out.
 
 use protos::{
-    Actualizable, Conceivable, Pathed, Potential, Protosizable, Situated, Situating, Text, Texted,
+    Actualizable, Extent, Integer, Locating, Pathed, Potential, Protoform, Protosizable, Situated,
+    Situation, Texted,
 };
 
+use crate::conception::Conceiving;
 use crate::{Canonicalizable, Fault, File, Resituating};
+
+/// Walk an ethos fault path alongside the protoform tree, translating the
+/// ethos convention (headed body = child 0) to the protos convention
+/// (headed body = child 1), and look up the resulting extent.
+fn locate_fault(situation: &Situation, protoform: &Protoform, path: &[Integer]) -> Extent {
+    let mut here_sit = situation;
+    let mut here_form = protoform;
+    for &index in path {
+        match here_form {
+            Protoform::Headed(_, _, body) if index == 0 => {
+                // Ethos body = 0 -> protos body = 1
+                here_sit = here_sit.part(1);
+                here_form = body;
+            }
+            Protoform::Enclosed(_, children) => {
+                here_sit = here_sit.part(index);
+                if let Some(child) = children.get(index as usize) {
+                    here_form = child;
+                } else {
+                    return here_sit.extent;
+                }
+            }
+            Protoform::Headed(head, _, _) if index == 0 => {
+                // head reference (shouldn't happen in ethos paths)
+                here_sit = here_sit.part(0);
+                return here_sit.extent;
+            }
+            _ => return here_sit.extent,
+        }
+    }
+    here_sit.extent
+}
 
 impl Actualizable<File> for Potential<File> {
     type Fault = Situated<Fault>;
 
     fn actualize(&self) -> Result<File, Situated<Fault>> {
-        let canonical = match self.text().to_owned().canonicalize() {
+        let text: String = self.text().to_owned();
+        let canonical = match text.canonicalize() {
             Ok(canonical) => canonical,
-            Err(fault) => return Err(Situated(Some(fault.extent), Fault::Structural(fault))),
+            Err(fault) => {
+                return Err(Situated(
+                    Situation {
+                        extent: fault.extent,
+                        children: vec![],
+                    },
+                    Fault::Structural(fault),
+                ));
+            }
         };
-        let delineation = match <Text as Protosizable>::protosize(&canonical.text) {
+        let delineation = match <str as Protosizable>::protosize(&canonical.text) {
             Ok(delineation) => delineation,
             Err(fault) => {
                 let extent = canonical.resituate(fault.extent);
-                return Err(Situated(Some(extent), Fault::Structural(fault)));
+                return Err(Situated(
+                    Situation {
+                        extent,
+                        children: vec![],
+                    },
+                    Fault::Structural(fault),
+                ));
             }
         };
-        match Conceivable::<File>::conceive(&delineation) {
+        match Conceiving::<File>::conceive(&delineation) {
             Ok(file) => Ok(file),
             Err(fault) => {
-                let extent = match delineation.situate(fault.path()) {
-                    Some(extent) => Some(canonical.resituate(extent)),
-                    None => None,
+                let extent = if let Some(protos::Situated(root, form)) = delineation.0.first() {
+                    let path = fault.path();
+                    // Skip the first index (delineation element, always 0)
+                    let inner = if path.first() == Some(&0) {
+                        &path[1..]
+                    } else {
+                        path
+                    };
+                    canonical.resituate(locate_fault(root, form, inner))
+                } else {
+                    Extent(0, 0)
                 };
-                Err(Situated(extent, fault))
+                Err(Situated(
+                    Situation {
+                        extent,
+                        children: vec![],
+                    },
+                    fault,
+                ))
             }
         }
     }

@@ -4,115 +4,51 @@ pub enum Fault {
     Structural(protos::Fault),
     Conceptual(Vec<protos::Integer>, Problem),
 }
-impl protos::Conceivable<datomic::Datom> for Fault {
-    type Fault = std::convert::Infallible;
-    fn conceive(&self) -> Result<datomic::Datom, std::convert::Infallible> {
-        Ok(
-            match self {
-                Self::Structural(p0) => {
-                    datomic::Datom::Variant(
-                        protos::Head::Bare("Structural".to_owned()),
-                        Box::new(protos::Conceivable::<datomic::Datom>::conceive(p0)?),
-                    )
-                }
-                Self::Conceptual(p0, p1) => {
-                    datomic::Datom::Variant(
-                        protos::Head::Bare("Conceptual".to_owned()),
-                        Box::new(
-                            datomic::Datom::Struct(
-                                Vec::from([
-                                    protos::Conceivable::<datomic::Datom>::conceive(p0)?,
-                                    protos::Conceivable::<datomic::Datom>::conceive(p1)?,
-                                ]),
-                            ),
-                        ),
-                    )
-                }
-            },
-        )
-    }
-}
-impl datomic::Datomic for Fault {
-    fn incorporate_from(datom: datomic::Datom) -> Result<Self, datomic::Fault> {
-        match datom {
-            datomic::Datom::Variant(protos::Head::Bare(head), body) => {
-                match head.as_str() {
-                    "Structural" => {
-                        match <protos::Fault as datomic::Datomic>::incorporate_from(
-                            *body,
-                        ) {
-                            Ok(value) => Ok(Self::Structural(value)),
-                            Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                        }
-                    }
-                    "Conceptual" => {
-                        match *body {
-                            datomic::Datom::Struct(fields) => {
-                                let incorporated = match <[datomic::Datom; 2]>::try_from(
-                                    fields,
-                                ) {
-                                    Ok([d0, d1]) => {
-                                        match <Vec<
-                                            protos::Integer,
-                                        > as datomic::Datomic>::incorporate_from(d0) {
-                                            Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                                            Ok(p0) => {
-                                                match <Problem as datomic::Datomic>::incorporate_from(d1) {
-                                                    Err(fault) => Err(datomic::Prepending::prepend(fault, 1)),
-                                                    Ok(p1) => Ok(Self::Conceptual(p0, p1)),
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(fields) => {
-                                        Err(
-                                            datomic::Fault::Corporate(
-                                                vec![],
-                                                datomic::Problem::Arity(2, fields.len() as protos::Integer),
-                                            ),
-                                        )
-                                    }
-                                };
-                                match incorporated {
-                                    Ok(value) => Ok(value),
-                                    Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                                }
-                            }
-                            other => {
-                                Err(
-                                    datomic::Fault::Corporate(
-                                        vec![0],
-                                        datomic::Problem::Shape(datomic::Expected::Struct, other),
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                    _ => {
-                        Err(
-                            datomic::Fault::Corporate(
-                                vec![],
-                                datomic::Problem::UnknownVariant(head),
-                            ),
-                        )
-                    }
-                }
+impl datom_codec::Datomic for Fault {
+    fn incorporate(site: datom_codec::Site<'_>) -> Result<Self, datom_codec::Fault> {
+        let v = datom_codec::Sited::variant(site)?;
+        match v.name {
+            "Structural" => Ok(Self::Structural(datom_codec::Carrying::body(v)?)),
+            "Conceptual" => {
+                let mut p = datom_codec::Headed::positions(v, 2)?;
+                let p0: Vec<protos::Integer> = datom_codec::Positional::position(
+                    &mut p,
+                )?;
+                let p1: Problem = datom_codec::Positional::position(&mut p)?;
+                Ok(Self::Conceptual(p0, p1))
             }
-            other => {
+            _ => {
                 Err(
-                    datomic::Fault::Corporate(
-                        vec![],
-                        datomic::Problem::Shape(datomic::Expected::Variant, other),
+                    datom_codec::Sited::refuse(
+                        site,
+                        datom_codec::Problem::UnknownVariant(v.name.to_owned()),
                     ),
                 )
             }
         }
     }
-}
-impl protos::Incorporable<Fault> for datomic::Datom {
-    type Fault = datomic::Fault;
-    fn incorporate(self) -> Result<Fault, datomic::Fault> {
-        <Fault as datomic::Datomic>::incorporate_from(self)
+    fn conceive(&self) -> datom_codec::Datom {
+        match self {
+            Self::Structural(p0) => {
+                datom_codec::Datom::Variant(
+                    "Structural".to_owned(),
+                    Box::new(datom_codec::Datomic::conceive(p0)),
+                )
+            }
+            Self::Conceptual(p0, p1) => {
+                datom_codec::Datom::Variant(
+                    "Conceptual".to_owned(),
+                    Box::new(
+                        datom_codec::Datom::Struct(
+                            vec![
+                                datom_codec::Datomic::conceive(p0),
+                                datom_codec::Datomic::conceive(p1)
+                            ],
+                        ),
+                    ),
+                )
+            }
+        }
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,219 +66,111 @@ pub enum Problem {
     Depth,
     Role(protos::Text),
 }
-impl protos::Conceivable<datomic::Datom> for Problem {
-    type Fault = std::convert::Infallible;
-    fn conceive(&self) -> Result<datomic::Datom, std::convert::Infallible> {
-        Ok(
-            match self {
-                Self::Root => datomic::Datom::Bare("Root".to_owned()),
-                Self::Arity(p0, p1) => {
-                    datomic::Datom::Variant(
-                        protos::Head::Bare("Arity".to_owned()),
-                        Box::new(
-                            datomic::Datom::Struct(
-                                Vec::from([
-                                    protos::Conceivable::<datomic::Datom>::conceive(p0)?,
-                                    protos::Conceivable::<datomic::Datom>::conceive(p1)?,
-                                ]),
-                            ),
-                        ),
-                    )
-                }
-                Self::Expected(p0) => {
-                    datomic::Datom::Variant(
-                        protos::Head::Bare("Expected".to_owned()),
-                        Box::new(protos::Conceivable::<datomic::Datom>::conceive(p0)?),
-                    )
-                }
-                Self::Separator(p0) => {
-                    datomic::Datom::Variant(
-                        protos::Head::Bare("Separator".to_owned()),
-                        Box::new(protos::Conceivable::<datomic::Datom>::conceive(p0)?),
-                    )
-                }
-                Self::Name(p0) => {
-                    datomic::Datom::Variant(
-                        protos::Head::Bare("Name".to_owned()),
-                        Box::new(protos::Conceivable::<datomic::Datom>::conceive(p0)?),
-                    )
-                }
-                Self::Duplicate(p0) => {
-                    datomic::Datom::Variant(
-                        protos::Head::Bare("Duplicate".to_owned()),
-                        Box::new(protos::Conceivable::<datomic::Datom>::conceive(p0)?),
-                    )
-                }
-                Self::Undeclared(p0) => {
-                    datomic::Datom::Variant(
-                        protos::Head::Bare("Undeclared".to_owned()),
-                        Box::new(protos::Conceivable::<datomic::Datom>::conceive(p0)?),
-                    )
-                }
-                Self::Cycle(p0) => {
-                    datomic::Datom::Variant(
-                        protos::Head::Bare("Cycle".to_owned()),
-                        Box::new(protos::Conceivable::<datomic::Datom>::conceive(p0)?),
-                    )
-                }
-                Self::Yield => datomic::Datom::Bare("Yield".to_owned()),
-                Self::Empty => datomic::Datom::Bare("Empty".to_owned()),
-                Self::Depth => datomic::Datom::Bare("Depth".to_owned()),
-                Self::Role(p0) => {
-                    datomic::Datom::Variant(
-                        protos::Head::Bare("Role".to_owned()),
-                        Box::new(protos::Conceivable::<datomic::Datom>::conceive(p0)?),
-                    )
-                }
-            },
-        )
-    }
-}
-impl datomic::Datomic for Problem {
-    fn incorporate_from(datom: datomic::Datom) -> Result<Self, datomic::Fault> {
-        match datom {
-            datomic::Datom::Bare(symbol) => {
-                match symbol.as_str() {
-                    "Root" => Ok(Self::Root),
-                    "Yield" => Ok(Self::Yield),
-                    "Empty" => Ok(Self::Empty),
-                    "Depth" => Ok(Self::Depth),
-                    _ => {
-                        Err(
-                            datomic::Fault::Corporate(
-                                vec![],
-                                datomic::Problem::UnknownVariant(symbol),
-                            ),
-                        )
-                    }
-                }
+impl datom_codec::Datomic for Problem {
+    fn incorporate(site: datom_codec::Site<'_>) -> Result<Self, datom_codec::Fault> {
+        let v = datom_codec::Sited::variant(site)?;
+        match v.name {
+            "Root" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Root)
             }
-            datomic::Datom::Variant(protos::Head::Bare(head), body) => {
-                match head.as_str() {
-                    "Arity" => {
-                        match *body {
-                            datomic::Datom::Struct(fields) => {
-                                let incorporated = match <[datomic::Datom; 2]>::try_from(
-                                    fields,
-                                ) {
-                                    Ok([d0, d1]) => {
-                                        match <protos::Integer as datomic::Datomic>::incorporate_from(
-                                            d0,
-                                        ) {
-                                            Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                                            Ok(p0) => {
-                                                match <protos::Integer as datomic::Datomic>::incorporate_from(
-                                                    d1,
-                                                ) {
-                                                    Err(fault) => Err(datomic::Prepending::prepend(fault, 1)),
-                                                    Ok(p1) => Ok(Self::Arity(p0, p1)),
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(fields) => {
-                                        Err(
-                                            datomic::Fault::Corporate(
-                                                vec![],
-                                                datomic::Problem::Arity(2, fields.len() as protos::Integer),
-                                            ),
-                                        )
-                                    }
-                                };
-                                match incorporated {
-                                    Ok(value) => Ok(value),
-                                    Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                                }
-                            }
-                            other => {
-                                Err(
-                                    datomic::Fault::Corporate(
-                                        vec![0],
-                                        datomic::Problem::Shape(datomic::Expected::Struct, other),
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                    "Expected" => {
-                        match <Form as datomic::Datomic>::incorporate_from(*body) {
-                            Ok(value) => Ok(Self::Expected(value)),
-                            Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                        }
-                    }
-                    "Separator" => {
-                        match <protos::Separator as datomic::Datomic>::incorporate_from(
-                            *body,
-                        ) {
-                            Ok(value) => Ok(Self::Separator(value)),
-                            Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                        }
-                    }
-                    "Name" => {
-                        match <protos::Text as datomic::Datomic>::incorporate_from(
-                            *body,
-                        ) {
-                            Ok(value) => Ok(Self::Name(value)),
-                            Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                        }
-                    }
-                    "Duplicate" => {
-                        match <protos::Text as datomic::Datomic>::incorporate_from(
-                            *body,
-                        ) {
-                            Ok(value) => Ok(Self::Duplicate(value)),
-                            Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                        }
-                    }
-                    "Undeclared" => {
-                        match <protos::Text as datomic::Datomic>::incorporate_from(
-                            *body,
-                        ) {
-                            Ok(value) => Ok(Self::Undeclared(value)),
-                            Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                        }
-                    }
-                    "Cycle" => {
-                        match <protos::Text as datomic::Datomic>::incorporate_from(
-                            *body,
-                        ) {
-                            Ok(value) => Ok(Self::Cycle(value)),
-                            Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                        }
-                    }
-                    "Role" => {
-                        match <protos::Text as datomic::Datomic>::incorporate_from(
-                            *body,
-                        ) {
-                            Ok(value) => Ok(Self::Role(value)),
-                            Err(fault) => Err(datomic::Prepending::prepend(fault, 0)),
-                        }
-                    }
-                    _ => {
-                        Err(
-                            datomic::Fault::Corporate(
-                                vec![],
-                                datomic::Problem::UnknownVariant(head),
-                            ),
-                        )
-                    }
-                }
+            "Arity" => {
+                let mut p = datom_codec::Headed::positions(v, 2)?;
+                let p0: protos::Integer = datom_codec::Positional::position(&mut p)?;
+                let p1: protos::Integer = datom_codec::Positional::position(&mut p)?;
+                Ok(Self::Arity(p0, p1))
             }
-            other => {
+            "Expected" => Ok(Self::Expected(datom_codec::Carrying::body(v)?)),
+            "Separator" => Ok(Self::Separator(datom_codec::Carrying::body(v)?)),
+            "Name" => Ok(Self::Name(datom_codec::Carrying::body(v)?)),
+            "Duplicate" => Ok(Self::Duplicate(datom_codec::Carrying::body(v)?)),
+            "Undeclared" => Ok(Self::Undeclared(datom_codec::Carrying::body(v)?)),
+            "Cycle" => Ok(Self::Cycle(datom_codec::Carrying::body(v)?)),
+            "Yield" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Yield)
+            }
+            "Empty" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Empty)
+            }
+            "Depth" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Depth)
+            }
+            "Role" => Ok(Self::Role(datom_codec::Carrying::body(v)?)),
+            _ => {
                 Err(
-                    datomic::Fault::Corporate(
-                        vec![],
-                        datomic::Problem::Shape(datomic::Expected::Variant, other),
+                    datom_codec::Sited::refuse(
+                        site,
+                        datom_codec::Problem::UnknownVariant(v.name.to_owned()),
                     ),
                 )
             }
         }
     }
-}
-impl protos::Incorporable<Problem> for datomic::Datom {
-    type Fault = datomic::Fault;
-    fn incorporate(self) -> Result<Problem, datomic::Fault> {
-        <Problem as datomic::Datomic>::incorporate_from(self)
+    fn conceive(&self) -> datom_codec::Datom {
+        match self {
+            Self::Root => datom_codec::Datom::Word("Root".to_owned()),
+            Self::Arity(p0, p1) => {
+                datom_codec::Datom::Variant(
+                    "Arity".to_owned(),
+                    Box::new(
+                        datom_codec::Datom::Struct(
+                            vec![
+                                datom_codec::Datomic::conceive(p0),
+                                datom_codec::Datomic::conceive(p1)
+                            ],
+                        ),
+                    ),
+                )
+            }
+            Self::Expected(p0) => {
+                datom_codec::Datom::Variant(
+                    "Expected".to_owned(),
+                    Box::new(datom_codec::Datomic::conceive(p0)),
+                )
+            }
+            Self::Separator(p0) => {
+                datom_codec::Datom::Variant(
+                    "Separator".to_owned(),
+                    Box::new(datom_codec::Datomic::conceive(p0)),
+                )
+            }
+            Self::Name(p0) => {
+                datom_codec::Datom::Variant(
+                    "Name".to_owned(),
+                    Box::new(datom_codec::Datomic::conceive(p0)),
+                )
+            }
+            Self::Duplicate(p0) => {
+                datom_codec::Datom::Variant(
+                    "Duplicate".to_owned(),
+                    Box::new(datom_codec::Datomic::conceive(p0)),
+                )
+            }
+            Self::Undeclared(p0) => {
+                datom_codec::Datom::Variant(
+                    "Undeclared".to_owned(),
+                    Box::new(datom_codec::Datomic::conceive(p0)),
+                )
+            }
+            Self::Cycle(p0) => {
+                datom_codec::Datom::Variant(
+                    "Cycle".to_owned(),
+                    Box::new(datom_codec::Datomic::conceive(p0)),
+                )
+            }
+            Self::Yield => datom_codec::Datom::Word("Yield".to_owned()),
+            Self::Empty => datom_codec::Datom::Word("Empty".to_owned()),
+            Self::Depth => datom_codec::Datom::Word("Depth".to_owned()),
+            Self::Role(p0) => {
+                datom_codec::Datom::Variant(
+                    "Role".to_owned(),
+                    Box::new(datom_codec::Datomic::conceive(p0)),
+                )
+            }
+        }
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -360,68 +188,82 @@ pub enum Form {
     Constant,
     Association,
 }
-impl protos::Conceivable<datomic::Datom> for Form {
-    type Fault = std::convert::Infallible;
-    fn conceive(&self) -> Result<datomic::Datom, std::convert::Infallible> {
-        Ok(
-            match self {
-                Self::File => datomic::Datom::Bare("File".to_owned()),
-                Self::Section => datomic::Datom::Bare("Section".to_owned()),
-                Self::Import => datomic::Datom::Bare("Import".to_owned()),
-                Self::Name => datomic::Datom::Bare("Name".to_owned()),
-                Self::Declaration => datomic::Datom::Bare("Declaration".to_owned()),
-                Self::Variant => datomic::Datom::Bare("Variant".to_owned()),
-                Self::Reference => datomic::Datom::Bare("Reference".to_owned()),
-                Self::Constraint => datomic::Datom::Bare("Constraint".to_owned()),
-                Self::Kind => datomic::Datom::Bare("Kind".to_owned()),
-                Self::Capability => datomic::Datom::Bare("Capability".to_owned()),
-                Self::Constant => datomic::Datom::Bare("Constant".to_owned()),
-                Self::Association => datomic::Datom::Bare("Association".to_owned()),
-            },
-        )
-    }
-}
-impl datomic::Datomic for Form {
-    fn incorporate_from(datom: datomic::Datom) -> Result<Self, datomic::Fault> {
-        match datom {
-            datomic::Datom::Bare(symbol) => {
-                match symbol.as_str() {
-                    "File" => Ok(Self::File),
-                    "Section" => Ok(Self::Section),
-                    "Import" => Ok(Self::Import),
-                    "Name" => Ok(Self::Name),
-                    "Declaration" => Ok(Self::Declaration),
-                    "Variant" => Ok(Self::Variant),
-                    "Reference" => Ok(Self::Reference),
-                    "Constraint" => Ok(Self::Constraint),
-                    "Kind" => Ok(Self::Kind),
-                    "Capability" => Ok(Self::Capability),
-                    "Constant" => Ok(Self::Constant),
-                    "Association" => Ok(Self::Association),
-                    _ => {
-                        Err(
-                            datomic::Fault::Corporate(
-                                vec![],
-                                datomic::Problem::UnknownVariant(symbol),
-                            ),
-                        )
-                    }
-                }
+impl datom_codec::Datomic for Form {
+    fn incorporate(site: datom_codec::Site<'_>) -> Result<Self, datom_codec::Fault> {
+        let v = datom_codec::Sited::variant(site)?;
+        match v.name {
+            "File" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::File)
             }
-            other => {
+            "Section" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Section)
+            }
+            "Import" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Import)
+            }
+            "Name" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Name)
+            }
+            "Declaration" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Declaration)
+            }
+            "Variant" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Variant)
+            }
+            "Reference" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Reference)
+            }
+            "Constraint" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Constraint)
+            }
+            "Kind" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Kind)
+            }
+            "Capability" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Capability)
+            }
+            "Constant" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Constant)
+            }
+            "Association" => {
+                datom_codec::Headed::nothing(v)?;
+                Ok(Self::Association)
+            }
+            _ => {
                 Err(
-                    datomic::Fault::Corporate(
-                        vec![],
-                        datomic::Problem::Shape(datomic::Expected::Variant, other),
+                    datom_codec::Sited::refuse(
+                        site,
+                        datom_codec::Problem::UnknownVariant(v.name.to_owned()),
                     ),
                 )
             }
         }
     }
-}
-impl protos::Incorporable<Form> for datomic::Datom {
-    type Fault = datomic::Fault;
-    fn incorporate(self) -> Result<Form, datomic::Fault> {
-        <Form as datomic::Datomic>::incorporate_from(self)
+    fn conceive(&self) -> datom_codec::Datom {
+        match self {
+            Self::File => datom_codec::Datom::Word("File".to_owned()),
+            Self::Section => datom_codec::Datom::Word("Section".to_owned()),
+            Self::Import => datom_codec::Datom::Word("Import".to_owned()),
+            Self::Name => datom_codec::Datom::Word("Name".to_owned()),
+            Self::Declaration => datom_codec::Datom::Word("Declaration".to_owned()),
+            Self::Variant => datom_codec::Datom::Word("Variant".to_owned()),
+            Self::Reference => datom_codec::Datom::Word("Reference".to_owned()),
+            Self::Constraint => datom_codec::Datom::Word("Constraint".to_owned()),
+            Self::Kind => datom_codec::Datom::Word("Kind".to_owned()),
+            Self::Capability => datom_codec::Datom::Word("Capability".to_owned()),
+            Self::Constant => datom_codec::Datom::Word("Constant".to_owned()),
+            Self::Association => datom_codec::Datom::Word("Association".to_owned()),
+        }
     }
 }
