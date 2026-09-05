@@ -15,7 +15,7 @@
         "type": "github"
       }
     },
-    "datomic-map": {
+    "datomic": {
       "inputs": {
         "flake-utils": [
           "flake-utils"
@@ -28,17 +28,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1788570325,
-        "narHash": "sha256-K3hkG7hLZsoWvxzX04mBOW6tGuyBfT/D91H3pU+i4XQ=",
+        "lastModified": 1788599677,
+        "narHash": "sha256-RUAVhtMreFvVRXjVXIyfVuIRZkzY5wURnCzhjvoVV+U=",
         "owner": "LiGoldragon",
         "repo": "datomic",
-        "rev": "cf59b01bbbc8ebc784bcde4806654c64916136c7",
+        "rev": "bad18213302c86416b2950ce0259d11d9f3ff4ec",
         "type": "github"
       },
       "original": {
         "owner": "LiGoldragon",
         "repo": "datomic",
-        "rev": "cf59b01bbbc8ebc784bcde4806654c64916136c7",
+        "rev": "bad18213302c86416b2950ce0259d11d9f3ff4ec",
         "type": "github"
       }
     },
@@ -116,7 +116,7 @@
         "type": "github"
       }
     },
-    "protos-map": {
+    "protos": {
       "inputs": {
         "flake-utils": [
           "flake-utils"
@@ -129,26 +129,26 @@
         ]
       },
       "locked": {
-        "lastModified": 1788570300,
-        "narHash": "sha256-Ts5exl/Me4HbnqNcgyeqFrc6hG6d/6A1HHNAa5TicYU=",
+        "lastModified": 1788599662,
+        "narHash": "sha256-NvakNv97ABSG2VdQ+xY92D64IwNw9HkEoKbpH3marwA=",
         "owner": "LiGoldragon",
         "repo": "protos",
-        "rev": "2cb88849f3b160333f2757fd7c776e68c279fe51",
+        "rev": "bf808deee5ee6c1b756ad33111ba05fdd7f725aa",
         "type": "github"
       },
       "original": {
         "owner": "LiGoldragon",
         "repo": "protos",
-        "rev": "2cb88849f3b160333f2757fd7c776e68c279fe51",
+        "rev": "bf808deee5ee6c1b756ad33111ba05fdd7f725aa",
         "type": "github"
       }
     },
     "root": {
       "inputs": {
-        "datomic-map": "datomic-map",
+        "datomic": "datomic",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
-        "protos-map": "protos-map",
+        "protos": "protos",
         "rust-build": "rust-build"
       }
     },
