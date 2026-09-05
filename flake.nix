@@ -54,7 +54,7 @@
         checks = {
           build = craneLib.cargoBuild (common // { inherit cargoArtifacts; });
           test = craneLib.cargoTest (common // { inherit cargoArtifacts; });
-          fmt = craneLib.cargoFmt { inherit src; };
+          fmt = craneLib.cargoFmt common;
           clippy = craneLib.cargoClippy (common // {
             inherit cargoArtifacts;
             cargoClippyExtraArgs = "--all-targets -- -D warnings";
@@ -69,9 +69,18 @@
               "${protos}/protos.ethos" "${protos}/protos-kinds.ethos"
               "${datom-codec}/datom-codec.ethos" "${datom-codec}/datom-codec-kinds.ethos"
             ];
-          } (builtins.readFile ./checks/dependency-ethos.sh);
-          no-free-functions = pkgs.runCommand "ethos-zero-no-free-functions" { inherit src; } (builtins.readFile ./checks/no-free-functions.sh);
-          no-inherent-methods = pkgs.runCommand "ethos-zero-no-inherent-methods" { inherit src; } (builtins.readFile ./checks/no-inherent-methods.sh);
+          } ''
+            ${resourcePolicy}
+            ${builtins.readFile ./checks/dependency-ethos.sh}
+          '';
+          no-free-functions = pkgs.runCommand "ethos-zero-no-free-functions" { inherit src; } ''
+            ${resourcePolicy}
+            ${builtins.readFile ./checks/no-free-functions.sh}
+          '';
+          no-inherent-methods = pkgs.runCommand "ethos-zero-no-inherent-methods" { inherit src; } ''
+            ${resourcePolicy}
+            ${builtins.readFile ./checks/no-inherent-methods.sh}
+          '';
         };
         devShells.default = pkgs.mkShell {
           name = "ethos-zero";

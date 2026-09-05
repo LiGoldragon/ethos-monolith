@@ -119,7 +119,7 @@ fn a_faulty_file_replies_the_situated_fault() {
     assert!(!success);
     assert!(output.contains(&source), "{output}");
     assert!(
-        output.contains("Conceptual.{ [ 0 0 1 0 0 1 ] Undeclared.Bogus }"),
+        output.contains("Conceptual.{ [ 0 1 1 0 1 1 ] Undeclared.Bogus }"),
         "{output}"
     );
 }

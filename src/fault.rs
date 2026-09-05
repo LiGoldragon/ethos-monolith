@@ -2,23 +2,29 @@
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fault {
     Structural(protos::Fault),
-    Conceptual(Vec<protos::Integer>, Problem),
+    Conceptual(std::vec::Vec<protos::Integer>, Problem),
 }
 impl datom_codec::Datomic for Fault {
-    fn incorporate(site: datom_codec::Site<'_>) -> Result<Self, datom_codec::Fault> {
+    fn incorporate(
+        site: datom_codec::Site<'_>,
+    ) -> std::result::Result<Self, datom_codec::Fault> {
         let v = datom_codec::Sited::variant(site)?;
         match v.name {
-            "Structural" => Ok(Self::Structural(datom_codec::Carrying::body(v)?)),
+            "Structural" => {
+                std::result::Result::Ok(
+                    Self::Structural(datom_codec::Carrying::body(v)?),
+                )
+            }
             "Conceptual" => {
                 let mut p = datom_codec::Headed::positions(v, 2)?;
-                let p0: Vec<protos::Integer> = datom_codec::Positional::position(
+                let p0: std::vec::Vec<protos::Integer> = datom_codec::Positional::position(
                     &mut p,
                 )?;
                 let p1: Problem = datom_codec::Positional::position(&mut p)?;
-                Ok(Self::Conceptual(p0, p1))
+                std::result::Result::Ok(Self::Conceptual(p0, p1))
             }
             _ => {
-                Err(
+                std::result::Result::Err(
                     datom_codec::Headed::reject(
                         &v,
                         datom_codec::Problem::UnknownVariant(
@@ -32,8 +38,10 @@ impl datom_codec::Datomic for Fault {
 }
 impl protos::Conceivable<datom_codec::Datom> for Fault {
     type Fault = std::convert::Infallible;
-    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
-        Ok(
+    fn conceive(
+        &self,
+    ) -> std::result::Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        std::result::Result::Ok(
             protos::Situated(
                 protos::Situation {
                     extent: protos::Extent(0, 0),
@@ -44,7 +52,7 @@ impl protos::Conceivable<datom_codec::Datom> for Fault {
                         datom_codec::Datom::Variant(
                             protos::Symbol::try_from("Structural")
                                 .expect("static variant"),
-                            Box::new(
+                            std::boxed::Box::new(
                                 protos::Conceivable::conceive(p0)
                                     .expect("infallible datom ascent")
                                     .1,
@@ -55,7 +63,7 @@ impl protos::Conceivable<datom_codec::Datom> for Fault {
                         datom_codec::Datom::Variant(
                             protos::Symbol::try_from("Conceptual")
                                 .expect("static variant"),
-                            Box::new(
+                            std::boxed::Box::new(
                                 datom_codec::Datom::Struct(
                                     vec![
                                         protos::Conceivable::conceive(p0)
@@ -88,40 +96,58 @@ pub enum Problem {
     Role(protos::Text),
 }
 impl datom_codec::Datomic for Problem {
-    fn incorporate(site: datom_codec::Site<'_>) -> Result<Self, datom_codec::Fault> {
+    fn incorporate(
+        site: datom_codec::Site<'_>,
+    ) -> std::result::Result<Self, datom_codec::Fault> {
         let v = datom_codec::Sited::variant(site)?;
         match v.name {
             "Root" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Root)
+                std::result::Result::Ok(Self::Root)
             }
             "Arity" => {
                 let mut p = datom_codec::Headed::positions(v, 2)?;
                 let p0: protos::Integer = datom_codec::Positional::position(&mut p)?;
                 let p1: protos::Integer = datom_codec::Positional::position(&mut p)?;
-                Ok(Self::Arity(p0, p1))
+                std::result::Result::Ok(Self::Arity(p0, p1))
             }
-            "Expected" => Ok(Self::Expected(datom_codec::Carrying::body(v)?)),
-            "Separator" => Ok(Self::Separator(datom_codec::Carrying::body(v)?)),
-            "Name" => Ok(Self::Name(datom_codec::Carrying::body(v)?)),
-            "Duplicate" => Ok(Self::Duplicate(datom_codec::Carrying::body(v)?)),
-            "Undeclared" => Ok(Self::Undeclared(datom_codec::Carrying::body(v)?)),
-            "Cycle" => Ok(Self::Cycle(datom_codec::Carrying::body(v)?)),
+            "Expected" => {
+                std::result::Result::Ok(Self::Expected(datom_codec::Carrying::body(v)?))
+            }
+            "Separator" => {
+                std::result::Result::Ok(Self::Separator(datom_codec::Carrying::body(v)?))
+            }
+            "Name" => {
+                std::result::Result::Ok(Self::Name(datom_codec::Carrying::body(v)?))
+            }
+            "Duplicate" => {
+                std::result::Result::Ok(Self::Duplicate(datom_codec::Carrying::body(v)?))
+            }
+            "Undeclared" => {
+                std::result::Result::Ok(
+                    Self::Undeclared(datom_codec::Carrying::body(v)?),
+                )
+            }
+            "Cycle" => {
+                std::result::Result::Ok(Self::Cycle(datom_codec::Carrying::body(v)?))
+            }
             "Yield" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Yield)
+                std::result::Result::Ok(Self::Yield)
             }
             "Empty" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Empty)
+                std::result::Result::Ok(Self::Empty)
             }
             "Depth" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Depth)
+                std::result::Result::Ok(Self::Depth)
             }
-            "Role" => Ok(Self::Role(datom_codec::Carrying::body(v)?)),
+            "Role" => {
+                std::result::Result::Ok(Self::Role(datom_codec::Carrying::body(v)?))
+            }
             _ => {
-                Err(
+                std::result::Result::Err(
                     datom_codec::Headed::reject(
                         &v,
                         datom_codec::Problem::UnknownVariant(
@@ -135,8 +161,10 @@ impl datom_codec::Datomic for Problem {
 }
 impl protos::Conceivable<datom_codec::Datom> for Problem {
     type Fault = std::convert::Infallible;
-    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
-        Ok(
+    fn conceive(
+        &self,
+    ) -> std::result::Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        std::result::Result::Ok(
             protos::Situated(
                 protos::Situation {
                     extent: protos::Extent(0, 0),
@@ -154,7 +182,7 @@ impl protos::Conceivable<datom_codec::Datom> for Problem {
                     Self::Arity(p0, p1) => {
                         datom_codec::Datom::Variant(
                             protos::Symbol::try_from("Arity").expect("static variant"),
-                            Box::new(
+                            std::boxed::Box::new(
                                 datom_codec::Datom::Struct(
                                     vec![
                                         protos::Conceivable::conceive(p0)
@@ -170,7 +198,7 @@ impl protos::Conceivable<datom_codec::Datom> for Problem {
                         datom_codec::Datom::Variant(
                             protos::Symbol::try_from("Expected")
                                 .expect("static variant"),
-                            Box::new(
+                            std::boxed::Box::new(
                                 protos::Conceivable::conceive(p0)
                                     .expect("infallible datom ascent")
                                     .1,
@@ -181,7 +209,7 @@ impl protos::Conceivable<datom_codec::Datom> for Problem {
                         datom_codec::Datom::Variant(
                             protos::Symbol::try_from("Separator")
                                 .expect("static variant"),
-                            Box::new(
+                            std::boxed::Box::new(
                                 protos::Conceivable::conceive(p0)
                                     .expect("infallible datom ascent")
                                     .1,
@@ -191,7 +219,7 @@ impl protos::Conceivable<datom_codec::Datom> for Problem {
                     Self::Name(p0) => {
                         datom_codec::Datom::Variant(
                             protos::Symbol::try_from("Name").expect("static variant"),
-                            Box::new(
+                            std::boxed::Box::new(
                                 protos::Conceivable::conceive(p0)
                                     .expect("infallible datom ascent")
                                     .1,
@@ -202,7 +230,7 @@ impl protos::Conceivable<datom_codec::Datom> for Problem {
                         datom_codec::Datom::Variant(
                             protos::Symbol::try_from("Duplicate")
                                 .expect("static variant"),
-                            Box::new(
+                            std::boxed::Box::new(
                                 protos::Conceivable::conceive(p0)
                                     .expect("infallible datom ascent")
                                     .1,
@@ -213,7 +241,7 @@ impl protos::Conceivable<datom_codec::Datom> for Problem {
                         datom_codec::Datom::Variant(
                             protos::Symbol::try_from("Undeclared")
                                 .expect("static variant"),
-                            Box::new(
+                            std::boxed::Box::new(
                                 protos::Conceivable::conceive(p0)
                                     .expect("infallible datom ascent")
                                     .1,
@@ -223,7 +251,7 @@ impl protos::Conceivable<datom_codec::Datom> for Problem {
                     Self::Cycle(p0) => {
                         datom_codec::Datom::Variant(
                             protos::Symbol::try_from("Cycle").expect("static variant"),
-                            Box::new(
+                            std::boxed::Box::new(
                                 protos::Conceivable::conceive(p0)
                                     .expect("infallible datom ascent")
                                     .1,
@@ -257,7 +285,7 @@ impl protos::Conceivable<datom_codec::Datom> for Problem {
                     Self::Role(p0) => {
                         datom_codec::Datom::Variant(
                             protos::Symbol::try_from("Role").expect("static variant"),
-                            Box::new(
+                            std::boxed::Box::new(
                                 protos::Conceivable::conceive(p0)
                                     .expect("infallible datom ascent")
                                     .1,
@@ -285,59 +313,61 @@ pub enum Form {
     Association,
 }
 impl datom_codec::Datomic for Form {
-    fn incorporate(site: datom_codec::Site<'_>) -> Result<Self, datom_codec::Fault> {
+    fn incorporate(
+        site: datom_codec::Site<'_>,
+    ) -> std::result::Result<Self, datom_codec::Fault> {
         let v = datom_codec::Sited::variant(site)?;
         match v.name {
             "File" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::File)
+                std::result::Result::Ok(Self::File)
             }
             "Section" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Section)
+                std::result::Result::Ok(Self::Section)
             }
             "Import" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Import)
+                std::result::Result::Ok(Self::Import)
             }
             "Name" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Name)
+                std::result::Result::Ok(Self::Name)
             }
             "Declaration" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Declaration)
+                std::result::Result::Ok(Self::Declaration)
             }
             "Variant" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Variant)
+                std::result::Result::Ok(Self::Variant)
             }
             "Reference" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Reference)
+                std::result::Result::Ok(Self::Reference)
             }
             "Constraint" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Constraint)
+                std::result::Result::Ok(Self::Constraint)
             }
             "Kind" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Kind)
+                std::result::Result::Ok(Self::Kind)
             }
             "Capability" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Capability)
+                std::result::Result::Ok(Self::Capability)
             }
             "Constant" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Constant)
+                std::result::Result::Ok(Self::Constant)
             }
             "Association" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Association)
+                std::result::Result::Ok(Self::Association)
             }
             _ => {
-                Err(
+                std::result::Result::Err(
                     datom_codec::Headed::reject(
                         &v,
                         datom_codec::Problem::UnknownVariant(
@@ -351,8 +381,10 @@ impl datom_codec::Datomic for Form {
 }
 impl protos::Conceivable<datom_codec::Datom> for Form {
     type Fault = std::convert::Infallible;
-    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
-        Ok(
+    fn conceive(
+        &self,
+    ) -> std::result::Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        std::result::Result::Ok(
             protos::Situated(
                 protos::Situation {
                     extent: protos::Extent(0, 0),

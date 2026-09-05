@@ -19,8 +19,9 @@
 //! fault.
 //!
 //! Every fault the reader raises is a [`Fault`] carrying the path of
-//! the structure at fault, in the path convention of datom-codec: a
-//! headed structure's body is child 0, an enclosure's children are
+//! the structure at fault, in Protos's path convention: a headed structure's
+//! head is child 0 and its body is child 1; a qualified head's arguments are
+//! children of that head; an enclosure's children are
 //! numbered from 0, and each container prepends its child's index on
 //! the way up (`protos::Pathed::within`).
 //!
@@ -33,9 +34,7 @@
 // std forces, and no free function, is the crate's own rule.
 #![allow(clippy::manual_find, clippy::manual_map)]
 
-use std::convert::Infallible;
-
-use protos::{Delineation, Extent, Integer, Pathed};
+use protos::{Extent, Integer, Pathed};
 
 // ---------------------------------------------------------------------------
 // The faults: declared in fault.ethos, generated into fault.rs
@@ -339,6 +338,11 @@ pub enum Resolution {
     Kind(Name),
     /// The parameter bounded by the enclosing identity's constraint at this index.
     Parameter(Integer),
+    /// More than one enclosing parameter has this name among its bounds.
+    ///
+    /// A body reference cannot say which parameter it means, even when the
+    /// constraints differ as whole groups.
+    Ambiguous(Name),
     /// An associated type of the enclosing kind, written `Self::Name`.
     Associated(Name),
     /// A name nothing declares.
@@ -536,19 +540,6 @@ impl Identifiable for Intrinsic {
             }
         }
         None
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Ascent: File -> Delineation -> Text, cannot fault
-// ---------------------------------------------------------------------------
-
-impl protos::Protosizable for File {
-    type Fault = Infallible;
-
-    fn protosize(&self) -> Result<Delineation, Infallible> {
-        let text = protos::Textualizable::textualize(self);
-        Ok(<str as protos::Protosizable>::protosize(&text).expect("canonical text delineates"))
     }
 }
 

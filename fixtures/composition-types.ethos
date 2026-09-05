@@ -1,0 +1,4 @@
+Types
+[]
+[ Result.{ Text } Box.{ Text } Tree.{ Option<Self> } Nested.[ Choice.[ Item.{ Result Box } ] ] ]
+[]

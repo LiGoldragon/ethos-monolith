@@ -49,7 +49,7 @@ fn every_fixture_module_is_fresh() {
         }
     }
     fixtures.sort();
-    assert_eq!(fixtures.len(), 10);
+    assert_eq!(fixtures.len(), 11);
     for stem in fixtures {
         format!("fixtures/{stem}.ethos").fresh(&format!("tests/generated/{stem}.rs"));
     }

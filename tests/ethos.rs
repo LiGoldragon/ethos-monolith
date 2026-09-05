@@ -109,10 +109,60 @@ fn faults_are_situated_in_the_source_text() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0, 0, 1],
+            vec![0, 1, 1, 0, 1, 1],
             Problem::Undeclared(protos::Text::try_from("Bogus").unwrap())
         )
     );
+}
+
+#[test]
+fn qualified_arguments_fault_at_the_bad_argument() {
+    for source in [
+        "Types\n[]\n[ A.{ Vector<Bogus> } ]\n[]",
+        "Kinds\n[]\n[ K<Bogus>.[ read.[ Text ] ] ]",
+        "Kinds\n[]\n[ K<Sized Bogus>.[ read.[ Text ] ] ]",
+        "Kinds\n[]\n[ K.{ [] [ Item<Bogus> ] [] [] } ]",
+    ] {
+        let Situated(Situation { extent, .. }, fault) = source.fault();
+        assert!(
+            matches!(fault, Fault::Conceptual(_, Problem::Undeclared(name)) if name == protos::Text::try_from("Bogus").unwrap())
+        );
+        assert_eq!(&source[extent.0 as usize..extent.1 as usize], "Bogus");
+    }
+}
+
+#[test]
+fn ambiguous_parameters_and_superkind_cycles_are_refused() {
+    let fault = "Types\n[]\n[ Pair<Sized Sized>.{ Sized Sized } ]\n[]".fault();
+    assert!(matches!(
+        fault.1,
+        Fault::Conceptual(_, Problem::Duplicate(ref name)) if name == &protos::Text::try_from("Sized").unwrap()
+    ));
+
+    let fault = "Types\n[ std:marker:Send ]\n[ Pair<[Sized Send] Sized>.{ Sized } ]\n[]".fault();
+    assert!(matches!(
+        fault.1,
+        Fault::Conceptual(_, Problem::Duplicate(ref name)) if name == &protos::Text::try_from("Sized").unwrap()
+    ));
+
+    // Overlap itself remains expressible; only a body reference that cannot
+    // identify one parameter is refused.
+    assert!(matches!(
+        "Types\n[ std:marker:Send ]\n[ Pair<[Sized Send] Sized>.{ Text } ]\n[]".file(),
+        File::Types(_)
+    ));
+
+    let fault = "Kinds\n[]\n[ A.{ [ B ] [] [] [] } B.{ [ A ] [] [] [] } ]".fault();
+    assert!(matches!(
+        fault.1,
+        Fault::Conceptual(_, Problem::Cycle(ref name)) if name == &protos::Text::try_from("A").unwrap()
+    ));
+
+    let fault = "Types\n[]\n[ A<Sized>.B<Sized> B<Sized>.A<Sized> ]\n[]".fault();
+    assert!(matches!(
+        fault.1,
+        Fault::Conceptual(_, Problem::Cycle(ref name)) if name == &protos::Text::try_from("A").unwrap()
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +303,9 @@ fn inline_qualification_reads_as_a_sourced_reference() {
 fn generates_the_vision_types() {
     let rust = "Types\n[]\n[ Record.{ Text Integer } Report.{ Text Vector<Integer> } SinkError.[ Closed Full ] LockId.Integer ]\n[]".rust();
     assert!(rust.contains("pub struct Record(pub protos::Text, pub protos::Integer);"));
-    assert!(rust.contains("pub struct Report(pub protos::Text, pub Vec<protos::Integer>);"));
+    assert!(
+        rust.contains("pub struct Report(pub protos::Text, pub std::vec::Vec<protos::Integer>);")
+    );
     assert!(rust.contains("pub enum SinkError {\n    Closed,\n    Full,\n}"));
     assert!(rust.contains("pub type LockId = protos::Integer;"));
     assert!(!rust.contains("use "));
@@ -264,9 +316,9 @@ fn generates_the_vision_kinds() {
     let rust = "Kinds\n[ super:SinkError ]\n[ Summarizable.[ summarize.[ Text ] ] Fillable.[ push!{ [ Text ] [ Result<Integer SinkError> ] } drain![ Vector<Text> ] create:[ Self ] ] ]".rust();
     assert!(rust.contains("pub trait Summarizable {\n    fn summarize(&self) -> protos::Text;\n}"));
     assert!(rust.contains(
-        "fn push(&mut self, input: protos::Text) -> Result<protos::Integer, super::SinkError>;"
+        "fn push(\n        &mut self,\n        input: protos::Text,\n    ) -> std::result::Result<protos::Integer, super::SinkError>;"
     ));
-    assert!(rust.contains("fn drain(&mut self) -> Vec<protos::Text>;"));
+    assert!(rust.contains("fn drain(&mut self) -> std::vec::Vec<protos::Text>;"));
     assert!(rust.contains("fn create() -> Self;"));
 }
 
@@ -276,7 +328,7 @@ fn generates_the_streamable_kind_with_self_qualified_associated_types() {
     assert!(rust.contains("pub trait Streamable: super::Fillable {"));
     assert!(rust.contains("type Item: super::Serializable;"));
     assert!(rust.contains("const CAPACITY: protos::Integer;"));
-    assert!(rust.contains("fn next(&mut self) -> Option<Self::Item>;"));
+    assert!(rust.contains("fn next(&mut self) -> std::option::Option<Self::Item>;"));
 }
 
 #[test]
@@ -310,17 +362,23 @@ fn generates_the_vision_request_enum() {
 #[test]
 fn generates_tuple_variants_and_boxes_only_where_rust_needs_it() {
     let rust = "Types\n[]\n[ Tree.[ Leaf.Integer Node.{ Tree Tree } Many.Vector<Tree> Maybe.Option<Tree> ] Chain.{ Text Option<Chain> } ]\n[]".rust();
-    assert!(rust.contains("Node(Box<Tree>, Box<Tree>)"));
-    assert!(rust.contains("Many(Vec<Tree>)"));
-    assert!(rust.contains("Maybe(Box<Option<Tree>>)"));
-    assert!(rust.contains("pub struct Chain(pub protos::Text, pub Box<Option<Chain>>);"));
+    assert!(rust.contains("Node(std::boxed::Box<Tree>, std::boxed::Box<Tree>)"));
+    assert!(rust.contains("Many(std::vec::Vec<Tree>)"));
+    assert!(rust.contains("Maybe(std::boxed::Box<std::option::Option<Tree>>)"));
+    assert!(rust.contains(
+        "pub struct Chain(pub protos::Text, pub std::boxed::Box<std::option::Option<Chain>>);"
+    ));
     assert!(!rust.contains("TreeNode"));
 }
 
 #[test]
 fn generates_a_constrained_type_with_its_parameter() {
     let rust = "Types\n[]\n[ Placed<Sized>.{ Option<Integer> Sized } ]\n[]".rust();
-    assert!(rust.contains("pub struct Placed<A: Sized>(pub Option<protos::Integer>, pub A);"));
+    assert!(
+        rust.contains(
+            "pub struct Placed<A: Sized>(pub std::option::Option<protos::Integer>, pub A);"
+        )
+    );
     assert!(
         rust.contains("impl<A: Sized + datom_codec::Datomic> datom_codec::Datomic for Placed<A> {")
     );
@@ -345,7 +403,7 @@ fn generates_the_position_index_into_every_fault_path() {
 #[test]
 fn generates_a_constant_of_a_container_type() {
     let rust = "Kinds\n[]\n[ Naming.{ [] [] [ NAMES.Vector<Text> ] [ name.[ Text ] ] } ]".rust();
-    assert!(rust.contains("const NAMES: Vec<protos::Text>;"));
+    assert!(rust.contains("const NAMES: std::vec::Vec<protos::Text>;"));
 }
 
 // ---------------------------------------------------------------------------
@@ -382,7 +440,7 @@ fn rejects_an_undeclared_name_in_a_type_position() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0, 0, 1],
+            vec![0, 1, 1, 0, 1, 1],
             Problem::Undeclared(protos::Text::try_from("Bogus").unwrap())
         )
     );
@@ -394,7 +452,7 @@ fn rejects_an_undeclared_superkind_and_bound_and_constraint() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0, 0, 0, 0],
+            vec![0, 1, 1, 0, 1, 0, 0],
             Problem::Undeclared(protos::Text::try_from("Fillable").unwrap())
         )
     );
@@ -403,7 +461,7 @@ fn rejects_an_undeclared_superkind_and_bound_and_constraint() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0, 0, 1, 0, 0],
+            vec![0, 1, 1, 0, 1, 1, 0, 0],
             Problem::Undeclared(protos::Text::try_from("Serializable").unwrap())
         )
     );
@@ -411,7 +469,7 @@ fn rejects_an_undeclared_superkind_and_bound_and_constraint() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0, 0],
+            vec![0, 1, 1, 0, 0, 0],
             Problem::Undeclared(protos::Text::try_from("Clonable").unwrap())
         )
     );
@@ -423,7 +481,7 @@ fn rejects_an_association_to_an_undeclared_kind_or_type() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 2, 0, 0, 0],
+            vec![0, 1, 2, 0, 1, 0, 0],
             Problem::Undeclared(protos::Text::try_from("Summarizable").unwrap())
         )
     );
@@ -431,7 +489,7 @@ fn rejects_an_association_to_an_undeclared_kind_or_type() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 2, 0],
+            vec![0, 1, 2, 0],
             Problem::Undeclared(protos::Text::try_from("Sink").unwrap())
         )
     );
@@ -444,7 +502,7 @@ fn rejects_a_type_where_a_kind_is_asked_and_the_reverse() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 2, 0, 0],
+            vec![0, 1, 2, 0, 0, 0],
             Problem::Role(protos::Text::try_from("Sink").unwrap())
         )
     );
@@ -452,7 +510,7 @@ fn rejects_a_type_where_a_kind_is_asked_and_the_reverse() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0, 0, 0, 0, 0],
+            vec![0, 1, 1, 0, 1, 0, 1, 0],
             Problem::Role(protos::Text::try_from("Sized").unwrap())
         )
     );
@@ -464,7 +522,7 @@ fn rejects_a_duplicate_type_kind_variant_or_import() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 1],
+            vec![0, 1, 1, 1, 0],
             Problem::Duplicate(protos::Text::try_from("Record").unwrap())
         )
     );
@@ -472,7 +530,7 @@ fn rejects_a_duplicate_type_kind_variant_or_import() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 1],
+            vec![0, 1, 1, 1, 0],
             Problem::Duplicate(protos::Text::try_from("Own").unwrap())
         )
     );
@@ -480,7 +538,7 @@ fn rejects_a_duplicate_type_kind_variant_or_import() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0, 0, 2],
+            vec![0, 1, 1, 0, 1, 2],
             Problem::Duplicate(protos::Text::try_from("A").unwrap())
         )
     );
@@ -488,7 +546,7 @@ fn rejects_a_duplicate_type_kind_variant_or_import() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0],
+            vec![0, 1, 1, 0, 0],
             Problem::Duplicate(protos::Text::try_from("Text").unwrap())
         )
     );
@@ -496,7 +554,7 @@ fn rejects_a_duplicate_type_kind_variant_or_import() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 3, 0],
+            vec![0, 1, 3, 0, 0],
             Problem::Duplicate(protos::Text::try_from("Request").unwrap())
         )
     );
@@ -505,25 +563,25 @@ fn rejects_a_duplicate_type_kind_variant_or_import() {
 #[test]
 fn rejects_a_capability_without_a_yield() {
     let fault = "Kinds\n[]\n[ Own.[ run.[] ] ]".fault();
-    assert_eq!(fault.problem(), (vec![0, 0, 1, 0, 0, 0, 0], Problem::Yield));
+    assert_eq!(fault.problem(), (vec![0, 1, 1, 0, 1, 0, 1], Problem::Yield));
     let fault = "Kinds\n[]\n[ Own.[ run.{ [ Text ] [] } ] ]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 1, 0, 0, 0, 0, 1], Problem::Yield)
+        (vec![0, 1, 1, 0, 1, 0, 1, 1], Problem::Yield)
     );
     let fault = "Kinds\n[]\n[ Own.[ run.[ Text Text ] ] ]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 1, 0, 0, 0, 0], Problem::Arity(1, 2))
+        (vec![0, 1, 1, 0, 1, 0, 1], Problem::Arity(1, 2))
     );
 }
 
 #[test]
 fn rejects_a_signal_with_an_empty_requests_or_responses_section() {
     let fault = "Signal\n[]\n[]\n[ Done ]\n[]".fault();
-    assert_eq!(fault.problem(), (vec![0, 0, 1], Problem::Empty));
+    assert_eq!(fault.problem(), (vec![0, 1, 1], Problem::Empty));
     let fault = "Signal\n[]\n[ Go ]\n[]\n[]".fault();
-    assert_eq!(fault.problem(), (vec![0, 0, 2], Problem::Empty));
+    assert_eq!(fault.problem(), (vec![0, 1, 2], Problem::Empty));
 }
 
 #[test]
@@ -535,15 +593,15 @@ fn rejects_a_head_not_among_the_four() {
     let fault = "".fault();
     assert_eq!(fault.problem(), (vec![], Problem::Root));
     let fault = "Types.[ [] [] [] ]".fault();
-    assert_eq!(fault.problem(), (vec![0, 0], Problem::Expected(Form::File)));
+    assert_eq!(fault.problem(), (vec![0, 1], Problem::Expected(Form::File)));
 }
 
 #[test]
 fn rejects_a_wrong_section_count() {
     let fault = "Types\n[]\n[]".fault();
-    assert_eq!(fault.problem(), (vec![0, 0], Problem::Arity(3, 2)));
+    assert_eq!(fault.problem(), (vec![0, 1], Problem::Arity(3, 2)));
     let fault = "Kinds\n[]\n[]\n[]".fault();
-    assert_eq!(fault.problem(), (vec![0, 0], Problem::Arity(2, 3)));
+    assert_eq!(fault.problem(), (vec![0, 1], Problem::Arity(2, 3)));
 }
 
 #[test]
@@ -552,7 +610,7 @@ fn rejects_a_name_that_is_not_an_identifier_without_panicking() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0],
+            vec![0, 1, 1, 0, 0],
             Problem::Name(protos::Text::try_from("weird-name").unwrap())
         )
     );
@@ -560,7 +618,7 @@ fn rejects_a_name_that_is_not_an_identifier_without_panicking() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0, 0, 0],
+            vec![0, 1, 1, 0, 1, 0],
             Problem::Name(protos::Text::try_from("match").unwrap())
         )
     );
@@ -568,7 +626,7 @@ fn rejects_a_name_that_is_not_an_identifier_without_panicking() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 0, 0],
+            vec![0, 1, 0, 0],
             Problem::Name(protos::Text::try_from("1bad").unwrap())
         )
     );
@@ -580,7 +638,7 @@ fn rejects_a_kind_declared_with_the_wrong_separator() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0],
+            vec![0, 1, 1, 0],
             Problem::Separator(protos::Separator::Colon)
         )
     );
@@ -588,7 +646,7 @@ fn rejects_a_kind_declared_with_the_wrong_separator() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0],
+            vec![0, 1, 1, 0],
             Problem::Separator(protos::Separator::Exclamation)
         )
     );
@@ -599,13 +657,13 @@ fn rejects_a_bare_name_in_the_types_section_and_a_self_alias() {
     let fault = "Types\n[]\n[ Text Integer Bogus ]\n[]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 1, 0], Problem::Expected(Form::Declaration))
+        (vec![0, 1, 1, 0], Problem::Expected(Form::Declaration))
     );
     let fault = "Types\n[]\n[ Bogus.Bogus ]\n[]".fault();
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0, 0],
+            vec![0, 1, 1, 0, 0],
             Problem::Cycle(protos::Text::try_from("Bogus").unwrap())
         )
     );
@@ -613,7 +671,7 @@ fn rejects_a_bare_name_in_the_types_section_and_a_self_alias() {
     assert_eq!(
         fault.problem(),
         (
-            vec![0, 0, 1, 0, 0],
+            vec![0, 1, 1, 0, 0],
             Problem::Cycle(protos::Text::try_from("A").unwrap())
         )
     );
@@ -622,11 +680,11 @@ fn rejects_a_bare_name_in_the_types_section_and_a_self_alias() {
 #[test]
 fn rejects_a_wrong_intrinsic_arity() {
     let fault = "Types\n[]\n[ Pair.Result<Text> ]\n[]".fault();
-    assert_eq!(fault.problem(), (vec![0, 0, 1, 0, 0], Problem::Arity(2, 1)));
+    assert_eq!(fault.problem(), (vec![0, 1, 1, 0, 1], Problem::Arity(2, 1)));
     let fault = "Types\n[]\n[ Own.{ Text<Integer> } ]\n[]".fault();
     assert_eq!(
         fault.problem(),
-        (vec![0, 0, 1, 0, 0, 0], Problem::Arity(0, 1))
+        (vec![0, 1, 1, 0, 1, 0], Problem::Arity(0, 1))
     );
 }
 
@@ -684,8 +742,22 @@ fn rejects_local_arity_lowercase_constants_and_unbounded_alias_graphs() {
 
 #[test]
 fn grouped_qualified_imports_and_self_superkinds_have_truthful_outcomes() {
-    let grouped = "Types\n[ std::clone:[ Clonable.Clone ] ]\n[]\n[]".fault();
-    assert!(matches!(grouped.1, Fault::Conceptual(_, Problem::Name(_))));
+    let File::Types(grouped) = "Types\n[ std:clone:[ Clonable.Clone ] ]\n[]\n[]".file() else {
+        panic!("expected Types");
+    };
+    assert_eq!(
+        grouped.imports,
+        vec![Import::Many(
+            ethos_zero::Source("std::clone".to_owned()),
+            vec![ethos_zero::Imported {
+                name: ethos_zero::Name("Clonable".to_owned()),
+                emitted: ethos_zero::Name("Clone".to_owned()),
+            }],
+        )],
+    );
+    let rust =
+        "Kinds\n[ std:clone:[ Clonable.Clone ] ]\n[ Copying<Clonable>.[ copy.[ Text ] ] ]".rust();
+    assert!(rust.contains("pub trait Copying<A: std::clone::Clone>"));
     let cycle = "Kinds\n[]\n[ K.{ [ K ] [] [] [] } ]".fault();
     assert!(matches!(cycle.1, Fault::Conceptual(_, Problem::Cycle(_))));
 }

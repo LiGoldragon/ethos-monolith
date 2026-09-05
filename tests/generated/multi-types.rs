@@ -2,17 +2,21 @@
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record(pub protos::Text, pub protos::Integer);
 impl datom_codec::Datomic for Record {
-    fn incorporate(site: datom_codec::Site<'_>) -> Result<Self, datom_codec::Fault> {
+    fn incorporate(
+        site: datom_codec::Site<'_>,
+    ) -> std::result::Result<Self, datom_codec::Fault> {
         let mut p = datom_codec::Sited::positions(site, 2)?;
         let p0: protos::Text = datom_codec::Positional::position(&mut p)?;
         let p1: protos::Integer = datom_codec::Positional::position(&mut p)?;
-        Ok(Self(p0, p1))
+        std::result::Result::Ok(Self(p0, p1))
     }
 }
 impl protos::Conceivable<datom_codec::Datom> for Record {
     type Fault = std::convert::Infallible;
-    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
-        Ok(
+    fn conceive(
+        &self,
+    ) -> std::result::Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        std::result::Result::Ok(
             protos::Situated(
                 protos::Situation {
                     extent: protos::Extent(0, 0),
@@ -31,19 +35,25 @@ impl protos::Conceivable<datom_codec::Datom> for Record {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Report(pub protos::Text, pub Vec<protos::Integer>);
+pub struct Report(pub protos::Text, pub std::vec::Vec<protos::Integer>);
 impl datom_codec::Datomic for Report {
-    fn incorporate(site: datom_codec::Site<'_>) -> Result<Self, datom_codec::Fault> {
+    fn incorporate(
+        site: datom_codec::Site<'_>,
+    ) -> std::result::Result<Self, datom_codec::Fault> {
         let mut p = datom_codec::Sited::positions(site, 2)?;
         let p0: protos::Text = datom_codec::Positional::position(&mut p)?;
-        let p1: Vec<protos::Integer> = datom_codec::Positional::position(&mut p)?;
-        Ok(Self(p0, p1))
+        let p1: std::vec::Vec<protos::Integer> = datom_codec::Positional::position(
+            &mut p,
+        )?;
+        std::result::Result::Ok(Self(p0, p1))
     }
 }
 impl protos::Conceivable<datom_codec::Datom> for Report {
     type Fault = std::convert::Infallible;
-    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
-        Ok(
+    fn conceive(
+        &self,
+    ) -> std::result::Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        std::result::Result::Ok(
             protos::Situated(
                 protos::Situation {
                     extent: protos::Extent(0, 0),
@@ -67,19 +77,21 @@ pub enum SinkError {
     Full,
 }
 impl datom_codec::Datomic for SinkError {
-    fn incorporate(site: datom_codec::Site<'_>) -> Result<Self, datom_codec::Fault> {
+    fn incorporate(
+        site: datom_codec::Site<'_>,
+    ) -> std::result::Result<Self, datom_codec::Fault> {
         let v = datom_codec::Sited::variant(site)?;
         match v.name {
             "Closed" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Closed)
+                std::result::Result::Ok(Self::Closed)
             }
             "Full" => {
                 datom_codec::Headed::nothing(v)?;
-                Ok(Self::Full)
+                std::result::Result::Ok(Self::Full)
             }
             _ => {
-                Err(
+                std::result::Result::Err(
                     datom_codec::Headed::reject(
                         &v,
                         datom_codec::Problem::UnknownVariant(
@@ -93,8 +105,10 @@ impl datom_codec::Datomic for SinkError {
 }
 impl protos::Conceivable<datom_codec::Datom> for SinkError {
     type Fault = std::convert::Infallible;
-    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
-        Ok(
+    fn conceive(
+        &self,
+    ) -> std::result::Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        std::result::Result::Ok(
             protos::Situated(
                 protos::Situation {
                     extent: protos::Extent(0, 0),

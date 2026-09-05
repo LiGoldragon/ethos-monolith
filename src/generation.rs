@@ -10,7 +10,8 @@
 //! One rule decides boxing: a position whose type reaches the type
 //! that declares it, walking through declared types, aliases, `Option`
 //! and `Result` but not through `Vector`, is boxed as a whole
-//! (`Box<Option<Tree>>`), and the datom machinery never sees the box.
+//! (`std::boxed::Box<std::option::Option<Tree>>`), and the datom machinery
+//! never sees the box.
 
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
@@ -54,9 +55,9 @@ impl Tokening for Intrinsic {
             Intrinsic::Decimal => quote! { protos::Decimal },
             Intrinsic::Boolean => quote! { protos::Boolean },
             Intrinsic::Meaning => quote! { datom_codec::Meaning },
-            Intrinsic::Vector => quote! { Vec },
-            Intrinsic::Option => quote! { Option },
-            Intrinsic::Result => quote! { Result },
+            Intrinsic::Vector => quote! { std::vec::Vec },
+            Intrinsic::Option => quote! { std::option::Option },
+            Intrinsic::Result => quote! { std::result::Result },
             Intrinsic::Itself => quote! { Self },
             Intrinsic::Sized => quote! { Sized },
         }
@@ -126,7 +127,10 @@ impl Emitting for Reference {
                 let emitted = emitted.tokens();
                 quote! { #source :: #emitted #applied }
             }
-            Resolution::Type(_) | Resolution::Kind(_) | Resolution::Undeclared => {
+            Resolution::Type(_)
+            | Resolution::Kind(_)
+            | Resolution::Ambiguous(_)
+            | Resolution::Undeclared => {
                 quote! { #name #applied }
             }
             Resolution::Parameter(index) => {
@@ -220,7 +224,7 @@ trait Reaching {
 impl Reaching for Reference {
     fn reaches(&self, target: &Name, file: &File, visited: &mut Vec<Name>) -> bool {
         if self.source.is_none() {
-            if &self.name == target {
+            if &self.name == target || self.name.0 == "Self" {
                 return true;
             }
             match file.resolve(&self.name) {
@@ -319,7 +323,7 @@ impl Positioning for Reference {
     fn position(&self, scope: &Scope, owner: &Name) -> TokenStream {
         let ty = self.emit(scope);
         if self.boxed(scope, owner) {
-            quote! { Box<#ty> }
+            quote! { std::boxed::Box<#ty> }
         } else {
             ty
         }
@@ -475,6 +479,43 @@ impl Emitting for TypeDeclaration {
 // Kinds: traits
 // ---------------------------------------------------------------------------
 
+/// The named sections that compose a kind declaration.
+struct KindContents<'a> {
+    superkinds: &'a [Reference],
+    types: &'a [AssociatedType],
+    constants: &'a [AssociatedConstant],
+    capabilities: &'a [Capability],
+}
+
+/// The kind whose capability exposes a declaration's named kind sections.
+trait Containing {
+    fn contents(&self) -> KindContents<'_>;
+}
+
+impl Containing for KindDeclaration {
+    fn contents(&self) -> KindContents<'_> {
+        match &self.body {
+            KindBody::Simple(capabilities) => KindContents {
+                superkinds: &[],
+                types: &[],
+                constants: &[],
+                capabilities,
+            },
+            KindBody::Complex {
+                superkinds,
+                types,
+                constants,
+                capabilities,
+            } => KindContents {
+                superkinds,
+                types,
+                constants,
+                capabilities,
+            },
+        }
+    }
+}
+
 impl Emitting for AssociatedType {
     fn emit(&self, scope: &Scope) -> TokenStream {
         let name = self.name.tokens();
@@ -527,20 +568,12 @@ impl Emitting for Capability {
 
 impl Emitting for KindDeclaration {
     fn emit(&self, scope: &Scope) -> TokenStream {
-        let (superkinds, types, constants, capabilities): (
-            &[Reference],
-            &[AssociatedType],
-            &[AssociatedConstant],
-            &[Capability],
-        ) = match &self.body {
-            KindBody::Simple(capabilities) => (&[], &[], &[], capabilities),
-            KindBody::Complex {
-                superkinds,
-                types,
-                constants,
-                capabilities,
-            } => (superkinds, types, constants, capabilities),
-        };
+        let KindContents {
+            superkinds,
+            types,
+            constants,
+            capabilities,
+        } = self.contents();
         let inner = Scope {
             file: scope.file,
             identity: Some(&self.identity),

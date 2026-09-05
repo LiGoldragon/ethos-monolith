@@ -19,11 +19,13 @@ types. Each pass is a module named for it.
 | protosization | `Protosizable`, `Textualizable` | `File` | canonical text (the ascent, cannot fault) |
 | actualization | `Actualizable<File>` on `Potential<File>` | text | `File`, or a `Situated<Fault>` |
 
-Every fault carries the path of the structure at fault, in datomic's
-path convention, and the actualization situates it in the source
-text. Every method call lives under a kind; there are no free
-functions, no inherent impls, no closures beyond what std forces, and
-no lookup tables: the enums are walked variant by variant.
+Every fault carries the Protos path of the structure at fault: a headed
+form puts its head at child zero and body at child one, while qualified
+head arguments remain below the head. Actualization follows that
+structure directly to situate the fault in its source text. Every method
+call lives under a kind; there are no free functions, no inherent impls,
+no closures beyond what std forces, and no lookup tables: the enums are
+walked variant by variant.
 
 The crate eats its own food: `fault.ethos` generates `src/fault.rs`
 and `ethos-zero.ethos` generates `src/contract.rs`; the freshness test
@@ -38,10 +40,16 @@ Signal   [ imports ] [ requests ] [ responses ] [ types ]   ; Request and Respon
 Sema     [ imports ] { record positions } [ types ]         ; Record implied
 ```
 
-An import names a Rust path prefix and the names taken from it;
-`std::clone:Clonable.Clone` imports `Clonable` under the source's own
-name. A position that reaches its declaring type is boxed, and only
-there. `Name.{ T1 T2 }` is a tuple variant.
+An import names a Rust path prefix and the names taken from it:
+`std:clone:Clonable.Clone` imports one name, and
+`std:clone:[ Clonable.Clone ]` imports a group. A position that reaches
+its declaring type is boxed, and only there. The generated Rust writes
+standard containers as `std::vec::Vec`, `std::option::Option`,
+`std::result::Result`, and `std::boxed::Box`, so a declaration cannot
+capture those names. `Name.{ T1 T2 }` is a tuple variant.
+
+File ascent projects the File's structural Protoform and situates that
+form directly; it does not textualize and parse the result again.
 
 ## CLI
 
@@ -59,3 +67,5 @@ ethos.
 `cargo test` locally; `nix flake check` is the durable gate (build,
 test, fmt, clippy, doc, the no-free-functions and no-inherent-methods
 guards, and the dependency ethos declarations read by the built tool).
+Each Nix derivation applies an 8 GiB virtual-memory limit inside its
+builder.

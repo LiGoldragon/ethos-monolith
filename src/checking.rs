@@ -159,16 +159,27 @@ impl Falling for Resolution {
 
 impl Resolving for Identity {
     fn resolve(&self, name: &Name) -> Resolution {
+        let mut parameter = None;
         for (index, constraint) in self.constraints.iter().enumerate() {
-            if let Constraint::One(reference) = constraint
-                && reference.source.is_none()
-                && reference.arguments.is_empty()
-                && &reference.name == name
-            {
-                return Resolution::Parameter(index as Integer);
+            let references = match constraint {
+                Constraint::One(reference) => std::slice::from_ref(reference),
+                Constraint::Many(references) => references,
+            };
+            if references.iter().any(|reference| {
+                reference.source.is_none()
+                    && reference.arguments.is_empty()
+                    && &reference.name == name
+            }) {
+                if parameter.is_some() {
+                    return Resolution::Ambiguous(name.clone());
+                }
+                parameter = Some(index as Integer);
             }
         }
-        Resolution::Undeclared
+        match parameter {
+            Some(index) => Resolution::Parameter(index),
+            None => Resolution::Undeclared,
+        }
     }
 }
 
@@ -226,19 +237,31 @@ impl Taking for Intrinsic {
 // ---------------------------------------------------------------------------
 
 /// The kind whose capability lists the names a value declares, each at its path relative to the value.
-pub(crate) trait Naming {
+trait Naming {
     /// The declared names and their paths.
-    fn names(&self) -> Vec<(Name, Path)>;
+    fn names(&self) -> Vec<DeclarationSite>;
+}
+
+/// A declared name and its structural path.
+struct DeclarationSite {
+    name: Name,
+    path: Path,
 }
 
 impl Naming for Import {
-    fn names(&self) -> Vec<(Name, Path)> {
+    fn names(&self) -> Vec<DeclarationSite> {
         match self {
-            Import::One(_, imported) => vec![(imported.name.clone(), vec![0])],
+            Import::One(_, imported) => vec![DeclarationSite {
+                name: imported.name.clone(),
+                path: vec![1],
+            }],
             Import::Many(_, imports) => {
                 let mut names = Vec::with_capacity(imports.len());
                 for (index, imported) in imports.iter().enumerate() {
-                    names.push((imported.name.clone(), vec![0, index as Integer]));
+                    names.push(DeclarationSite {
+                        name: imported.name.clone(),
+                        path: vec![1, index as Integer],
+                    });
                 }
                 names
             }
@@ -247,63 +270,87 @@ impl Naming for Import {
 }
 
 impl Naming for TypeDeclaration {
-    fn names(&self) -> Vec<(Name, Path)> {
+    fn names(&self) -> Vec<DeclarationSite> {
         match self {
             TypeDeclaration::Struct(identity, _)
             | TypeDeclaration::Enum(identity, _)
-            | TypeDeclaration::Alias(identity, _) => vec![(identity.name.clone(), vec![])],
+            | TypeDeclaration::Alias(identity, _) => vec![DeclarationSite {
+                name: identity.name.clone(),
+                path: vec![0],
+            }],
         }
     }
 }
 
 impl Naming for KindDeclaration {
-    fn names(&self) -> Vec<(Name, Path)> {
-        vec![(self.identity.name.clone(), vec![])]
+    fn names(&self) -> Vec<DeclarationSite> {
+        vec![DeclarationSite {
+            name: self.identity.name.clone(),
+            path: vec![0],
+        }]
     }
 }
 
 impl Naming for Variant {
-    fn names(&self) -> Vec<(Name, Path)> {
+    fn names(&self) -> Vec<DeclarationSite> {
         match self {
-            Variant::Bare(name)
-            | Variant::Typed(name, _)
-            | Variant::Struct(name, _)
-            | Variant::Enum(name, _) => vec![(name.clone(), vec![])],
+            Variant::Bare(name) => vec![DeclarationSite {
+                name: name.clone(),
+                path: vec![],
+            }],
+            Variant::Typed(name, _) | Variant::Struct(name, _) | Variant::Enum(name, _) => {
+                vec![DeclarationSite {
+                    name: name.clone(),
+                    path: vec![0],
+                }]
+            }
         }
     }
 }
 
 impl Naming for AssociatedType {
-    fn names(&self) -> Vec<(Name, Path)> {
-        vec![(self.name.clone(), vec![])]
+    fn names(&self) -> Vec<DeclarationSite> {
+        vec![DeclarationSite {
+            name: self.name.clone(),
+            path: vec![],
+        }]
     }
 }
 
 impl Naming for AssociatedConstant {
-    fn names(&self) -> Vec<(Name, Path)> {
-        vec![(self.name.clone(), vec![])]
+    fn names(&self) -> Vec<DeclarationSite> {
+        vec![DeclarationSite {
+            name: self.name.clone(),
+            path: vec![0],
+        }]
     }
 }
 
 impl Naming for Capability {
-    fn names(&self) -> Vec<(Name, Path)> {
-        vec![(self.name.clone(), vec![])]
+    fn names(&self) -> Vec<DeclarationSite> {
+        vec![DeclarationSite {
+            name: self.name.clone(),
+            path: vec![0],
+        }]
     }
 }
 
 /// The kind whose capability lists the names of every element of a section, each under its index.
 trait Sectioned {
-    fn names_in(&self, section: Integer) -> Vec<(Name, Path)>;
+    fn names_in(&self, section: Integer) -> Vec<DeclarationSite>;
 }
 
 impl<N: Naming> Sectioned for [N] {
-    fn names_in(&self, section: Integer) -> Vec<(Name, Path)> {
+    fn names_in(&self, section: Integer) -> Vec<DeclarationSite> {
         let mut names = Vec::new();
         for (index, element) in self.iter().enumerate() {
-            for (name, path) in element.names() {
+            for declared in element.names() {
                 let mut placed = vec![section, index as Integer];
-                placed.extend(path);
-                names.push((name, placed));
+                placed.extend(declared.path);
+                names.push(DeclarationSite {
+                    name: declared.name,
+                    path: placed,
+                });
             }
         }
         names
@@ -315,15 +362,15 @@ trait Distinct {
     fn distinct(&self) -> Result<(), Fault>;
 }
 
-impl Distinct for [(Name, Path)] {
+impl Distinct for [DeclarationSite] {
     fn distinct(&self) -> Result<(), Fault> {
-        for (later, (name, path)) in self.iter().enumerate() {
-            for (earlier, _) in &self[..later] {
-                if earlier == name {
+        for (later, declared) in self.iter().enumerate() {
+            for earlier in &self[..later] {
+                if earlier.name == declared.name {
                     return Err(Fault::Conceptual(
-                        path.clone(),
+                        declared.path.clone(),
                         Problem::Duplicate(
-                            protos::Text::try_from(name.0.clone()).expect("identifier"),
+                            protos::Text::try_from(declared.name.0.clone()).expect("identifier"),
                         ),
                     ));
                 }
@@ -343,20 +390,23 @@ pub(crate) trait Checkable {
     fn check(&self, scope: &Scope) -> Result<(), Fault>;
 }
 
-/// The kind whose capability checks every element of a section, each placed under its index.
+/// The kind whose capabilities check enclosed children, or a section that
+/// contains enclosed children.
 trait Checking {
+    fn check_children(&self, scope: &Scope) -> Result<(), Fault>;
     fn check_each(&self, scope: &Scope, section: Integer) -> Result<(), Fault>;
 }
 
 impl<C: Checkable> Checking for [C] {
-    fn check_each(&self, scope: &Scope, section: Integer) -> Result<(), Fault> {
+    fn check_children(&self, scope: &Scope) -> Result<(), Fault> {
         for (index, element) in self.iter().enumerate() {
-            element
-                .check(scope)
-                .place(index as Integer)
-                .place(section)?;
+            element.check(scope).place(index as Integer)?;
         }
         Ok(())
+    }
+
+    fn check_each(&self, scope: &Scope, section: Integer) -> Result<(), Fault> {
+        self.check_children(scope).place(section)
     }
 }
 
@@ -368,7 +418,7 @@ impl Checkable for File {
             File::Signal(signal) => signal.check(scope),
             File::Sema(sema) => sema.check(scope),
         };
-        checked.place(0)
+        checked.place(1)
     }
 }
 
@@ -403,8 +453,14 @@ impl Checkable for Signal {
             return Err(Fault::Conceptual(vec![2], Problem::Empty));
         }
         let mut names = vec![
-            (Name("Request".to_owned()), vec![1]),
-            (Name("Response".to_owned()), vec![2]),
+            DeclarationSite {
+                name: Name("Request".to_owned()),
+                path: vec![1],
+            },
+            DeclarationSite {
+                name: Name("Response".to_owned()),
+                path: vec![2],
+            },
         ];
         names.extend(self.imports.names_in(0));
         names.extend(self.types.names_in(3));
@@ -419,7 +475,10 @@ impl Checkable for Signal {
 
 impl Checkable for Sema {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
-        let mut names = vec![(Name("Record".to_owned()), vec![1])];
+        let mut names = vec![DeclarationSite {
+            name: Name("Record".to_owned()),
+            path: vec![1],
+        }];
         names.extend(self.imports.names_in(0));
         names.extend(self.types.names_in(2));
         names.distinct()?;
@@ -436,7 +495,22 @@ impl Checkable for Identity {
                 Problem::Arity(26, self.constraints.len() as Integer),
             ));
         }
+        let mut parameters: Vec<&Name> = Vec::new();
         for (index, constraint) in self.constraints.iter().enumerate() {
+            if let Constraint::One(reference) = constraint
+                && reference.source.is_none()
+                && reference.arguments.is_empty()
+            {
+                if parameters.contains(&&reference.name) {
+                    return Err(Fault::Conceptual(
+                        vec![index as Integer],
+                        Problem::Duplicate(
+                            protos::Text::try_from(reference.name.0.clone()).expect("identifier"),
+                        ),
+                    ));
+                }
+                parameters.push(&reference.name);
+            }
             constraint.check(scope).place(index as Integer)?;
         }
         Ok(())
@@ -488,6 +562,12 @@ pub(crate) trait Referring {
     fn refer(&self, scope: &Scope, role: Role) -> Result<(), Fault>;
 }
 
+/// The role and optional argument count a resolved reference requires.
+struct ReferenceRequirement {
+    role: Role,
+    arity: Option<usize>,
+}
+
 /// The kind whose capability checks every reference of a section in one role.
 trait ReferringEach {
     fn refer_each(&self, scope: &Scope, role: Role, section: Integer) -> Result<(), Fault>;
@@ -532,9 +612,16 @@ impl Referring for Reference {
                 ));
             }
         }
-        // A sourced name is otherwise the source's to declare; its head sits at child 0.
+        // A sourced reference carries the foreign name in the headed body's
+        // structural child at index one.
         if self.source.is_none() {
-            let (found, expected) = match scope.resolve(&self.name) {
+            let requirement = match scope.resolve(&self.name) {
+                Resolution::Ambiguous(name) => {
+                    return Err(Fault::Conceptual(
+                        vec![],
+                        Problem::Duplicate(protos::Text::try_from(name.0).expect("identifier")),
+                    ));
+                }
                 Resolution::Undeclared => {
                     return Err(Fault::Conceptual(
                         vec![],
@@ -543,8 +630,14 @@ impl Referring for Reference {
                         ),
                     ));
                 }
-                Resolution::Intrinsic(intrinsic) => (intrinsic.role(), Some(intrinsic.arity())),
-                Resolution::Parameter(_) | Resolution::Associated(_) => (Role::Type, Some(0)),
+                Resolution::Intrinsic(intrinsic) => ReferenceRequirement {
+                    role: intrinsic.role(),
+                    arity: Some(intrinsic.arity()),
+                },
+                Resolution::Parameter(_) | Resolution::Associated(_) => ReferenceRequirement {
+                    role: Role::Type,
+                    arity: Some(0),
+                },
                 Resolution::Type(name) => {
                     let arity =
                         scope
@@ -555,26 +648,35 @@ impl Referring for Reference {
                                 | TypeDeclaration::Enum(identity, _)
                                 | TypeDeclaration::Alias(identity, _) => identity.constraints.len(),
                             });
-                    (Role::Type, arity)
+                    ReferenceRequirement {
+                        role: Role::Type,
+                        arity,
+                    }
                 }
-                Resolution::Kind(_) => (Role::Kind, None),
+                Resolution::Kind(_) => ReferenceRequirement {
+                    role: Role::Kind,
+                    arity: None,
+                },
                 Resolution::Imported(source, emitted)
                     if source.0 == "protos" && emitted == self.name =>
                 {
                     match Intrinsic::identify(&self.name.0) {
-                        Some(intrinsic) => (intrinsic.role(), Some(intrinsic.arity())),
-                        None => (role, None),
+                        Some(intrinsic) => ReferenceRequirement {
+                            role: intrinsic.role(),
+                            arity: Some(intrinsic.arity()),
+                        },
+                        None => ReferenceRequirement { role, arity: None },
                     }
                 }
-                Resolution::Imported(_, _) => (role, None),
+                Resolution::Imported(_, _) => ReferenceRequirement { role, arity: None },
             };
-            if found != role {
+            if requirement.role != role {
                 return Err(Fault::Conceptual(
                     vec![],
                     Problem::Role(protos::Text::try_from(self.name.0.clone()).expect("identifier")),
                 ));
             }
-            if let Some(expected) = expected
+            if let Some(expected) = requirement.arity
                 && expected != self.arguments.len()
             {
                 return Err(Fault::Conceptual(
@@ -586,7 +688,7 @@ impl Referring for Reference {
         for (index, argument) in self.arguments.iter().enumerate() {
             let checked = argument.refer(scope, Role::Type).place(index as Integer);
             match self.source {
-                Some(_) => checked.place(0)?,
+                Some(_) => checked.place(1)?,
                 None => checked?,
             }
         }
@@ -637,6 +739,7 @@ impl Cycling for Reference {
             Resolution::Kind(_)
             | Resolution::Parameter(_)
             | Resolution::Associated(_)
+            | Resolution::Ambiguous(_)
             | Resolution::Undeclared => false,
         }
     }
@@ -665,6 +768,55 @@ impl Declaring for File {
     }
 }
 
+/// The kind whose capability finds a kind declaration in a kinds file.
+trait KindDeclaring {
+    fn kind_declaration(&self, name: &Name) -> Option<&KindDeclaration>;
+}
+
+impl KindDeclaring for File {
+    fn kind_declaration(&self, name: &Name) -> Option<&KindDeclaration> {
+        let File::Kinds(kinds) = self else {
+            return None;
+        };
+        kinds
+            .kinds
+            .iter()
+            .find(|declaration| declaration.identity.name == *name)
+    }
+}
+
+/// The kind whose capability finds an indirect superkind cycle.
+trait Supercycling {
+    fn reaches_superkind(&self, target: &Name, file: &File, visited: &mut Vec<Name>) -> bool;
+}
+
+impl Supercycling for Reference {
+    fn reaches_superkind(&self, target: &Name, file: &File, visited: &mut Vec<Name>) -> bool {
+        if self.source.is_some() {
+            return false;
+        }
+        if &self.name == target {
+            return true;
+        }
+        if visited.contains(&self.name) {
+            return false;
+        }
+        let Some(declaration) = file.kind_declaration(&self.name) else {
+            return false;
+        };
+        let KindBody::Complex { superkinds, .. } = &declaration.body else {
+            return false;
+        };
+        visited.push(self.name.clone());
+        for superkind in superkinds {
+            if superkind.reaches_superkind(target, file, visited) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 impl Checkable for TypeDeclaration {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
         let identity = match self {
@@ -672,20 +824,25 @@ impl Checkable for TypeDeclaration {
             | TypeDeclaration::Enum(identity, _)
             | TypeDeclaration::Alias(identity, _) => identity,
         };
-        identity.check(scope)?;
+        identity.check(scope).place(0)?;
         let inner = Scope {
             file: scope.file,
             identity: Some(identity),
             associated: scope.associated,
         };
         match self {
-            TypeDeclaration::Struct(_, positions) => positions.check_each(&inner, 0),
+            TypeDeclaration::Struct(_, positions) => positions.check_children(&inner).place(1),
             TypeDeclaration::Enum(_, variants) => {
-                variants.names_in(0).distinct()?;
-                variants.check_each(&inner, 0)
+                let mut names = variants.names_in(0);
+                for declared in &mut names {
+                    declared.path.remove(0);
+                    declared.path.insert(0, 1);
+                }
+                names.distinct()?;
+                variants.check_children(&inner).place(1)
             }
             TypeDeclaration::Alias(identity, aliased) => {
-                aliased.check(&inner).place(0)?;
+                aliased.check(&inner).place(1)?;
                 if aliased.cycles(&identity.name, scope.file, &mut vec![]) {
                     return Err(Fault::Conceptual(
                         vec![0],
@@ -704,11 +861,16 @@ impl Checkable for Variant {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
         match self {
             Variant::Bare(_) => Ok(()),
-            Variant::Typed(_, reference) => reference.check(scope).place(0),
-            Variant::Struct(_, positions) => positions.check_each(scope, 0),
+            Variant::Typed(_, reference) => reference.check(scope).place(1),
+            Variant::Struct(_, positions) => positions.check_children(scope).place(1),
             Variant::Enum(_, variants) => {
-                variants.names_in(0).distinct()?;
-                variants.check_each(scope, 0)
+                let mut names = variants.names_in(0);
+                for declared in &mut names {
+                    declared.path.remove(0);
+                    declared.path.insert(0, 1);
+                }
+                names.distinct()?;
+                variants.check_children(scope).place(1)
             }
         }
     }
@@ -716,7 +878,7 @@ impl Checkable for Variant {
 
 impl Checkable for KindDeclaration {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
-        self.identity.check(scope)?;
+        self.identity.check(scope).place(0)?;
         let inner = Scope {
             file: scope.file,
             identity: Some(&self.identity),
@@ -727,8 +889,13 @@ impl Checkable for KindDeclaration {
         };
         match &self.body {
             KindBody::Simple(capabilities) => {
-                capabilities.names_in(0).distinct()?;
-                capabilities.check_each(&inner, 0)
+                let mut names = capabilities.names_in(0);
+                for declared in &mut names {
+                    declared.path.remove(0);
+                    declared.path.insert(0, 1);
+                }
+                names.distinct()?;
+                capabilities.check_children(&inner).place(1)
             }
             KindBody::Complex {
                 superkinds,
@@ -736,10 +903,14 @@ impl Checkable for KindDeclaration {
                 constants,
                 capabilities,
             } => {
-                for superkind in superkinds {
-                    if superkind.source.is_none() && superkind.name == self.identity.name {
+                for (index, superkind) in superkinds.iter().enumerate() {
+                    if superkind.reaches_superkind(
+                        &self.identity.name,
+                        scope.file,
+                        &mut vec![self.identity.name.clone()],
+                    ) {
                         return Err(Fault::Conceptual(
-                            vec![0],
+                            vec![1, 0, index as Integer],
                             Problem::Cycle(
                                 protos::Text::try_from(self.identity.name.0.clone())
                                     .expect("identifier"),
@@ -747,13 +918,17 @@ impl Checkable for KindDeclaration {
                         ));
                     }
                 }
-                types.names_in(1).distinct()?;
-                constants.names_in(2).distinct()?;
-                capabilities.names_in(3).distinct()?;
-                superkinds.refer_each(&inner, Role::Kind, 0).place(0)?;
-                types.check_each(&inner, 1).place(0)?;
-                constants.check_each(&inner, 2).place(0)?;
-                capabilities.check_each(&inner, 3).place(0)
+                let mut names = types.names_in(1);
+                names.extend(constants.names_in(2));
+                names.extend(capabilities.names_in(3));
+                for declared in &mut names {
+                    declared.path.insert(0, 1);
+                }
+                names.distinct()?;
+                superkinds.refer_each(&inner, Role::Kind, 0).place(1)?;
+                types.check_each(&inner, 1).place(1)?;
+                constants.check_each(&inner, 2).place(1)?;
+                capabilities.check_each(&inner, 3).place(1)
             }
         }
     }
@@ -776,17 +951,17 @@ impl Checkable for AssociatedConstant {
                 Problem::Name(protos::Text::try_from(self.name.0.clone()).expect("identifier")),
             ));
         }
-        self.ty.check(scope).place(0)
+        self.ty.check(scope).place(1)
     }
 }
 
 impl Checkable for Capability {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
         match &self.signature {
-            Signature::Yielding(yields) => yields.check(scope).place(0).place(0),
+            Signature::Yielding(yields) => yields.check(scope).place(0).place(1),
             Signature::Taking(inputs, yields) => {
-                inputs.check_each(scope, 0).place(0)?;
-                yields.check(scope).place(0).place(1).place(0)
+                inputs.check_each(scope, 0).place(0).place(1)?;
+                yields.check(scope).place(0).place(1).place(1)
             }
         }
     }
@@ -802,8 +977,8 @@ impl Checkable for Association {
                 ),
             ));
         }
-        self.identity.check(scope)?;
+        self.identity.check(scope).place(0)?;
         // The kinds borne are named outside the identity that bears them.
-        self.kinds.refer_each(scope, Role::Kind, 0)
+        self.kinds.refer_each(scope, Role::Kind, 0).place(1)
     }
 }

@@ -13,36 +13,20 @@ use protos::{
 use crate::conception::Conceiving;
 use crate::{Canonicalizable, Fault, File, Resituating};
 
-/// The kind whose capability locates a fault extent in a situated protoform,
-/// translating the ethos path convention (headed body = child 0) to the protos
-/// convention (headed body = child 1).
+/// The kind whose capability locates a fault extent in a situated protoform.
+///
+/// Ethos paths are Protos paths: a headed form carries its head at child zero
+/// and its body at child one.  A qualified head keeps its arguments below that
+/// head.  Conception and checking preserve those paths, so locating needs no
+/// dialect-specific repair.
 trait Faulted {
     fn fault_extent(&self, path: &[Integer]) -> Extent;
 }
 
 impl Faulted for Situated<Protoform> {
     fn fault_extent(&self, path: &[Integer]) -> Extent {
-        let Situated(situation, form) = self;
-        let mut here_sit: &Situation = situation;
-        let mut here_form: &Protoform = form;
-        for &index in path {
-            match here_form {
-                Protoform::Headed(_, _, body) if index == 0 => {
-                    here_sit = here_sit.part(1);
-                    here_form = body;
-                }
-                Protoform::Enclosed(_, children) => {
-                    here_sit = here_sit.part(index);
-                    if let Some(child) = children.get(index as usize) {
-                        here_form = child;
-                    } else {
-                        return here_sit.extent;
-                    }
-                }
-                _ => return here_sit.extent,
-            }
-        }
-        here_sit.extent
+        let Situated(situation, _) = self;
+        situation.locate(path).unwrap_or(situation.extent)
     }
 }
 

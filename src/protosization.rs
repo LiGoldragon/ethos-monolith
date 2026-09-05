@@ -4,7 +4,11 @@
 //! reverse of conception; the file's text is the canonical print of
 //! its protoform, the braced form on one line.
 
-use protos::{Bare, Enclosure, Head, Protoform, Separator, Symbol, Textualizable};
+use std::convert::Infallible;
+
+use protos::{
+    Bare, Delineation, Enclosure, Head, Protoform, Separator, Situated, Symbol, Textualizable,
+};
 
 use crate::{
     AssociatedConstant, AssociatedType, Association, Capability, Constraint, File, Identity,
@@ -276,5 +280,17 @@ impl Protosizing for Association {
 impl Textualizable for File {
     fn textualize(&self) -> String {
         self.protoform().textualize()
+    }
+}
+
+/// A file directly projects the structural form it constructs. Situation is
+/// computed while that form is written; ascent never reparses text.
+impl protos::Protosizable for File {
+    type Fault = Infallible;
+
+    fn protosize(&self) -> Result<Delineation, Self::Fault> {
+        let protoform = self.protoform();
+        let situated = protos::Situating::situate(&protoform);
+        Ok(Delineation(vec![Situated(situated.0, protoform)]))
     }
 }

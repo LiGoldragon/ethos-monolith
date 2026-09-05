@@ -17,6 +17,9 @@ use protos::{Actualizable, Potential};
 #[path = "generated/capability-kinds.rs"]
 mod capability_kinds;
 #[rustfmt::skip]
+#[path = "generated/composition-types.rs"]
+mod composition_types;
+#[rustfmt::skip]
 #[path = "generated/entry-sema.rs"]
 mod entry_sema;
 #[rustfmt::skip]
@@ -230,6 +233,14 @@ fn constrained_type_round_trips_with_a_datom_codec_parameter() {
     "{ Some.1 2 }".round_trips::<placed_types::Placed<protos::Integer>>();
     "{ None [ a b ] }".round_trips::<placed_types::Placed<Vec<protos::Text>>>();
     "{ 3.5 True (a meaning (nested)) }".round_trips::<placed_types::Score>();
+}
+
+#[test]
+fn generated_compositions_escape_standard_type_names_and_support_self() {
+    "{ result }".round_trips::<composition_types::Result>();
+    "{ box }".round_trips::<composition_types::Box>();
+    "{ None }".round_trips::<composition_types::Tree>();
+    "Choice.Item.{ { result } { box } }".round_trips::<composition_types::Nested>();
 }
 
 #[test]
