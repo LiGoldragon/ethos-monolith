@@ -7,7 +7,7 @@
 //! under the child's index. A read file is checked whole before it is
 //! yielded.
 
-use protos::{Enclosure, Head, Protoform, Separator, Situated};
+use protos::{Bare, Enclosure, Head, Protoform, Separator, Situated, Symbol};
 
 use crate::checking::Checkable;
 
@@ -46,7 +46,7 @@ trait Anatomical {
     fn braced(&self) -> Option<&[Protoform]>;
     fn bracketed(&self) -> Option<&[Protoform]>;
     fn headed(&self) -> Option<(&Head, Separator, &Protoform)>;
-    fn bare(&self) -> Option<&Head>;
+    fn bare(&self) -> Option<&Bare>;
 }
 
 impl Anatomical for Protoform {
@@ -71,11 +71,25 @@ impl Anatomical for Protoform {
         }
     }
 
-    fn bare(&self) -> Option<&Head> {
+    fn bare(&self) -> Option<&Bare> {
         match self {
             Protoform::Bare(head) => Some(head),
             _ => None,
         }
+    }
+}
+
+trait Worded {
+    fn text(&self) -> &str;
+}
+impl Worded for Symbol {
+    fn text(&self) -> &str {
+        self.as_ref()
+    }
+}
+impl Worded for Bare {
+    fn text(&self) -> &str {
+        self.as_ref()
     }
 }
 
@@ -159,12 +173,12 @@ impl Bounded for Protoform {
                         children.push((child, index as protos::Integer));
                     }
                 }
-                Protoform::Bare(Head::Qualified(_, arguments)) => {
+                Protoform::Qualified(_, arguments) => {
                     for (index, argument) in arguments.iter().enumerate() {
                         children.push((argument, index as protos::Integer));
                     }
                 }
-                Protoform::Bare(Head::Symbol(_)) | Protoform::Opaque(_, _) => {}
+                Protoform::Bare(_) | Protoform::Quoted(_) | Protoform::Parenthesized(_) => {}
             }
             for (child, index) in children {
                 let mut child_path = path.clone();
@@ -182,10 +196,11 @@ impl Bounded for Protoform {
 
 impl Conceiving<Name> for str {
     fn conceive(&self) -> Result<Name, Fault> {
-        if self == "Self" || syn::parse_str::<syn::Ident>(self).is_ok() {
+        if !self.starts_with("r#") && (self == "Self" || syn::parse_str::<syn::Ident>(self).is_ok())
+        {
             Ok(Name(self.to_owned()))
         } else {
-            Err(Problem::Name(protos::Text::try_from(self).expect("source text")).here())
+            Err(Problem::Name(protos::Text::try_from(self).unwrap_or_default()).here())
         }
     }
 }
@@ -193,16 +208,14 @@ impl Conceiving<Name> for str {
 impl Conceiving<Source> for str {
     fn conceive(&self) -> Result<Source, Fault> {
         let Ok(path) = syn::parse_str::<syn::Path>(self) else {
-            return Err(Problem::Name(protos::Text::try_from(self).expect("source text")).here());
+            return Err(Problem::Name(protos::Text::try_from(self).unwrap_or_default()).here());
         };
         if path.leading_colon.is_some() {
-            return Err(Problem::Name(protos::Text::try_from(self).expect("source text")).here());
+            return Err(Problem::Name(protos::Text::try_from(self).unwrap_or_default()).here());
         }
         for segment in &path.segments {
             if !segment.arguments.is_none() {
-                return Err(
-                    Problem::Name(protos::Text::try_from(self).expect("source text")).here(),
-                );
+                return Err(Problem::Name(protos::Text::try_from(self).unwrap_or_default()).here());
             }
         }
         Ok(Source(self.to_owned()))
@@ -222,6 +235,21 @@ impl Conceiving<File> for protos::Delineation {
     }
 }
 
+/// The universal concept-layer interaction: a delineation conceives the one
+/// situated Ethos file it carries.  The private reader interactions below are
+/// its declaration anatomy, not an alternative public layer kind.
+impl protos::Conceivable<File> for protos::Delineation {
+    type Fault = Fault;
+
+    fn conceive(&self) -> Result<Situated<File>, Self::Fault> {
+        match self.0.as_slice() {
+            [Situated(situation, protoform)] => Conceiving::<File>::conceive(protoform)
+                .map(|file| Situated(situation.clone(), file)),
+            _ => Err(Problem::Root.here()),
+        }
+    }
+}
+
 impl Conceiving<File> for Protoform {
     fn conceive(&self) -> Result<File, Fault> {
         self.bounded(DEPTH_LIMIT)?;
@@ -234,7 +262,7 @@ impl Conceiving<File> for Protoform {
         if separator != Separator::Period {
             return Err(Problem::Separator(separator).here());
         }
-        let Some(root) = Root::identify(symbol) else {
+        let Some(root) = Root::identify(symbol.text()) else {
             return Err(Problem::Root.here());
         };
         let file = match root {
@@ -331,7 +359,7 @@ impl Conceiving<Import> for Protoform {
             if separator != Separator::Colon {
                 return Err(Problem::Separator(separator).here());
             }
-            let source: Source = symbol.as_str().conceive()?;
+            let source: Source = symbol.text().conceive()?;
             return match body.bracketed() {
                 Some(children) => Ok(Import::Many(source, Protoform::each(children).place(0)?)),
                 None => Ok(Import::One(
@@ -340,11 +368,11 @@ impl Conceiving<Import> for Protoform {
                 )),
             };
         }
-        if let Some(Head::Symbol(word)) = self.bare()
-            && let Some(colon) = word.rfind(':')
+        if let Some(word) = self.bare()
+            && let Some(colon) = word.text().rfind(':')
         {
-            let source: Source = word[..colon].conceive()?;
-            let imported = Conceiving::<Imported>::conceive(&word[colon + 1..])?;
+            let source: Source = word.text()[..colon].conceive()?;
+            let imported = Conceiving::<Imported>::conceive(&word.text()[colon + 1..])?;
             return Ok(Import::One(source, imported));
         }
         Err(Problem::Expected(Form::Import).here())
@@ -372,15 +400,15 @@ impl Conceiving<Imported> for str {
 
 impl Conceiving<Imported> for Protoform {
     fn conceive(&self) -> Result<Imported, Fault> {
-        if let Some(Head::Symbol(symbol)) = self.bare() {
-            return Conceiving::<Imported>::conceive(symbol.as_str());
+        if let Some(symbol) = self.bare() {
+            return Conceiving::<Imported>::conceive(symbol.text());
         }
         if let Some((Head::Symbol(symbol), Separator::Period, body)) = self.headed()
-            && let Some(Head::Symbol(emitted)) = body.bare()
+            && let Some(emitted) = body.bare()
         {
             return Ok(Imported {
-                name: symbol.as_str().conceive()?,
-                emitted: Conceiving::<Name>::conceive(emitted.as_str()).place(0)?,
+                name: symbol.text().conceive()?,
+                emitted: Conceiving::<Name>::conceive(emitted.text()).place(0)?,
             });
         }
         Err(Problem::Expected(Form::Import).here())
@@ -396,12 +424,12 @@ impl Conceiving<Reference> for Head {
         match self {
             Head::Symbol(symbol) => Ok(Reference {
                 source: None,
-                name: symbol.as_str().conceive()?,
+                name: symbol.text().conceive()?,
                 arguments: vec![],
             }),
             Head::Qualified(symbol, arguments) => Ok(Reference {
                 source: None,
-                name: symbol.as_str().conceive()?,
+                name: symbol.text().conceive()?,
                 arguments: Protoform::each(arguments)?,
             }),
         }
@@ -411,17 +439,32 @@ impl Conceiving<Reference> for Head {
 impl Conceiving<Reference> for Protoform {
     fn conceive(&self) -> Result<Reference, Fault> {
         if let Some(head) = self.bare() {
-            return head.conceive();
+            return Ok(Reference {
+                source: None,
+                name: head.text().conceive()?,
+                arguments: vec![],
+            });
+        }
+        if let Protoform::Qualified(symbol, arguments) = self {
+            return Ok(Reference {
+                source: None,
+                name: symbol.text().conceive()?,
+                arguments: Protoform::each(arguments)?,
+            });
         }
         if let Some((Head::Symbol(symbol), Separator::Colon, body)) = self.headed() {
-            let source: Source = symbol.as_str().conceive()?;
+            let source: Source = symbol.text().conceive()?;
             let Some(head) = body.bare() else {
                 return Err(Fault::Conceptual(
                     vec![0],
                     Problem::Expected(Form::Reference),
                 ));
             };
-            let reference: Reference = Conceiving::<Reference>::conceive(head).place(0)?;
+            let reference = Reference {
+                source: None,
+                name: head.text().conceive().place(0)?,
+                arguments: vec![],
+            };
             return Ok(Reference {
                 source: Some(source),
                 ..reference
@@ -434,14 +477,15 @@ impl Conceiving<Reference> for Protoform {
 impl Conceiving<Identity> for Head {
     fn conceive(&self) -> Result<Identity, Fault> {
         match self {
-            Head::Symbol(symbol) => Ok(Identity {
-                name: symbol.as_str().conceive()?,
+            Head::Symbol(symbol) if symbol.text() != "Self" => Ok(Identity {
+                name: symbol.text().conceive()?,
                 constraints: vec![],
             }),
-            Head::Qualified(symbol, constraints) => Ok(Identity {
-                name: symbol.as_str().conceive()?,
+            Head::Qualified(symbol, constraints) if symbol.text() != "Self" => Ok(Identity {
+                name: symbol.text().conceive()?,
                 constraints: Protoform::each(constraints)?,
             }),
+            _ => Err(Problem::Name(protos::Text::try_from("Self").expect("static text")).here()),
         }
     }
 }
@@ -489,8 +533,8 @@ impl Conceiving<TypeDeclaration> for Protoform {
 
 impl Conceiving<Variant> for Protoform {
     fn conceive(&self) -> Result<Variant, Fault> {
-        if let Some(Head::Symbol(symbol)) = self.bare() {
-            return Ok(Variant::Bare(symbol.as_str().conceive()?));
+        if let Some(symbol) = self.bare() {
+            return Ok(Variant::Bare(symbol.text().conceive()?));
         }
         let Some((Head::Symbol(symbol), separator, body)) = self.headed() else {
             return Err(Problem::Expected(Form::Variant).here());
@@ -498,7 +542,7 @@ impl Conceiving<Variant> for Protoform {
         if separator != Separator::Period {
             return Err(Problem::Separator(separator).here());
         }
-        let name: Name = symbol.as_str().conceive()?;
+        let name: Name = symbol.text().conceive()?;
         if let Some(positions) = body.braced() {
             return Ok(Variant::Struct(name, Protoform::each(positions).place(0)?));
         }
@@ -560,16 +604,16 @@ impl Conceiving<KindDeclaration> for Protoform {
 
 impl Conceiving<AssociatedType> for Protoform {
     fn conceive(&self) -> Result<AssociatedType, Fault> {
-        match self.bare() {
-            Some(Head::Symbol(symbol)) => Ok(AssociatedType {
-                name: symbol.as_str().conceive()?,
+        match self {
+            Protoform::Bare(symbol) => Ok(AssociatedType {
+                name: symbol.text().conceive()?,
                 bounds: vec![],
             }),
-            Some(Head::Qualified(symbol, bounds)) => Ok(AssociatedType {
-                name: symbol.as_str().conceive()?,
+            Protoform::Qualified(symbol, bounds) => Ok(AssociatedType {
+                name: symbol.text().conceive()?,
                 bounds: Protoform::each(bounds)?,
             }),
-            None => Err(Problem::Expected(Form::Kind).here()),
+            _ => Err(Problem::Expected(Form::Kind).here()),
         }
     }
 }
@@ -583,7 +627,7 @@ impl Conceiving<AssociatedConstant> for Protoform {
             return Err(Problem::Separator(separator).here());
         }
         Ok(AssociatedConstant {
-            name: symbol.as_str().conceive()?,
+            name: symbol.text().conceive()?,
             ty: Conceiving::<Reference>::conceive(body).place(0)?,
         })
     }
@@ -622,7 +666,7 @@ impl Conceiving<Capability> for Protoform {
         let Some((Head::Symbol(symbol), separator, body)) = self.headed() else {
             return Err(Problem::Expected(Form::Capability).here());
         };
-        let name: Name = symbol.as_str().conceive()?;
+        let name: Name = symbol.text().conceive()?;
         let receiver: Receiver = separator.conceive()?;
         if body.bracketed().is_some() {
             return Ok(Capability {

@@ -30,7 +30,7 @@ impl Positioned for [Reference] {
         let mut fields = Vec::with_capacity(self.len());
         for index in 0..self.len() {
             let idx = syn::Index::from(index);
-            fields.push(quote! { datom_codec::Datomic::conceive(&self.#idx) });
+            fields.push(quote! { protos::Conceivable::conceive(&self.#idx).expect("infallible datom ascent").1 });
         }
         quote! { datom_codec::Datom::Struct(vec![ #( #fields ),* ]) }
     }
@@ -67,15 +67,15 @@ impl Arming for Variant {
             Variant::Bare(name) => {
                 let head: &str = &name.0;
                 let name = name.tokens();
-                quote! { Self::#name => datom_codec::Datom::Word(#head.to_owned()), }
+                quote! { Self::#name => datom_codec::Datom::Word(datom_codec::DatomWord::try_from(protos::Word::try_from(#head).expect("static variant")).expect("stable variant")), }
             }
             Variant::Typed(name, _) | Variant::Enum(name, _) => {
                 let head: &str = &name.0;
                 let name = name.tokens();
                 quote! {
                     Self::#name(p0) => datom_codec::Datom::Variant(
-                        #head.to_owned(),
-                        Box::new(datom_codec::Datomic::conceive(p0)),
+                        protos::Symbol::try_from(#head).expect("static variant"),
+                        Box::new(protos::Conceivable::conceive(p0).expect("infallible datom ascent").1),
                     ),
                 }
             }
@@ -86,12 +86,12 @@ impl Arming for Variant {
                 let mut conceived = Vec::with_capacity(positions.len());
                 for index in 0..positions.len() {
                     let binding = Ident::new(&format!("p{index}"), Span::call_site());
-                    conceived.push(quote! { datom_codec::Datomic::conceive(#binding) });
+                    conceived.push(quote! { protos::Conceivable::conceive(#binding).expect("infallible datom ascent").1 });
                     bindings.push(binding);
                 }
                 quote! {
                     Self::#name( #( #bindings ),* ) => datom_codec::Datom::Variant(
-                        #head.to_owned(),
+                        protos::Symbol::try_from(#head).expect("static variant"),
                         Box::new(datom_codec::Datom::Struct(vec![ #( #conceived ),* ])),
                     ),
                 }
@@ -183,8 +183,11 @@ impl Wrapping for Identity {
                 fn incorporate(site: datom_codec::Site<'_>) -> Result<Self, datom_codec::Fault> {
                     #incorporate
                 }
-                fn conceive(&self) -> datom_codec::Datom {
-                    #conceive
+            }
+            impl #corporate protos::Conceivable<datom_codec::Datom> for #name #arguments {
+                type Fault = std::convert::Infallible;
+                fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+                    Ok(protos::Situated(protos::Situation { extent: protos::Extent(0, 0), children: vec![] }, #conceive))
                 }
             }
         }
@@ -216,7 +219,7 @@ impl Datomizing for [Variant] {
             let v = datom_codec::Sited::variant(site)?;
             match v.name {
                 #( #incorporate_arms )*
-                _ => Err(datom_codec::Sited::refuse(site, datom_codec::Problem::UnknownVariant(v.name.to_owned()))),
+                _ => Err(datom_codec::Headed::reject(&v, datom_codec::Problem::UnknownVariant(protos::Word::try_from(v.name).expect("variant name")))),
             }
         };
         identity.wrapped(scope, conceive, incorporate)

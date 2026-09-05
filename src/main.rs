@@ -9,9 +9,9 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use datom_codec::{Datom, Datomic};
+use datom_codec::{Datom, IncorporationBudget};
 use ethos_zero::{File, Generating};
-use protos::{Actualizable, Potential, Situated};
+use protos::{Actualizable, Potential, Situated, Textualizable};
 
 /// The crate's contract, declared in ethos-zero.ethos and generated into contract.rs.
 #[rustfmt::skip]
@@ -56,7 +56,7 @@ impl Serving for Generation {
                 );
             }
         };
-        let file = match Potential::<File>::from(text).actualize() {
+        let file = match Potential::<File>::from(text).actualize(()) {
             Ok(file) => file,
             Err(Situated(situation, fault)) => {
                 return Response::Faulty(source.clone(), situation.extent, fault);
@@ -95,7 +95,8 @@ impl Serving for Request {
 
 impl Serving for Potential<Request, Datom> {
     fn serve(&self) -> Response {
-        match self.actualize() {
+        let budget = IncorporationBudget::try_from(4_096).expect("a positive CLI budget");
+        match self.actualize(budget) {
             Ok(request) => request.serve(),
             Err(fault) => Response::Malformed(fault),
         }

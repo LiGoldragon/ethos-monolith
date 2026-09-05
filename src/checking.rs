@@ -268,6 +268,24 @@ impl Naming for Variant {
     }
 }
 
+impl Naming for AssociatedType {
+    fn names(&self) -> Vec<(Name, Path)> {
+        vec![(self.name.clone(), vec![])]
+    }
+}
+
+impl Naming for AssociatedConstant {
+    fn names(&self) -> Vec<(Name, Path)> {
+        vec![(self.name.clone(), vec![])]
+    }
+}
+
+impl Naming for Capability {
+    fn names(&self) -> Vec<(Name, Path)> {
+        vec![(self.name.clone(), vec![])]
+    }
+}
+
 /// The kind whose capability lists the names of every element of a section, each under its index.
 trait Sectioned {
     fn names_in(&self, section: Integer) -> Vec<(Name, Path)>;
@@ -404,6 +422,12 @@ impl Checkable for Sema {
 
 impl Checkable for Identity {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
+        if self.constraints.len() > 26 {
+            return Err(Fault::Conceptual(
+                vec![],
+                Problem::Arity(26, self.constraints.len() as Integer),
+            ));
+        }
         for (index, constraint) in self.constraints.iter().enumerate() {
             constraint.check(scope).place(index as Integer)?;
         }
@@ -416,6 +440,9 @@ impl Checkable for Constraint {
         match self {
             Constraint::One(reference) => reference.refer(scope, Role::Kind),
             Constraint::Many(references) => {
+                if references.is_empty() {
+                    return Err(Fault::Conceptual(vec![], Problem::Empty));
+                }
                 for (index, reference) in references.iter().enumerate() {
                     reference.refer(scope, Role::Kind).place(index as Integer)?;
                 }
@@ -472,7 +499,32 @@ impl ReferringEach for [Reference] {
 
 impl Referring for Reference {
     fn refer(&self, scope: &Scope, role: Role) -> Result<(), Fault> {
-        // A sourced name is the source's to declare; its head sits at child 0.
+        // A direct Protos intrinsic has the same contract whether it arrives
+        // through an import or an explicit qualification. Other sources own
+        // their declaration metadata.
+        if self
+            .source
+            .as_ref()
+            .is_some_and(|source| source.0 == "protos")
+            && let Some(intrinsic) = Intrinsic::identify(&self.name.0)
+        {
+            if intrinsic.role() != role {
+                return Err(Fault::Conceptual(
+                    vec![],
+                    Problem::Role(protos::Text::try_from(self.name.0.clone()).expect("identifier")),
+                ));
+            }
+            if intrinsic.arity() != self.arguments.len() {
+                return Err(Fault::Conceptual(
+                    vec![],
+                    Problem::Arity(
+                        intrinsic.arity() as Integer,
+                        self.arguments.len() as Integer,
+                    ),
+                ));
+            }
+        }
+        // A sourced name is otherwise the source's to declare; its head sits at child 0.
         if self.source.is_none() {
             let (found, expected) = match scope.resolve(&self.name) {
                 Resolution::Undeclared => {
@@ -487,6 +539,14 @@ impl Referring for Reference {
                 Resolution::Parameter(_) | Resolution::Associated(_) => (Role::Type, Some(0)),
                 Resolution::Type(_) => (Role::Type, None),
                 Resolution::Kind(_) => (Role::Kind, None),
+                Resolution::Imported(source, emitted)
+                    if source.0 == "protos" && emitted == self.name =>
+                {
+                    match Intrinsic::identify(&self.name.0) {
+                        Some(intrinsic) => (intrinsic.role(), Some(intrinsic.arity())),
+                        None => (role, None),
+                    }
+                }
                 Resolution::Imported(_, _) => (role, None),
             };
             if found != role {
@@ -647,13 +707,19 @@ impl Checkable for KindDeclaration {
             },
         };
         match &self.body {
-            KindBody::Simple(capabilities) => capabilities.check_each(&inner, 0),
+            KindBody::Simple(capabilities) => {
+                capabilities.names_in(0).distinct()?;
+                capabilities.check_each(&inner, 0)
+            }
             KindBody::Complex {
                 superkinds,
                 types,
                 constants,
                 capabilities,
             } => {
+                types.names_in(1).distinct()?;
+                constants.names_in(2).distinct()?;
+                capabilities.names_in(3).distinct()?;
                 superkinds.refer_each(&inner, Role::Kind, 0).place(0)?;
                 types.check_each(&inner, 1).place(0)?;
                 constants.check_each(&inner, 2).place(0)?;

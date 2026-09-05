@@ -8,12 +8,25 @@ impl datom_codec::Datomic for Generation {
         let p1: protos::Text = datom_codec::Positional::position(&mut p)?;
         Ok(Self(p0, p1))
     }
-    fn conceive(&self) -> datom_codec::Datom {
-        datom_codec::Datom::Struct(
-            vec![
-                datom_codec::Datomic::conceive(& self.0),
-                datom_codec::Datomic::conceive(& self.1)
-            ],
+}
+impl protos::Conceivable<datom_codec::Datom> for Generation {
+    type Fault = std::convert::Infallible;
+    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        Ok(
+            protos::Situated(
+                protos::Situation {
+                    extent: protos::Extent(0, 0),
+                    children: vec![],
+                },
+                datom_codec::Datom::Struct(
+                    vec![
+                        protos::Conceivable::conceive(& self.0)
+                        .expect("infallible datom ascent").1,
+                        protos::Conceivable::conceive(& self.1)
+                        .expect("infallible datom ascent").1
+                    ],
+                ),
+            ),
         )
     }
 }
@@ -28,23 +41,41 @@ impl datom_codec::Datomic for Request {
             "Generate" => Ok(Self::Generate(datom_codec::Carrying::body(v)?)),
             _ => {
                 Err(
-                    datom_codec::Sited::refuse(
-                        site,
-                        datom_codec::Problem::UnknownVariant(v.name.to_owned()),
+                    datom_codec::Headed::reject(
+                        &v,
+                        datom_codec::Problem::UnknownVariant(
+                            protos::Word::try_from(v.name).expect("variant name"),
+                        ),
                     ),
                 )
             }
         }
     }
-    fn conceive(&self) -> datom_codec::Datom {
-        match self {
-            Self::Generate(p0) => {
-                datom_codec::Datom::Variant(
-                    "Generate".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-        }
+}
+impl protos::Conceivable<datom_codec::Datom> for Request {
+    type Fault = std::convert::Infallible;
+    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        Ok(
+            protos::Situated(
+                protos::Situation {
+                    extent: protos::Extent(0, 0),
+                    children: vec![],
+                },
+                match self {
+                    Self::Generate(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Generate")
+                                .expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                },
+            ),
+        )
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,74 +115,111 @@ impl datom_codec::Datomic for Response {
             }
             _ => {
                 Err(
-                    datom_codec::Sited::refuse(
-                        site,
-                        datom_codec::Problem::UnknownVariant(v.name.to_owned()),
+                    datom_codec::Headed::reject(
+                        &v,
+                        datom_codec::Problem::UnknownVariant(
+                            protos::Word::try_from(v.name).expect("variant name"),
+                        ),
                     ),
                 )
             }
         }
     }
-    fn conceive(&self) -> datom_codec::Datom {
-        match self {
-            Self::Generated(p0) => {
-                datom_codec::Datom::Variant(
-                    "Generated".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-            Self::Arguments(p0) => {
-                datom_codec::Datom::Variant(
-                    "Arguments".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-            Self::Malformed(p0) => {
-                datom_codec::Datom::Variant(
-                    "Malformed".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-            Self::Unreadable(p0, p1) => {
-                datom_codec::Datom::Variant(
-                    "Unreadable".to_owned(),
-                    Box::new(
-                        datom_codec::Datom::Struct(
-                            vec![
-                                datom_codec::Datomic::conceive(p0),
-                                datom_codec::Datomic::conceive(p1)
-                            ],
-                        ),
-                    ),
-                )
-            }
-            Self::Faulty(p0, p1, p2) => {
-                datom_codec::Datom::Variant(
-                    "Faulty".to_owned(),
-                    Box::new(
-                        datom_codec::Datom::Struct(
-                            vec![
-                                datom_codec::Datomic::conceive(p0),
-                                datom_codec::Datomic::conceive(p1),
-                                datom_codec::Datomic::conceive(p2)
-                            ],
-                        ),
-                    ),
-                )
-            }
-            Self::Unwritable(p0, p1) => {
-                datom_codec::Datom::Variant(
-                    "Unwritable".to_owned(),
-                    Box::new(
-                        datom_codec::Datom::Struct(
-                            vec![
-                                datom_codec::Datomic::conceive(p0),
-                                datom_codec::Datomic::conceive(p1)
-                            ],
-                        ),
-                    ),
-                )
-            }
-        }
+}
+impl protos::Conceivable<datom_codec::Datom> for Response {
+    type Fault = std::convert::Infallible;
+    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        Ok(
+            protos::Situated(
+                protos::Situation {
+                    extent: protos::Extent(0, 0),
+                    children: vec![],
+                },
+                match self {
+                    Self::Generated(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Generated")
+                                .expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                    Self::Arguments(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Arguments")
+                                .expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                    Self::Malformed(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Malformed")
+                                .expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                    Self::Unreadable(p0, p1) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Unreadable")
+                                .expect("static variant"),
+                            Box::new(
+                                datom_codec::Datom::Struct(
+                                    vec![
+                                        protos::Conceivable::conceive(p0)
+                                        .expect("infallible datom ascent").1,
+                                        protos::Conceivable::conceive(p1)
+                                        .expect("infallible datom ascent").1
+                                    ],
+                                ),
+                            ),
+                        )
+                    }
+                    Self::Faulty(p0, p1, p2) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Faulty").expect("static variant"),
+                            Box::new(
+                                datom_codec::Datom::Struct(
+                                    vec![
+                                        protos::Conceivable::conceive(p0)
+                                        .expect("infallible datom ascent").1,
+                                        protos::Conceivable::conceive(p1)
+                                        .expect("infallible datom ascent").1,
+                                        protos::Conceivable::conceive(p2)
+                                        .expect("infallible datom ascent").1
+                                    ],
+                                ),
+                            ),
+                        )
+                    }
+                    Self::Unwritable(p0, p1) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Unwritable")
+                                .expect("static variant"),
+                            Box::new(
+                                datom_codec::Datom::Struct(
+                                    vec![
+                                        protos::Conceivable::conceive(p0)
+                                        .expect("infallible datom ascent").1,
+                                        protos::Conceivable::conceive(p1)
+                                        .expect("infallible datom ascent").1
+                                    ],
+                                ),
+                            ),
+                        )
+                    }
+                },
+            ),
+        )
     }
 }

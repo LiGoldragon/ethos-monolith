@@ -48,8 +48,9 @@ impl Faulted for Situated<Protoform> {
 
 impl Actualizable<File> for Potential<File> {
     type Fault = Situated<Fault>;
+    type Budget = ();
 
-    fn actualize(&self) -> Result<File, Situated<Fault>> {
+    fn actualize(&self, (): Self::Budget) -> Result<File, Situated<Fault>> {
         let text: String = self.text().to_owned();
         let canonical = match text.canonicalize() {
             Ok(canonical) => canonical,

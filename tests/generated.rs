@@ -2,7 +2,7 @@
 //! and datom_codec and round-tripped through datom text. The modules under
 //! tests/generated are committed; the freshness test regenerates them.
 
-use datom_codec::{Datom, Datomic, Expected, Fault, Problem};
+use datom_codec::{Datom, Datomic, Expected, Fault, IncorporationBudget, Problem};
 
 fn text(s: &str) -> protos::Text {
     protos::Text::try_from(s).unwrap()
@@ -126,7 +126,9 @@ impl RoundTripping for str {
     where
         Datom: protos::Incorporable<T, Fault = Fault>,
     {
-        match Potential::<T, Datom>::from(self).actualize() {
+        match Potential::<T, Datom>::from(self)
+            .actualize(IncorporationBudget::try_from(4_096).expect("positive budget"))
+        {
             Ok(value) => value,
             Err(fault) => panic!("{self} does not read: {fault:?}"),
         }
@@ -136,7 +138,9 @@ impl RoundTripping for str {
     where
         Datom: protos::Incorporable<T, Fault = Fault>,
     {
-        match Potential::<T, Datom>::from(self).actualize() {
+        match Potential::<T, Datom>::from(self)
+            .actualize(IncorporationBudget::try_from(4_096).expect("positive budget"))
+        {
             Ok(_) => panic!("{self} was expected to fault"),
             Err(fault) => fault,
         }
@@ -258,7 +262,7 @@ fn sink_bears_its_kinds() {
 fn struct_position_fault_is_at_its_index() {
     let fault = "{ Ada notanumber }".fault::<multi_types::Record>();
     assert!(
-        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Value(v)) if path == &vec![1] && v == "notanumber")
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Value(v)) if path == &vec![1] && v.as_ref() == "notanumber")
     );
 }
 
@@ -267,12 +271,12 @@ fn variant_body_position_fault_is_under_the_body() {
     let fault =
         "Locked.{ notanumber MyLock 6329f1 [ /abs/path ] r }".fault::<orchestrate::Response>();
     assert!(
-        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Value(v)) if path == &vec![1, 0] && v == "notanumber"),
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Value(v)) if path == &vec![1, 0] && v.as_ref() == "notanumber"),
         "actual: {fault:?}"
     );
     let fault = "Node.{ Leaf.x Leaf.1 }".fault::<tree_types::Tree>();
     assert!(
-        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Value(v)) if path == &vec![1, 0, 1] && v == "x"),
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Value(v)) if path == &vec![1, 0, 1] && v.as_ref() == "x"),
         "actual: {fault:?}"
     );
 }
@@ -281,7 +285,7 @@ fn variant_body_position_fault_is_under_the_body() {
 fn vector_element_fault_carries_every_index() {
     let fault = "Observed.Locks.[ { 7 a b [] r } { x a b [] r } ]".fault::<orchestrate::Response>();
     assert!(
-        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Value(v)) if path == &vec![1, 1, 1, 0] && v == "x"),
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Value(v)) if path == &vec![1, 1, 1, 0] && v.as_ref() == "x"),
         "actual: {fault:?}"
     );
 }
@@ -300,14 +304,31 @@ fn arity_and_shape_faults_are_typed() {
     );
     let fault = "Bogus.1".fault::<orchestrate::Response>();
     assert!(
-        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::UnknownVariant(v)) if path.is_empty() && v == "Bogus")
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::UnknownVariant(v)) if path.is_empty() && v.as_ref() == "Bogus")
     );
     let fault = "Bogus".fault::<multi_types::SinkError>();
     assert!(
-        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::UnknownVariant(v)) if path.is_empty() && v == "Bogus")
+        matches!(&fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::UnknownVariant(v)) if path.is_empty() && v.as_ref() == "Bogus")
     );
     let fault = "{ 1 }".fault::<multi_types::SinkError>();
     assert!(
         matches!(fault, Fault::Corporate(datom_codec::Locus { path, .. }, Problem::Shape(Expected::Variant, _)) if path.is_empty())
     );
+}
+
+#[test]
+fn caller_owned_budget_refuses_deep_recursive_data_before_stack_exhaustion() {
+    let mut text = String::new();
+    for _ in 0..10_000 {
+        text.push_str("Maybe.Some.");
+    }
+    text.push_str("Leaf.1");
+    let budget = IncorporationBudget::try_from(256).expect("nonnegative budget");
+    let fault = Potential::<tree_types::Tree, Datom>::from(text.as_str())
+        .actualize(budget)
+        .expect_err("the caller-owned finite budget must refuse deep data");
+    assert!(matches!(
+        fault,
+        Fault::Corporate(_, Problem::BudgetExhausted)
+    ));
 }

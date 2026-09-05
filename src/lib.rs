@@ -457,7 +457,7 @@ impl<T> Placing for Result<T, Fault> {
 
 impl std::fmt::Display for Fault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", datom_codec::Datomic::textualize(self))
+        write!(f, "{}", protos::Textualizable::textualize(self))
     }
 }
 

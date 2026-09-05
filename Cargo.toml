@@ -20,8 +20,8 @@ name = "ethos-zero"
 path = "src/main.rs"
 
 [dependencies]
-protos      = { git = "https://github.com/LiGoldragon/protos",  rev = "205408679738" }
-datom-codec = { git = "https://github.com/LiGoldragon/datom-codec", rev = "cd43574d8ef6" }
+protos      = { git = "https://github.com/LiGoldragon/protos",  rev = "2d999f173334" }
+datom-codec = { git = "https://github.com/LiGoldragon/datom-codec", rev = "41a3c073d5c5" }
 quote       = "1"
 proc-macro2 = "1"
 syn         = { version = "3", features = ["full"] }

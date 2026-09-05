@@ -4,8 +4,8 @@ version = 4
 
 [[package]]
 name = "datom-codec"
-version = "0.14.0"
-source = "git+https://github.com/LiGoldragon/datom-codec?rev=cd43574d8ef6#cd43574d8ef61e4c18d768310f67079bf58b0835"
+version = "0.21.0"
+source = "git+https://github.com/LiGoldragon/datom-codec?rev=41a3c073d5c5#41a3c073d5c5cdcb3ebb1a5c842e8c068145fdb2"
 dependencies = [
  "protos",
 ]
@@ -44,8 +44,8 @@ dependencies = [
 
 [[package]]
 name = "protos"
-version = "0.19.0"
-source = "git+https://github.com/LiGoldragon/protos?rev=205408679738#205408679738d92d1182fe7c6f5c0eeb278ce318"
+version = "0.26.0"
+source = "git+https://github.com/LiGoldragon/protos?rev=2d999f173334#2d999f1733347b7e64e24b2f75ba889ad7182bc0"
 
 [[package]]
 name = "quote"

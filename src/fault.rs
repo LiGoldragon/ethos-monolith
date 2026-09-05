@@ -19,36 +19,57 @@ impl datom_codec::Datomic for Fault {
             }
             _ => {
                 Err(
-                    datom_codec::Sited::refuse(
-                        site,
-                        datom_codec::Problem::UnknownVariant(v.name.to_owned()),
-                    ),
-                )
-            }
-        }
-    }
-    fn conceive(&self) -> datom_codec::Datom {
-        match self {
-            Self::Structural(p0) => {
-                datom_codec::Datom::Variant(
-                    "Structural".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-            Self::Conceptual(p0, p1) => {
-                datom_codec::Datom::Variant(
-                    "Conceptual".to_owned(),
-                    Box::new(
-                        datom_codec::Datom::Struct(
-                            vec![
-                                datom_codec::Datomic::conceive(p0),
-                                datom_codec::Datomic::conceive(p1)
-                            ],
+                    datom_codec::Headed::reject(
+                        &v,
+                        datom_codec::Problem::UnknownVariant(
+                            protos::Word::try_from(v.name).expect("variant name"),
                         ),
                     ),
                 )
             }
         }
+    }
+}
+impl protos::Conceivable<datom_codec::Datom> for Fault {
+    type Fault = std::convert::Infallible;
+    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        Ok(
+            protos::Situated(
+                protos::Situation {
+                    extent: protos::Extent(0, 0),
+                    children: vec![],
+                },
+                match self {
+                    Self::Structural(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Structural")
+                                .expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                    Self::Conceptual(p0, p1) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Conceptual")
+                                .expect("static variant"),
+                            Box::new(
+                                datom_codec::Datom::Struct(
+                                    vec![
+                                        protos::Conceivable::conceive(p0)
+                                        .expect("infallible datom ascent").1,
+                                        protos::Conceivable::conceive(p1)
+                                        .expect("infallible datom ascent").1
+                                    ],
+                                ),
+                            ),
+                        )
+                    }
+                },
+            ),
+        )
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,76 +122,151 @@ impl datom_codec::Datomic for Problem {
             "Role" => Ok(Self::Role(datom_codec::Carrying::body(v)?)),
             _ => {
                 Err(
-                    datom_codec::Sited::refuse(
-                        site,
-                        datom_codec::Problem::UnknownVariant(v.name.to_owned()),
+                    datom_codec::Headed::reject(
+                        &v,
+                        datom_codec::Problem::UnknownVariant(
+                            protos::Word::try_from(v.name).expect("variant name"),
+                        ),
                     ),
                 )
             }
         }
     }
-    fn conceive(&self) -> datom_codec::Datom {
-        match self {
-            Self::Root => datom_codec::Datom::Word("Root".to_owned()),
-            Self::Arity(p0, p1) => {
-                datom_codec::Datom::Variant(
-                    "Arity".to_owned(),
-                    Box::new(
-                        datom_codec::Datom::Struct(
-                            vec![
-                                datom_codec::Datomic::conceive(p0),
-                                datom_codec::Datomic::conceive(p1)
-                            ],
-                        ),
-                    ),
-                )
-            }
-            Self::Expected(p0) => {
-                datom_codec::Datom::Variant(
-                    "Expected".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-            Self::Separator(p0) => {
-                datom_codec::Datom::Variant(
-                    "Separator".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-            Self::Name(p0) => {
-                datom_codec::Datom::Variant(
-                    "Name".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-            Self::Duplicate(p0) => {
-                datom_codec::Datom::Variant(
-                    "Duplicate".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-            Self::Undeclared(p0) => {
-                datom_codec::Datom::Variant(
-                    "Undeclared".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-            Self::Cycle(p0) => {
-                datom_codec::Datom::Variant(
-                    "Cycle".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-            Self::Yield => datom_codec::Datom::Word("Yield".to_owned()),
-            Self::Empty => datom_codec::Datom::Word("Empty".to_owned()),
-            Self::Depth => datom_codec::Datom::Word("Depth".to_owned()),
-            Self::Role(p0) => {
-                datom_codec::Datom::Variant(
-                    "Role".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-        }
+}
+impl protos::Conceivable<datom_codec::Datom> for Problem {
+    type Fault = std::convert::Infallible;
+    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        Ok(
+            protos::Situated(
+                protos::Situation {
+                    extent: protos::Extent(0, 0),
+                    children: vec![],
+                },
+                match self {
+                    Self::Root => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Root").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Arity(p0, p1) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Arity").expect("static variant"),
+                            Box::new(
+                                datom_codec::Datom::Struct(
+                                    vec![
+                                        protos::Conceivable::conceive(p0)
+                                        .expect("infallible datom ascent").1,
+                                        protos::Conceivable::conceive(p1)
+                                        .expect("infallible datom ascent").1
+                                    ],
+                                ),
+                            ),
+                        )
+                    }
+                    Self::Expected(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Expected")
+                                .expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                    Self::Separator(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Separator")
+                                .expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                    Self::Name(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Name").expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                    Self::Duplicate(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Duplicate")
+                                .expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                    Self::Undeclared(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Undeclared")
+                                .expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                    Self::Cycle(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Cycle").expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                    Self::Yield => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Yield").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Empty => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Empty").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Depth => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Depth").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Role(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Role").expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                },
+            ),
+        )
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,28 +338,129 @@ impl datom_codec::Datomic for Form {
             }
             _ => {
                 Err(
-                    datom_codec::Sited::refuse(
-                        site,
-                        datom_codec::Problem::UnknownVariant(v.name.to_owned()),
+                    datom_codec::Headed::reject(
+                        &v,
+                        datom_codec::Problem::UnknownVariant(
+                            protos::Word::try_from(v.name).expect("variant name"),
+                        ),
                     ),
                 )
             }
         }
     }
-    fn conceive(&self) -> datom_codec::Datom {
-        match self {
-            Self::File => datom_codec::Datom::Word("File".to_owned()),
-            Self::Section => datom_codec::Datom::Word("Section".to_owned()),
-            Self::Import => datom_codec::Datom::Word("Import".to_owned()),
-            Self::Name => datom_codec::Datom::Word("Name".to_owned()),
-            Self::Declaration => datom_codec::Datom::Word("Declaration".to_owned()),
-            Self::Variant => datom_codec::Datom::Word("Variant".to_owned()),
-            Self::Reference => datom_codec::Datom::Word("Reference".to_owned()),
-            Self::Constraint => datom_codec::Datom::Word("Constraint".to_owned()),
-            Self::Kind => datom_codec::Datom::Word("Kind".to_owned()),
-            Self::Capability => datom_codec::Datom::Word("Capability".to_owned()),
-            Self::Constant => datom_codec::Datom::Word("Constant".to_owned()),
-            Self::Association => datom_codec::Datom::Word("Association".to_owned()),
-        }
+}
+impl protos::Conceivable<datom_codec::Datom> for Form {
+    type Fault = std::convert::Infallible;
+    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        Ok(
+            protos::Situated(
+                protos::Situation {
+                    extent: protos::Extent(0, 0),
+                    children: vec![],
+                },
+                match self {
+                    Self::File => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("File").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Section => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Section").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Import => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Import").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Name => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Name").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Declaration => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Declaration")
+                                        .expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Variant => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Variant").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Reference => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Reference").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Constraint => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Constraint")
+                                        .expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Kind => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Kind").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Capability => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Capability")
+                                        .expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Constant => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Constant").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Association => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Association")
+                                        .expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                },
+            ),
+        )
     }
 }

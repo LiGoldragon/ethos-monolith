@@ -4,7 +4,7 @@
 //! reverse of conception; the file's text is the canonical print of
 //! its protoform, the braced form on one line.
 
-use protos::{Enclosure, Head, Protoform, Separator, Textualizable};
+use protos::{Bare, Enclosure, Head, Protoform, Separator, Symbol, Textualizable};
 
 use crate::{
     AssociatedConstant, AssociatedType, Association, Capability, Constraint, File, Identity,
@@ -51,6 +51,14 @@ trait Attaching {
     fn under(self, head: Head, separator: Separator) -> Protoform;
 }
 
+fn symbol(name: &str) -> Symbol {
+    Symbol::try_from(name).expect("validated ethos name")
+}
+
+fn bare(name: &str) -> Protoform {
+    Protoform::Bare(Bare::try_from(name).expect("validated ethos bare"))
+}
+
 impl Attaching for Protoform {
     fn under(self, head: Head, separator: Separator) -> Protoform {
         Protoform::Headed(head, separator, Box::new(self))
@@ -78,20 +86,17 @@ impl Protosizing for File {
                 sema.types.bracketed(),
             ],
         };
-        Protoform::Enclosed(Enclosure::Braced, sections).under(
-            Head::Symbol(self.root().name().to_owned()),
-            Separator::Period,
-        )
+        Protoform::Enclosed(Enclosure::Braced, sections)
+            .under(Head::Symbol(symbol(self.root().name())), Separator::Period)
     }
 }
 
 impl Protosizing for Imported {
     fn protoform(&self) -> Protoform {
         if self.name == self.emitted {
-            Protoform::Bare(Head::Symbol(self.name.0.to_string()))
+            bare(&self.name.0)
         } else {
-            Protoform::Bare(Head::Symbol(self.emitted.0.to_string()))
-                .under(Head::Symbol(self.name.0.to_string()), Separator::Period)
+            bare(&self.emitted.0).under(Head::Symbol(symbol(&self.name.0)), Separator::Period)
         }
     }
 }
@@ -101,10 +106,10 @@ impl Protosizing for Import {
         match self {
             Import::One(source, imported) => imported
                 .protoform()
-                .under(Head::Symbol(source.0.to_string()), Separator::Colon),
+                .under(Head::Symbol(symbol(&source.0)), Separator::Colon),
             Import::Many(source, imports) => imports
                 .bracketed()
-                .under(Head::Symbol(source.0.to_string()), Separator::Colon),
+                .under(Head::Symbol(symbol(&source.0)), Separator::Colon),
         }
     }
 }
@@ -112,22 +117,30 @@ impl Protosizing for Import {
 impl Heading for Reference {
     fn head(&self) -> Head {
         if self.arguments.is_empty() {
-            Head::Symbol(self.name.0.to_string())
+            Head::Symbol(symbol(&self.name.0))
         } else {
             let mut arguments = Vec::with_capacity(self.arguments.len());
             for argument in &self.arguments {
                 arguments.push(argument.protoform());
             }
-            Head::Qualified(self.name.0.to_string(), arguments)
+            Head::Qualified(symbol(&self.name.0), arguments)
         }
     }
 }
 
 impl Protosizing for Reference {
     fn protoform(&self) -> Protoform {
-        let bare = Protoform::Bare(self.head());
+        let bare = if self.arguments.is_empty() {
+            bare(&self.name.0)
+        } else {
+            let mut arguments = Vec::with_capacity(self.arguments.len());
+            for argument in &self.arguments {
+                arguments.push(argument.protoform());
+            }
+            Protoform::Qualified(symbol(&self.name.0), arguments)
+        };
         match &self.source {
-            Some(source) => bare.under(Head::Symbol(source.0.to_string()), Separator::Colon),
+            Some(source) => bare.under(Head::Symbol(symbol(&source.0)), Separator::Colon),
             None => bare,
         }
     }
@@ -136,13 +149,13 @@ impl Protosizing for Reference {
 impl Heading for Identity {
     fn head(&self) -> Head {
         if self.constraints.is_empty() {
-            Head::Symbol(self.name.0.to_string())
+            Head::Symbol(symbol(&self.name.0))
         } else {
             let mut constraints = Vec::with_capacity(self.constraints.len());
             for constraint in &self.constraints {
                 constraints.push(constraint.protoform());
             }
-            Head::Qualified(self.name.0.to_string(), constraints)
+            Head::Qualified(symbol(&self.name.0), constraints)
         }
     }
 }
@@ -175,16 +188,16 @@ impl Protosizing for TypeDeclaration {
 impl Protosizing for Variant {
     fn protoform(&self) -> Protoform {
         match self {
-            Variant::Bare(name) => Protoform::Bare(Head::Symbol(name.0.to_string())),
+            Variant::Bare(name) => bare(&name.0),
             Variant::Typed(name, reference) => reference
                 .protoform()
-                .under(Head::Symbol(name.0.to_string()), Separator::Period),
+                .under(Head::Symbol(symbol(&name.0)), Separator::Period),
             Variant::Struct(name, positions) => positions
                 .braced()
-                .under(Head::Symbol(name.0.to_string()), Separator::Period),
+                .under(Head::Symbol(symbol(&name.0)), Separator::Period),
             Variant::Enum(name, variants) => variants
                 .bracketed()
-                .under(Head::Symbol(name.0.to_string()), Separator::Period),
+                .under(Head::Symbol(symbol(&name.0)), Separator::Period),
         }
     }
 }
@@ -215,13 +228,13 @@ impl Protosizing for KindDeclaration {
 impl Protosizing for AssociatedType {
     fn protoform(&self) -> Protoform {
         if self.bounds.is_empty() {
-            Protoform::Bare(Head::Symbol(self.name.0.to_string()))
+            bare(&self.name.0)
         } else {
             let mut bounds = Vec::with_capacity(self.bounds.len());
             for bound in &self.bounds {
                 bounds.push(bound.protoform());
             }
-            Protoform::Bare(Head::Qualified(self.name.0.to_string(), bounds))
+            Protoform::Qualified(symbol(&self.name.0), bounds)
         }
     }
 }
@@ -230,7 +243,7 @@ impl Protosizing for AssociatedConstant {
     fn protoform(&self) -> Protoform {
         self.ty
             .protoform()
-            .under(Head::Symbol(self.name.0.to_string()), Separator::Period)
+            .under(Head::Symbol(symbol(&self.name.0)), Separator::Period)
     }
 }
 
@@ -248,7 +261,7 @@ impl Protosizing for Capability {
                 vec![inputs.bracketed(), std::slice::from_ref(yields).bracketed()],
             ),
         };
-        body.under(Head::Symbol(self.name.0.to_string()), separator)
+        body.under(Head::Symbol(symbol(&self.name.0)), separator)
     }
 }
 

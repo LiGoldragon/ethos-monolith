@@ -21,14 +21,14 @@ trait Reading {
 
 impl Reading for str {
     fn file(&self) -> File {
-        match Potential::<File>::from(self).actualize() {
+        match Potential::<File>::from(self).actualize(()) {
             Ok(file) => file,
             Err(fault) => panic!("{self}\ndoes not read: {fault:?}"),
         }
     }
 
     fn fault(&self) -> Situated<Fault> {
-        match Potential::<File>::from(self).actualize() {
+        match Potential::<File>::from(self).actualize(()) {
             Ok(file) => panic!("{self}\nwas expected to fault, read as {file:?}"),
             Err(fault) => fault,
         }
@@ -362,10 +362,13 @@ fn every_variant_round_trips_through_its_canonical_text() {
     ] {
         let file = source.file();
         let text = file.textualize();
-        let again: File = Potential::<File>::from(text.clone()).actualize().unwrap();
+        let again: File = Potential::<File>::from(text.clone()).actualize(()).unwrap();
         assert_eq!(file, again, "{text}");
         let delineation = Protosizable::protosize(&file).unwrap();
-        assert_eq!(delineation.textualize(), text);
+        assert_eq!(
+            protos::Textualizable::<protos::Delineation>::textualize(&delineation),
+            text
+        );
     }
 }
 
@@ -628,6 +631,41 @@ fn rejects_a_wrong_intrinsic_arity() {
 }
 
 #[test]
+fn rejects_generator_panics_and_locally_invalid_members_before_generation() {
+    let self_declaration = "Types\n[]\n[ Self.{ Text } ]\n[]".fault();
+    assert!(matches!(
+        self_declaration.1,
+        Fault::Conceptual(_, Problem::Name(_))
+    ));
+    let raw_declaration = "Types\n[]\n[ r#type.{ Text } ]\n[]".fault();
+    assert!(matches!(
+        raw_declaration.1,
+        Fault::Conceptual(_, Problem::Name(_))
+    ));
+    let constraints = (0..27).map(|_| "Sized").collect::<Vec<_>>().join(" ");
+    let many_constraints = format!("Types\n[]\n[ Value<{constraints}>.Text ]\n[]").fault();
+    assert!(matches!(
+        many_constraints.1,
+        Fault::Conceptual(_, Problem::Arity(26, 27))
+    ));
+    let empty_constraint = "Types\n[]\n[ Value<[]>.Text ]\n[]".fault();
+    assert!(matches!(
+        empty_constraint.1,
+        Fault::Conceptual(_, Problem::Empty)
+    ));
+    let duplicate_method = "Kinds\n[]\n[ K.[ go.[ Text ] go.[ Text ] ] ]".fault();
+    assert!(matches!(
+        duplicate_method.1,
+        Fault::Conceptual(_, Problem::Duplicate(_))
+    ));
+    let imported_intrinsic = "Types\n[ protos:Text ]\n[ Value.{ Text<Integer> } ]\n[]".fault();
+    assert!(matches!(
+        imported_intrinsic.1,
+        Fault::Conceptual(_, Problem::Arity(0, 1))
+    ));
+}
+
+#[test]
 fn rejects_a_structural_fault_with_its_source_extent() {
     let source = "Types\n[]\n[ Record.{ Text ]\n[]";
     let fault = source.fault();
@@ -671,7 +709,7 @@ fn moderate_nesting_reads_generates_and_round_trips() {
     assert!(rust.contains("pub enum SixABCDE"));
     let file = source.file();
     let again: File = Potential::<File>::from(file.textualize())
-        .actualize()
+        .actualize(())
         .unwrap();
     assert_eq!(file, again);
 }

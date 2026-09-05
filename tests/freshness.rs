@@ -16,7 +16,7 @@ impl Fresh for str {
         let root = env!("CARGO_MANIFEST_DIR");
         let source = std::fs::read_to_string(format!("{root}/{self}")).expect(self);
         let committed = std::fs::read_to_string(format!("{root}/{generated}")).expect(generated);
-        let file = match Potential::<File>::from(source).actualize() {
+        let file = match Potential::<File>::from(source).actualize(()) {
             Ok(file) => file,
             Err(fault) => panic!("{self} does not read: {fault:?}"),
         };

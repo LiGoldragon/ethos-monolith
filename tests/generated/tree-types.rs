@@ -21,48 +21,75 @@ impl datom_codec::Datomic for Tree {
             "Maybe" => Ok(Self::Maybe(datom_codec::Carrying::body(v)?)),
             _ => {
                 Err(
-                    datom_codec::Sited::refuse(
-                        site,
-                        datom_codec::Problem::UnknownVariant(v.name.to_owned()),
+                    datom_codec::Headed::reject(
+                        &v,
+                        datom_codec::Problem::UnknownVariant(
+                            protos::Word::try_from(v.name).expect("variant name"),
+                        ),
                     ),
                 )
             }
         }
     }
-    fn conceive(&self) -> datom_codec::Datom {
-        match self {
-            Self::Leaf(p0) => {
-                datom_codec::Datom::Variant(
-                    "Leaf".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-            Self::Node(p0, p1) => {
-                datom_codec::Datom::Variant(
-                    "Node".to_owned(),
-                    Box::new(
-                        datom_codec::Datom::Struct(
-                            vec![
-                                datom_codec::Datomic::conceive(p0),
-                                datom_codec::Datomic::conceive(p1)
-                            ],
-                        ),
-                    ),
-                )
-            }
-            Self::Many(p0) => {
-                datom_codec::Datom::Variant(
-                    "Many".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-            Self::Maybe(p0) => {
-                datom_codec::Datom::Variant(
-                    "Maybe".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-        }
+}
+impl protos::Conceivable<datom_codec::Datom> for Tree {
+    type Fault = std::convert::Infallible;
+    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        Ok(
+            protos::Situated(
+                protos::Situation {
+                    extent: protos::Extent(0, 0),
+                    children: vec![],
+                },
+                match self {
+                    Self::Leaf(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Leaf").expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                    Self::Node(p0, p1) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Node").expect("static variant"),
+                            Box::new(
+                                datom_codec::Datom::Struct(
+                                    vec![
+                                        protos::Conceivable::conceive(p0)
+                                        .expect("infallible datom ascent").1,
+                                        protos::Conceivable::conceive(p1)
+                                        .expect("infallible datom ascent").1
+                                    ],
+                                ),
+                            ),
+                        )
+                    }
+                    Self::Many(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Many").expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                    Self::Maybe(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Maybe").expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                },
+            ),
+        )
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,12 +101,25 @@ impl datom_codec::Datomic for Chain {
         let p1: Box<Option<Chain>> = datom_codec::Positional::position(&mut p)?;
         Ok(Self(p0, p1))
     }
-    fn conceive(&self) -> datom_codec::Datom {
-        datom_codec::Datom::Struct(
-            vec![
-                datom_codec::Datomic::conceive(& self.0),
-                datom_codec::Datomic::conceive(& self.1)
-            ],
+}
+impl protos::Conceivable<datom_codec::Datom> for Chain {
+    type Fault = std::convert::Infallible;
+    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        Ok(
+            protos::Situated(
+                protos::Situation {
+                    extent: protos::Extent(0, 0),
+                    children: vec![],
+                },
+                datom_codec::Datom::Struct(
+                    vec![
+                        protos::Conceivable::conceive(& self.0)
+                        .expect("infallible datom ascent").1,
+                        protos::Conceivable::conceive(& self.1)
+                        .expect("infallible datom ascent").1
+                    ],
+                ),
+            ),
         )
     }
 }
@@ -92,12 +132,25 @@ impl datom_codec::Datomic for Twin {
         let p1: Box<Twig> = datom_codec::Positional::position(&mut p)?;
         Ok(Self(p0, p1))
     }
-    fn conceive(&self) -> datom_codec::Datom {
-        datom_codec::Datom::Struct(
-            vec![
-                datom_codec::Datomic::conceive(& self.0),
-                datom_codec::Datomic::conceive(& self.1)
-            ],
+}
+impl protos::Conceivable<datom_codec::Datom> for Twin {
+    type Fault = std::convert::Infallible;
+    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        Ok(
+            protos::Situated(
+                protos::Situation {
+                    extent: protos::Extent(0, 0),
+                    children: vec![],
+                },
+                datom_codec::Datom::Struct(
+                    vec![
+                        protos::Conceivable::conceive(& self.0)
+                        .expect("infallible datom ascent").1,
+                        protos::Conceivable::conceive(& self.1)
+                        .expect("infallible datom ascent").1
+                    ],
+                ),
+            ),
         )
     }
 }
@@ -117,24 +170,48 @@ impl datom_codec::Datomic for Twig {
             "Grow" => Ok(Self::Grow(datom_codec::Carrying::body(v)?)),
             _ => {
                 Err(
-                    datom_codec::Sited::refuse(
-                        site,
-                        datom_codec::Problem::UnknownVariant(v.name.to_owned()),
+                    datom_codec::Headed::reject(
+                        &v,
+                        datom_codec::Problem::UnknownVariant(
+                            protos::Word::try_from(v.name).expect("variant name"),
+                        ),
                     ),
                 )
             }
         }
     }
-    fn conceive(&self) -> datom_codec::Datom {
-        match self {
-            Self::Tip => datom_codec::Datom::Word("Tip".to_owned()),
-            Self::Grow(p0) => {
-                datom_codec::Datom::Variant(
-                    "Grow".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-        }
+}
+impl protos::Conceivable<datom_codec::Datom> for Twig {
+    type Fault = std::convert::Infallible;
+    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        Ok(
+            protos::Situated(
+                protos::Situation {
+                    extent: protos::Extent(0, 0),
+                    children: vec![],
+                },
+                match self {
+                    Self::Tip => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("Tip").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Grow(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Grow").expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                },
+            ),
+        )
     }
 }
 pub type Forest = Vec<Tree>;
@@ -154,13 +231,27 @@ impl datom_codec::Datomic for Wrapped {
         let p2: Vec<Option<protos::Text>> = datom_codec::Positional::position(&mut p)?;
         Ok(Self(p0, p1, p2))
     }
-    fn conceive(&self) -> datom_codec::Datom {
-        datom_codec::Datom::Struct(
-            vec![
-                datom_codec::Datomic::conceive(& self.0),
-                datom_codec::Datomic::conceive(& self.1),
-                datom_codec::Datomic::conceive(& self.2)
-            ],
+}
+impl protos::Conceivable<datom_codec::Datom> for Wrapped {
+    type Fault = std::convert::Infallible;
+    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        Ok(
+            protos::Situated(
+                protos::Situation {
+                    extent: protos::Extent(0, 0),
+                    children: vec![],
+                },
+                datom_codec::Datom::Struct(
+                    vec![
+                        protos::Conceivable::conceive(& self.0)
+                        .expect("infallible datom ascent").1,
+                        protos::Conceivable::conceive(& self.1)
+                        .expect("infallible datom ascent").1,
+                        protos::Conceivable::conceive(& self.2)
+                        .expect("infallible datom ascent").1
+                    ],
+                ),
+            ),
         )
     }
 }
@@ -180,24 +271,48 @@ impl datom_codec::Datomic for NestedA {
             "Y" => Ok(Self::Y(datom_codec::Carrying::body(v)?)),
             _ => {
                 Err(
-                    datom_codec::Sited::refuse(
-                        site,
-                        datom_codec::Problem::UnknownVariant(v.name.to_owned()),
+                    datom_codec::Headed::reject(
+                        &v,
+                        datom_codec::Problem::UnknownVariant(
+                            protos::Word::try_from(v.name).expect("variant name"),
+                        ),
                     ),
                 )
             }
         }
     }
-    fn conceive(&self) -> datom_codec::Datom {
-        match self {
-            Self::X => datom_codec::Datom::Word("X".to_owned()),
-            Self::Y(p0) => {
-                datom_codec::Datom::Variant(
-                    "Y".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-        }
+}
+impl protos::Conceivable<datom_codec::Datom> for NestedA {
+    type Fault = std::convert::Infallible;
+    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        Ok(
+            protos::Situated(
+                protos::Situation {
+                    extent: protos::Extent(0, 0),
+                    children: vec![],
+                },
+                match self {
+                    Self::X => {
+                        datom_codec::Datom::Word(
+                            datom_codec::DatomWord::try_from(
+                                    protos::Word::try_from("X").expect("static variant"),
+                                )
+                                .expect("stable variant"),
+                        )
+                    }
+                    Self::Y(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("Y").expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                },
+            ),
+        )
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -217,33 +332,53 @@ impl datom_codec::Datomic for Nested {
             }
             _ => {
                 Err(
-                    datom_codec::Sited::refuse(
-                        site,
-                        datom_codec::Problem::UnknownVariant(v.name.to_owned()),
-                    ),
-                )
-            }
-        }
-    }
-    fn conceive(&self) -> datom_codec::Datom {
-        match self {
-            Self::A(p0) => {
-                datom_codec::Datom::Variant(
-                    "A".to_owned(),
-                    Box::new(datom_codec::Datomic::conceive(p0)),
-                )
-            }
-            Self::B(p0) => {
-                datom_codec::Datom::Variant(
-                    "B".to_owned(),
-                    Box::new(
-                        datom_codec::Datom::Struct(
-                            vec![datom_codec::Datomic::conceive(p0)],
+                    datom_codec::Headed::reject(
+                        &v,
+                        datom_codec::Problem::UnknownVariant(
+                            protos::Word::try_from(v.name).expect("variant name"),
                         ),
                     ),
                 )
             }
         }
+    }
+}
+impl protos::Conceivable<datom_codec::Datom> for Nested {
+    type Fault = std::convert::Infallible;
+    fn conceive(&self) -> Result<protos::Situated<datom_codec::Datom>, Self::Fault> {
+        Ok(
+            protos::Situated(
+                protos::Situation {
+                    extent: protos::Extent(0, 0),
+                    children: vec![],
+                },
+                match self {
+                    Self::A(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("A").expect("static variant"),
+                            Box::new(
+                                protos::Conceivable::conceive(p0)
+                                    .expect("infallible datom ascent")
+                                    .1,
+                            ),
+                        )
+                    }
+                    Self::B(p0) => {
+                        datom_codec::Datom::Variant(
+                            protos::Symbol::try_from("B").expect("static variant"),
+                            Box::new(
+                                datom_codec::Datom::Struct(
+                                    vec![
+                                        protos::Conceivable::conceive(p0)
+                                        .expect("infallible datom ascent").1
+                                    ],
+                                ),
+                            ),
+                        )
+                    }
+                },
+            ),
+        )
     }
 }
 pub type Deep = Vec<Vec<Vec<Option<Result<protos::Text, protos::Integer>>>>>;

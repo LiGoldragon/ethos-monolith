@@ -7,14 +7,14 @@
 //! inserted right after it and a closing brace appended on its own
 //! line. A text already in the braced form is left as it is.
 
-use protos::{Extent, Head, Protoform, Protosizable, Situated};
+use protos::{Extent, Protoform, Protosizable, Situated};
 
 use crate::{Canonical, Canonicalizable, Resituating};
 
 impl Canonicalizable for String {
     fn canonicalize(&self) -> Result<Canonical, protos::Fault> {
         let delineation = <str as Protosizable>::protosize(self)?;
-        if let Some(Situated(situation, Protoform::Bare(Head::Symbol(_)))) = delineation.0.first() {
+        if let Some(Situated(situation, Protoform::Bare(_))) = delineation.0.first() {
             let Extent(_, end) = situation.extent;
             let end = end as usize;
             let mut text = String::with_capacity(self.len() + 4);
