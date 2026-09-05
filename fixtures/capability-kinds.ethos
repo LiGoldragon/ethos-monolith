@@ -1,0 +1,7 @@
+; Summarizable and Fillable from Vision/ethos.md
+Kinds
+[]
+[ Summarizable.[ summarize.[ Text ] ]
+  Fillable.[ push!{ [ Text ] [ Result<Integer SinkError> ] }
+             drain![ Vector<Text> ]
+             create:[ Self ] ] ]

@@ -1,0 +1,8 @@
+; Multiple type declarations per Vision/ethos.md
+Types
+[]
+[ Record.{ Text Integer }
+  Report.{ Text Vector<Integer> }
+  SinkError.[ Closed Full ]
+  LockId.Integer ]
+[]

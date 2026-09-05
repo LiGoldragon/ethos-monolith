@@ -1,0 +1,7 @@
+; Streamable complex kind from Vision/ethos.md
+Kinds
+[]
+[ Streamable.{ [ Fillable ]
+               [ Item<Serializable> ]
+               [ CAPACITY.Integer ]
+               [ next![ Option<Item> ] ] } ]

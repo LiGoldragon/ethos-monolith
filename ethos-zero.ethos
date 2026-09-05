@@ -1,25 +1,8 @@
 ; ethos-zero: the ethos schema language, version zero
-Library.{1 1 0}
+Signal
 []
-[ Potential.Text
-  Concept.[ Library.Library Signal.Signal ]
-  Library.{ Version Vector<Import> Vector<TypeDeclaration> Vector<KindDeclaration> Vector<Association> }
-  Signal.{ Version Vector<Import> Vector<SectionReference> Vector<SectionReference> Vector<TypeDeclaration> }
-  Version.{ Integer Integer Integer }
-  Import.[ Single.{ Text Text } Multiple.{ Text Vector<Text> } ]
-  TypeExpression.[ Named.Text Applied.{ Text Vector<TypeExpression> } SelfType ]
-  Variant.[ Unit.Text Typed.{ Text TypeExpression } InlineStruct.{ Text Vector<TypeExpression> } InlineEnum.{ Text Vector<Variant> } ]
-  TypeDeclaration.[ Struct.{ Text Vector<TypeExpression> } Enum.{ Text Vector<Variant> } Alias.{ Text TypeExpression } Map.{ Text TypeExpression TypeExpression } ]
-  Receiver.[ Shared Mutable None ]
-  Capability.{ Text Receiver Vector<TypeExpression> TypeExpression }
-  AssociatedType.{ Text Vector<Text> }
-  AssociatedConstant.{ Text TypeExpression }
-  KindConstraint.{ Text Vector<Text> }
-  KindDeclaration.[ Simple.{ Text Vector<KindConstraint> Vector<Capability> } Complex.{ Text Vector<KindConstraint> Vector<Text> Vector<AssociatedType> Vector<AssociatedConstant> Vector<Capability> } ]
-  Association.{ Text Vector<Text> }
-  SectionReference.{ Text TypeExpression }
-  Fault.{ Integer Integer Text } ]
-[ Actualizing.[ actualize.[ Result<Concept Fault> ] ]
-  Emitting.[ emit.[ Result<Text Fault> ] ] ]
-[ Potential.[ Actualizing ]
-  Concept.[ Emitting ] ]
+[ Generate.GenerateRequest ]
+[ Generated.GeneratedPaths GenerationFault.GenerationFault ]
+[ GenerateRequest.{ Text Text }
+  GeneratedPaths.Vector<Text>
+  GenerationFault.{ Text Text } ]

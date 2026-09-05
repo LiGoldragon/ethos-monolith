@@ -1,0 +1,6 @@
+; Sink associations from Vision/ethos.md
+Types
+[]
+[ Sink.{ Text Vector<Text> }
+  SinkError.[ Closed Full ] ]
+[ Sink.[ Summarizable Fillable ] ]

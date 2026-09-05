@@ -9,13 +9,13 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     protos-map = {
-      url = "github:LiGoldragon/protos/48061367872b4d6f209df1f1f65f40f2818ffe1b";
+      url = "github:LiGoldragon/protos/2cb88849f3b160333f2757fd7c776e68c279fe51";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
       inputs.rust-build.follows = "rust-build";
     };
     datomic-map = {
-      url = "github:LiGoldragon/datomic/4712361c0194fd4e251b2b79a80b2c298f82ce4b";
+      url = "github:LiGoldragon/datomic/cf59b01bbbc8ebc784bcde4806654c64916136c7";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
       inputs.rust-build.follows = "rust-build";

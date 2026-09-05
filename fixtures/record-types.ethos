@@ -1,0 +1,5 @@
+; Types example from Vision/ethos.md
+Types
+[ protos:Text ]
+[ Record.{ Text Integer } ]
+[]

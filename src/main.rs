@@ -1,21 +1,33 @@
 use std::{env, fs, path::Path, process::ExitCode};
 
-use protos::{Head, Printing, Protoform, Protosizable, Separator, Structural};
+use protos::{Conceivable, Head, Protoform, Protosizable, Separator, Textualizable};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.as_slice() {
         [] => {
-            // Read, actualize, and print the canonical form from the concept
             let source = include_str!("../ethos-zero.ethos");
-            use ethos_zero::{Actualizing, Potential};
-            match Potential::from(source).actualize() {
-                Ok(concept) => {
-                    print!("{}", concept.protosize().print());
-                    ExitCode::SUCCESS
+            use ethos_zero::Canonicalizing;
+            let canonical = source.canonicalize();
+            match canonical.protosize() {
+                Ok(delineation) => {
+                    let file: ethos_zero::File = match delineation.conceive() {
+                        Ok(f) => f,
+                        Err(fault) => {
+                            eprintln!("ethos-zero: {fault}");
+                            return ExitCode::FAILURE;
+                        }
+                    };
+                    match file.protosize() {
+                        Ok(d) => {
+                            print!("{}", d.textualize());
+                            ExitCode::SUCCESS
+                        }
+                        Err(e) => match e {},
+                    }
                 }
                 Err(fault) => {
-                    eprintln!("ethos-zero: {fault}");
+                    eprintln!("ethos-zero: delineation fault at {}..{}", fault.extent.0, fault.extent.1);
                     ExitCode::FAILURE
                 }
             }
@@ -32,7 +44,7 @@ fn main() -> ExitCode {
         },
         _ => {
             eprintln!(
-                "GenerationFailure.{{ \u{201C}ethos-zero accepts one datom value and no flags\u{201D} }}"
+                "GenerationFault.{{ \u{201C}ethos-zero accepts one datom value and no flags\u{201D} }}"
             );
             ExitCode::FAILURE
         }
@@ -40,35 +52,35 @@ fn main() -> ExitCode {
 }
 
 fn run(arg: &str) -> Result<String, String> {
-    let delineation = arg.to_owned().delineate().map_err(|f| {
+    let delineation = arg.to_owned().protosize().map_err(|f| {
         format!(
-            "GenerationFailure.{{ \u{201C}delineation fault at {}..{}\u{201D} }}",
+            "GenerationFault.{{ \u{201C}delineation fault at {}..{}\u{201D} }}",
             f.extent.0, f.extent.1
         )
     })?;
 
     let [pf] = delineation.protoforms.as_slice() else {
-        return Err("GenerationFailure.{ \u{201C}expected one datom value\u{201D} }".into());
+        return Err("GenerationFault.{ \u{201C}expected one datom value\u{201D} }".into());
     };
 
     let Protoform::Headed(Head::Bare(head), sep, body) = pf else {
         return Err(
-            "GenerationFailure.{ \u{201C}expected Generate.{ path out-dir }\u{201D} }".into(),
+            "GenerationFault.{ \u{201C}expected Generate.{ path out-dir }\u{201D} }".into(),
         );
     };
 
     if head != "Generate" || *sep != Separator::Period {
         return Err(format!(
-            "GenerationFailure.{{ \u{201C}unknown command: {head}\u{201D} }}"
+            "GenerationFault.{{ \u{201C}unknown command: {head}\u{201D} }}"
         ));
     }
 
     let Protoform::Enclosed(protos::Enclosure::Braced, children) = body.as_ref() else {
-        return Err("GenerationFailure.{ \u{201C}expected braced body\u{201D} }".into());
+        return Err("GenerationFault.{ \u{201C}expected braced body\u{201D} }".into());
     };
     if children.len() < 2 {
         return Err(
-            "GenerationFailure.{ \u{201C}expected Generate.{ file-path out-dir }\u{201D} }".into(),
+            "GenerationFault.{ \u{201C}expected Generate.{ file-path out-dir }\u{201D} }".into(),
         );
     }
 
@@ -76,42 +88,38 @@ fn run(arg: &str) -> Result<String, String> {
     let out_dir = rejoin_text(&children[1]);
 
     let source = fs::read_to_string(&file_path).map_err(|e| {
-        format!("GenerationFailure.{{ \u{201C}{file_path}\u{201D} \u{201C}{e}\u{201D} }}")
+        format!("GenerationFault.{{ \u{201C}{file_path}\u{201D} \u{201C}{e}\u{201D} }}")
     })?;
 
-    use ethos_zero::{Actualizing, Emitting};
+    use ethos_zero::{Canonicalizing, Generating};
 
-    let concept = ethos_zero::Potential::from(source.as_str())
-        .actualize()
-        .map_err(|f| {
-            format!("GenerationFailure.{{ \u{201C}{file_path}\u{201D} \u{201C}{f}\u{201D} }}")
-        })?;
-
-    let rust = concept.emit().map_err(|f| {
-        format!("GenerationFailure.{{ \u{201C}{file_path}\u{201D} \u{201C}{f}\u{201D} }}")
+    let canonical = source.canonicalize();
+    let delineation = canonical.protosize().map_err(|f| {
+        format!("GenerationFault.{{ \u{201C}{file_path}\u{201D} \u{201C}delineation fault at {}..{}\u{201D} }}", f.extent.0, f.extent.1)
+    })?;
+    let file: ethos_zero::File = delineation.conceive().map_err(|f| {
+        format!("GenerationFault.{{ \u{201C}{file_path}\u{201D} \u{201C}{f}\u{201D} }}")
+    })?;
+    let rust = file.generate().map_err(|f| {
+        format!("GenerationFault.{{ \u{201C}{file_path}\u{201D} \u{201C}{f}\u{201D} }}")
     })?;
 
     let formatted = format_rust(&rust).unwrap_or(rust);
 
-    let out_name = match &concept {
-        ethos_zero::Concept::Library(_) => {
-            Path::new(&file_path)
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string()
-                + ".rs"
-        }
-        ethos_zero::Concept::Signal(_) => "signal.rs".to_owned(),
-    };
+    let stem = Path::new(&file_path)
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let out_name = format!("{stem}.rs");
 
     let out_path = Path::new(&out_dir).join(&out_name);
     fs::create_dir_all(&out_dir).map_err(|e| {
-        format!("GenerationFailure.{{ \u{201C}{out_dir}\u{201D} \u{201C}{e}\u{201D} }}")
+        format!("GenerationFault.{{ \u{201C}{out_dir}\u{201D} \u{201C}{e}\u{201D} }}")
     })?;
     fs::write(&out_path, &formatted).map_err(|e| {
         format!(
-            "GenerationFailure.{{ \u{201C}{}\u{201D} \u{201C}{e}\u{201D} }}",
+            "GenerationFault.{{ \u{201C}{}\u{201D} \u{201C}{e}\u{201D} }}",
             out_path.display()
         )
     })?;
@@ -124,14 +132,23 @@ fn run(arg: &str) -> Result<String, String> {
 
 fn rejoin_text(pf: &Protoform) -> String {
     match pf {
-        Protoform::Bare(s) => s.clone(),
+        Protoform::Bare(Head::Bare(s)) => s.clone(),
+        Protoform::Bare(Head::Qualified(s, _)) => s.clone(),
         Protoform::Headed(Head::Bare(head), sep, body) => {
-            format!("{}{}{}", head, sep.glyph(), rejoin_text(body))
+            format!("{}{}{}", head, sep_glyph(sep), rejoin_text(body))
         }
         Protoform::Headed(Head::Qualified(head, _), sep, body) => {
-            format!("{}{}{}", head, sep.glyph(), rejoin_text(body))
+            format!("{}{}{}", head, sep_glyph(sep), rejoin_text(body))
         }
         _ => String::new(),
+    }
+}
+
+fn sep_glyph(sep: &Separator) -> char {
+    match sep {
+        Separator::Period => '.',
+        Separator::Exclamation => '!',
+        Separator::Colon => ':',
     }
 }
 
@@ -171,14 +188,14 @@ mod tests {
 
     #[test]
     fn rejoin_recovers_dotted_path() {
-        let delineation = "/abs/file.ethos".to_owned().delineate().unwrap();
+        let delineation = "/abs/file.ethos".to_owned().protosize().unwrap();
         let rejoined = rejoin_text(&delineation.protoforms[0]);
         assert_eq!(rejoined, "/abs/file.ethos");
     }
 
     #[test]
     fn rejoin_recovers_plain_path() {
-        let delineation = "/abs/out-dir".to_owned().delineate().unwrap();
+        let delineation = "/abs/out-dir".to_owned().protosize().unwrap();
         let rejoined = rejoin_text(&delineation.protoforms[0]);
         assert_eq!(rejoined, "/abs/out-dir");
     }

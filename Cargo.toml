@@ -1,6 +1,6 @@
 [package]
 name         = "ethos-zero"
-version      = "1.3.1"
+version      = "2.0.0"
 edition      = "2024"
 rust-version = "1.89"
 license      = "MIT OR Apache-2.0"
@@ -20,24 +20,17 @@ name = "ethos-zero"
 path = "src/main.rs"
 
 [dependencies]
-protos = { git = "https://github.com/LiGoldragon/protos", rev = "48061367872b" }
-datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "4712361c0194" }
-quote = "1"
+protos  = { git = "https://github.com/LiGoldragon/protos",  rev = "c5594f9d6f73" }
+datomic = { git = "https://github.com/LiGoldragon/datomic", rev = "2c2e2073fd34" }
+quote       = "1"
 proc-macro2 = "1"
-syn = { version = "3", features = ["full"] }
-thiserror = "2"
-
-[dev-dependencies]
-proptest = "1.6"
-rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
+syn         = { version = "3", features = ["full"] }
 
 [[test]]
-name = "file_contract"
-path = "tests/file_contract.rs"
+name = "ethos"
+path = "tests/ethos.rs"
 
 [lints.rust]
 unsafe_code = "forbid"
 unused      = { level = "warn", priority = -1 }
 dead_code   = "warn"
-
-
