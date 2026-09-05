@@ -736,6 +736,17 @@ impl Checkable for KindDeclaration {
                 constants,
                 capabilities,
             } => {
+                for superkind in superkinds {
+                    if superkind.source.is_none() && superkind.name == self.identity.name {
+                        return Err(Fault::Conceptual(
+                            vec![0],
+                            Problem::Cycle(
+                                protos::Text::try_from(self.identity.name.0.clone())
+                                    .expect("identifier"),
+                            ),
+                        ));
+                    }
+                }
                 types.names_in(1).distinct()?;
                 constants.names_in(2).distinct()?;
                 capabilities.names_in(3).distinct()?;

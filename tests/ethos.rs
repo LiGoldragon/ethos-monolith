@@ -683,6 +683,14 @@ fn rejects_local_arity_lowercase_constants_and_unbounded_alias_graphs() {
 }
 
 #[test]
+fn grouped_qualified_imports_and_self_superkinds_have_truthful_outcomes() {
+    let grouped = "Types\n[ std::clone:[ Clonable.Clone ] ]\n[]\n[]".fault();
+    assert!(matches!(grouped.1, Fault::Conceptual(_, Problem::Name(_))));
+    let cycle = "Kinds\n[]\n[ K.{ [ K ] [] [] [] } ]".fault();
+    assert!(matches!(cycle.1, Fault::Conceptual(_, Problem::Cycle(_))));
+}
+
+#[test]
 fn rejects_a_structural_fault_with_its_source_extent() {
     let source = "Types\n[]\n[ Record.{ Text ]\n[]";
     let fault = source.fault();

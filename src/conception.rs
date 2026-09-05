@@ -359,6 +359,16 @@ impl Conceiving<Import> for Protoform {
             if separator != Separator::Colon {
                 return Err(Problem::Separator(separator).here());
             }
+            if let Some((Head::Symbol(segment), Separator::Colon, names)) = body.headed() {
+                let source: Source = format!("{}::{}", symbol.text(), segment.text()).conceive()?;
+                return match names.bracketed() {
+                    Some(children) => Ok(Import::Many(source, Protoform::each(children).place(1)?)),
+                    None => Ok(Import::One(
+                        source,
+                        Conceiving::<Imported>::conceive(names).place(1)?,
+                    )),
+                };
+            }
             let source: Source = symbol.text().conceive()?;
             return match body.bracketed() {
                 Some(children) => Ok(Import::Many(source, Protoform::each(children).place(0)?)),
