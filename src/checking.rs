@@ -16,6 +16,11 @@ use crate::{
     TypeDeclaration, Types, Variant,
 };
 
+/// A schema must remain small enough for complete whole-file checking to have
+/// a caller-visible, finite cost.  Deep structure has a separate reader
+/// bound; this bounds the flat declaration graph.
+const DECLARATION_LIMIT: usize = 512;
+
 // ---------------------------------------------------------------------------
 // Resolution
 // ---------------------------------------------------------------------------
@@ -369,6 +374,9 @@ impl Checkable for File {
 
 impl Checkable for Types {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
+        if self.types.len() > DECLARATION_LIMIT {
+            return Err(Fault::Conceptual(vec![1], Problem::Depth));
+        }
         let mut names = self.imports.names_in(0);
         names.extend(self.types.names_in(1));
         names.distinct()?;
@@ -537,7 +545,18 @@ impl Referring for Reference {
                 }
                 Resolution::Intrinsic(intrinsic) => (intrinsic.role(), Some(intrinsic.arity())),
                 Resolution::Parameter(_) | Resolution::Associated(_) => (Role::Type, Some(0)),
-                Resolution::Type(_) => (Role::Type, None),
+                Resolution::Type(name) => {
+                    let arity =
+                        scope
+                            .file
+                            .declaration(&name)
+                            .map(|declaration| match declaration {
+                                TypeDeclaration::Struct(identity, _)
+                                | TypeDeclaration::Enum(identity, _)
+                                | TypeDeclaration::Alias(identity, _) => identity.constraints.len(),
+                            });
+                    (Role::Type, arity)
+                }
                 Resolution::Kind(_) => (Role::Kind, None),
                 Resolution::Imported(source, emitted)
                     if source.0 == "protos" && emitted == self.name =>
@@ -740,6 +759,12 @@ impl Checkable for AssociatedType {
 
 impl Checkable for AssociatedConstant {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
+        if self.name.0 != self.name.0.to_uppercase() {
+            return Err(Fault::Conceptual(
+                vec![],
+                Problem::Name(protos::Text::try_from(self.name.0.clone()).expect("identifier")),
+            ));
+        }
         self.ty.check(scope).place(0)
     }
 }

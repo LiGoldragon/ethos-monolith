@@ -666,6 +666,23 @@ fn rejects_generator_panics_and_locally_invalid_members_before_generation() {
 }
 
 #[test]
+fn rejects_local_arity_lowercase_constants_and_unbounded_alias_graphs() {
+    let arity = "Types\n[]\n[ A.{ Text } B.A<Integer> ]\n[]".fault();
+    assert!(matches!(
+        arity.1,
+        Fault::Conceptual(_, Problem::Arity(0, 1))
+    ));
+    let constant = "Kinds\n[]\n[ K.{ [] [] [ capacity.Integer ] [] } ]".fault();
+    assert!(matches!(constant.1, Fault::Conceptual(_, Problem::Name(_))));
+    let mut declarations = String::new();
+    for index in 0..513 {
+        declarations.push_str(&format!("A{index}.Text "));
+    }
+    let graph = format!("Types\n[]\n[ {declarations} ]\n[]").fault();
+    assert!(matches!(graph.1, Fault::Conceptual(_, Problem::Depth)));
+}
+
+#[test]
 fn rejects_a_structural_fault_with_its_source_extent() {
     let source = "Types\n[]\n[ Record.{ Text ]\n[]";
     let fault = source.fault();
