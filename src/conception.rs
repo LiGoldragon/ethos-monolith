@@ -242,29 +242,17 @@ impl Bounded for Protoform {
 
 impl Conceiving<Name> for str {
     fn conceive(&self) -> Result<Name, Fault> {
-        if !self.starts_with("r#") && (self == "Self" || syn::parse_str::<syn::Ident>(self).is_ok())
-        {
-            Ok(Name(self.to_owned()))
-        } else {
-            Err(Problem::Name(protos::Text::try_from(self).unwrap_or_default()).here())
-        }
+        Name::try_from(self).map_err(|refused| {
+            Problem::Name(protos::Text::try_from(refused).unwrap_or_default()).here()
+        })
     }
 }
 
 impl Conceiving<Source> for str {
     fn conceive(&self) -> Result<Source, Fault> {
-        let Ok(path) = syn::parse_str::<syn::Path>(self) else {
-            return Err(Problem::Name(protos::Text::try_from(self).unwrap_or_default()).here());
-        };
-        if path.leading_colon.is_some() {
-            return Err(Problem::Name(protos::Text::try_from(self).unwrap_or_default()).here());
-        }
-        for segment in &path.segments {
-            if !segment.arguments.is_none() {
-                return Err(Problem::Name(protos::Text::try_from(self).unwrap_or_default()).here());
-            }
-        }
-        Ok(Source(self.to_owned()))
+        Source::try_from(self).map_err(|refused| {
+            Problem::Name(protos::Text::try_from(refused).unwrap_or_default()).here()
+        })
     }
 }
 
@@ -403,8 +391,9 @@ impl Conceiving<Sema> for Protoform {
 
 impl Conceiving<Import> for Protoform {
     fn conceive(&self) -> Result<Import, Fault> {
-        // A source:name import. Protos keeps every colon in a source chain as
-        // a headed body, so each hop is structural and located precisely.
+        // A source:name import. Protos keeps each source segment in a colon
+        // headed body, so collect the chain before conceiving its imported
+        // name or group.
         if let Some(Headed {
             head: Head::Symbol(symbol),
             separator,
@@ -414,31 +403,36 @@ impl Conceiving<Import> for Protoform {
             if separator != Separator::Colon {
                 return Err(Problem::Separator(separator).here());
             }
-            if let Some(Headed {
+            let mut source = symbol.text().to_owned();
+            let mut names = body;
+            let mut segments = 1;
+            while let Some(Headed {
                 head: Head::Symbol(segment),
                 separator: Separator::Colon,
-                body: names,
-            }) = body.headed()
+                body,
+            }) = names.headed()
             {
-                let source: Source = format!("{}::{}", symbol.text(), segment.text()).conceive()?;
-                return match names.bracketed() {
-                    Some(children) => Ok(Import::Many(
-                        source,
-                        Protoform::each(children).place(1).place(1)?,
-                    )),
-                    None => Ok(Import::One(
-                        source,
-                        Conceiving::<Imported>::conceive(names).place(1).place(1)?,
-                    )),
-                };
+                source.push_str("::");
+                source.push_str(segment.text());
+                names = body;
+                segments += 1;
             }
-            let source: Source = symbol.text().conceive()?;
-            return match body.bracketed() {
-                Some(children) => Ok(Import::Many(source, Protoform::each(children).place(1)?)),
-                None => Ok(Import::One(
-                    source,
-                    Conceiving::<Imported>::conceive(body).place(1)?,
-                )),
+            let source: Source = source.as_str().conceive()?;
+            return match names.bracketed() {
+                Some(children) => {
+                    let mut imports = Protoform::each(children);
+                    for _ in 0..segments {
+                        imports = imports.place(1);
+                    }
+                    Ok(Import::Many(source, imports?))
+                }
+                None => {
+                    let mut imported = Conceiving::<Imported>::conceive(names);
+                    for _ in 0..segments {
+                        imported = imported.place(1);
+                    }
+                    Ok(Import::One(source, imported?))
+                }
             };
         }
         if let Some(word) = self.bare()

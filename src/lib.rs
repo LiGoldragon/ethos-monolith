@@ -50,12 +50,91 @@ pub use fault::{Fault, Form, Problem};
 // ---------------------------------------------------------------------------
 
 /// A validated identifier: the name of a type, kind, variant, capability or constant.
+///
+/// Construct it with [`TryFrom<&str>`]; `AsRef<str>` reads its validated text.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Name(pub String);
+pub struct Name(String);
 
 /// The source of an import: a Rust path prefix such as `protos`, `crate` or `std::clone`.
+///
+/// Construct it with [`TryFrom<&str>`]; `AsRef<str>` reads its validated text.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Source(pub String);
+pub struct Source {
+    text: String,
+    segments: Vec<protos::Symbol>,
+}
+
+impl TryFrom<&str> for Name {
+    type Error = String;
+
+    fn try_from(text: &str) -> Result<Self, Self::Error> {
+        if !text.starts_with("r#")
+            && (text == "Self" || syn::parse_str::<syn::Ident>(text).is_ok())
+            && protos::Symbol::try_from(text).is_ok()
+        {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(text.to_owned())
+        }
+    }
+}
+
+impl TryFrom<String> for Name {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::try_from(text.as_str()).map(|_| Self(text))
+    }
+}
+
+impl AsRef<str> for Name {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for Source {
+    type Error = String;
+
+    fn try_from(text: &str) -> Result<Self, Self::Error> {
+        let Ok(path) = syn::parse_str::<syn::Path>(text) else {
+            return Err(text.to_owned());
+        };
+        if path.leading_colon.is_some() {
+            return Err(text.to_owned());
+        }
+        for segment in &path.segments {
+            if !segment.arguments.is_none() {
+                return Err(text.to_owned());
+            }
+        }
+        let mut segments = Vec::with_capacity(path.segments.len());
+        for segment in text.split("::") {
+            let Ok(symbol) = protos::Symbol::try_from(segment) else {
+                return Err(text.to_owned());
+            };
+            segments.push(symbol);
+        }
+        Ok(Self {
+            text: text.to_owned(),
+            segments,
+        })
+    }
+}
+
+impl TryFrom<String> for Source {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::try_from(text.as_str())
+    }
+}
+
+impl AsRef<str> for Source {
+    fn as_ref(&self) -> &str {
+        &self.text
+    }
+}
 
 /// The unit of declaration: one file, one Rust module; an enum of its four variants.
 #[derive(Clone, Debug, PartialEq, Eq)]

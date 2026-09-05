@@ -42,7 +42,8 @@ impl Tokening for Name {
 
 impl Tokening for Source {
     fn tokens(&self) -> TokenStream {
-        let path: syn::Path = syn::parse_str(&self.0).expect("a source was validated as a path");
+        let path: syn::Path =
+            syn::parse_str(self.as_ref()).expect("a source was validated as a path");
         quote! { #path }
     }
 }
@@ -299,7 +300,8 @@ trait Deriving {
 
 impl<R: Reaching + ?Sized> Deriving for R {
     fn derives(&self, file: &File, copy: bool) -> TokenStream {
-        let equatable = !self.reaches(&Name("Decimal".to_owned()), file, &mut vec![]);
+        let decimal = Name::try_from("Decimal").expect("static identifier");
+        let equatable = !self.reaches(&decimal, file, &mut vec![]);
         match (copy, equatable) {
             (true, true) => quote! { #[derive(Clone, Copy, Debug, PartialEq, Eq)] },
             (true, false) => quote! { #[derive(Clone, Copy, Debug, PartialEq)] },
@@ -344,7 +346,8 @@ trait Nesting {
 impl Nesting for Identity {
     fn nested_identity(&self, name: &Name) -> Identity {
         Identity {
-            name: Name(format!("{}{}", self.name.0, name.0)),
+            name: Name::try_from(format!("{}{}", self.name.0, name.0))
+                .expect("joined identifiers are an identifier"),
             constraints: self.constraints.clone(),
         }
     }
@@ -678,14 +681,14 @@ impl Emitting for File {
                 }
                 let request = TypeDeclaration::Enum(
                     Identity {
-                        name: Name("Request".to_owned()),
+                        name: Name::try_from("Request").expect("static identifier"),
                         constraints: vec![],
                     },
                     signal.requests.clone(),
                 );
                 let response = TypeDeclaration::Enum(
                     Identity {
-                        name: Name("Response".to_owned()),
+                        name: Name::try_from("Response").expect("static identifier"),
                         constraints: vec![],
                     },
                     signal.responses.clone(),
@@ -696,7 +699,7 @@ impl Emitting for File {
             File::Sema(sema) => {
                 let record = TypeDeclaration::Struct(
                     Identity {
-                        name: Name("Record".to_owned()),
+                        name: Name::try_from("Record").expect("static identifier"),
                         constraints: vec![],
                     },
                     sema.record.clone(),

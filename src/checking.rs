@@ -115,8 +115,11 @@ impl Implying for File {
     fn implied(&self) -> Vec<Name> {
         match self {
             File::Types(_) | File::Kinds(_) => vec![],
-            File::Signal(_) => vec![Name("Request".to_owned()), Name("Response".to_owned())],
-            File::Sema(_) => vec![Name("Record".to_owned())],
+            File::Signal(_) => vec![
+                Name::try_from("Request").expect("static identifier"),
+                Name::try_from("Response").expect("static identifier"),
+            ],
+            File::Sema(_) => vec![Name::try_from("Record").expect("static identifier")],
         }
     }
 }
@@ -454,11 +457,11 @@ impl Checkable for Signal {
         }
         let mut names = vec![
             DeclarationSite {
-                name: Name("Request".to_owned()),
+                name: Name::try_from("Request").expect("static identifier"),
                 path: vec![1],
             },
             DeclarationSite {
-                name: Name("Response".to_owned()),
+                name: Name::try_from("Response").expect("static identifier"),
                 path: vec![2],
             },
         ];
@@ -476,7 +479,7 @@ impl Checkable for Signal {
 impl Checkable for Sema {
     fn check(&self, scope: &Scope) -> Result<(), Fault> {
         let mut names = vec![DeclarationSite {
-            name: Name("Record".to_owned()),
+            name: Name::try_from("Record").expect("static identifier"),
             path: vec![1],
         }];
         names.extend(self.imports.names_in(0));
@@ -593,7 +596,7 @@ impl Referring for Reference {
         if self
             .source
             .as_ref()
-            .is_some_and(|source| source.0 == "protos")
+            .is_some_and(|source| source.as_ref() == "protos")
             && let Some(intrinsic) = Intrinsic::identify(&self.name.0)
         {
             if intrinsic.role() != role {
@@ -658,7 +661,7 @@ impl Referring for Reference {
                     arity: None,
                 },
                 Resolution::Imported(source, emitted)
-                    if source.0 == "protos" && emitted == self.name =>
+                    if source.as_ref() == "protos" && emitted == self.name =>
                 {
                     match Intrinsic::identify(&self.name.0) {
                         Some(intrinsic) => ReferenceRequirement {

@@ -177,22 +177,22 @@ fn types_reads_its_three_sections() {
     assert_eq!(
         types.imports,
         vec![Import::One(
-            ethos_zero::Source("protos".to_owned()),
+            ethos_zero::Source::try_from("protos").unwrap(),
             ethos_zero::Imported {
-                name: ethos_zero::Name("Text".to_owned()),
-                emitted: ethos_zero::Name("Text".to_owned()),
+                name: ethos_zero::Name::try_from("Text").unwrap(),
+                emitted: ethos_zero::Name::try_from("Text").unwrap(),
             }
         )]
     );
     assert_eq!(types.types.len(), 3);
     assert!(
-        matches!(&types.types[0], TypeDeclaration::Struct(identity, positions) if identity.name.0 == "Record" && positions.len() == 2)
+        matches!(&types.types[0], TypeDeclaration::Struct(identity, positions) if identity.name.as_ref() == "Record" && positions.len() == 2)
     );
     assert!(
-        matches!(&types.types[1], TypeDeclaration::Enum(_, variants) if variants == &[Variant::Bare(ethos_zero::Name("Closed".to_owned())), Variant::Bare(ethos_zero::Name("Full".to_owned()))])
+        matches!(&types.types[1], TypeDeclaration::Enum(_, variants) if variants == &[Variant::Bare(ethos_zero::Name::try_from("Closed").unwrap()), Variant::Bare(ethos_zero::Name::try_from("Full").unwrap())])
     );
     assert!(
-        matches!(&types.types[2], TypeDeclaration::Alias(_, aliased) if aliased.name.0 == "Integer")
+        matches!(&types.types[2], TypeDeclaration::Alias(_, aliased) if aliased.name.as_ref() == "Integer")
     );
 }
 
@@ -206,7 +206,7 @@ fn kinds_reads_simple_and_complex_kinds() {
     };
     assert_eq!(capabilities[0].receiver, Receiver::Shared);
     assert!(
-        matches!(&capabilities[0].signature, Signature::Yielding(yields) if yields.name.0 == "Text")
+        matches!(&capabilities[0].signature, Signature::Yielding(yields) if yields.name.as_ref() == "Text")
     );
     let KindBody::Complex {
         superkinds,
@@ -217,10 +217,10 @@ fn kinds_reads_simple_and_complex_kinds() {
     else {
         panic!("expected a complex kind");
     };
-    assert_eq!(superkinds[0].name.0, "Fillable");
-    assert_eq!(types[0].name.0, "Item");
-    assert_eq!(types[0].bounds[0].name.0, "Serializable");
-    assert_eq!(constants[0].name.0, "CAPACITY");
+    assert_eq!(superkinds[0].name.as_ref(), "Fillable");
+    assert_eq!(types[0].name.as_ref(), "Item");
+    assert_eq!(types[0].bounds[0].name.as_ref(), "Serializable");
+    assert_eq!(constants[0].name.as_ref(), "CAPACITY");
     assert_eq!(capabilities[0].receiver, Receiver::Mutable);
 }
 
@@ -230,10 +230,10 @@ fn kind_identity_carries_its_constraints() {
         panic!("expected Kinds");
     };
     let identity = &kinds.kinds[0].identity;
-    assert_eq!(identity.name.0, "Processable");
+    assert_eq!(identity.name.as_ref(), "Processable");
     assert!(matches!(&identity.constraints[0], Constraint::Many(bounds) if bounds.len() == 2));
     assert!(
-        matches!(&identity.constraints[1], Constraint::One(bound) if bound.name.0 == "Serializable")
+        matches!(&identity.constraints[1], Constraint::One(bound) if bound.name.as_ref() == "Serializable")
     );
 }
 
@@ -285,10 +285,10 @@ fn inline_qualification_reads_as_a_sourced_reference() {
     assert_eq!(
         variants[0],
         Variant::Typed(
-            ethos_zero::Name("Structural".to_owned()),
+            ethos_zero::Name::try_from("Structural").unwrap(),
             Reference {
-                source: Some(ethos_zero::Source("protos".to_owned())),
-                name: ethos_zero::Name("Fault".to_owned()),
+                source: Some(ethos_zero::Source::try_from("protos").unwrap()),
+                name: ethos_zero::Name::try_from("Fault").unwrap(),
                 arguments: vec![],
             }
         )
@@ -748,16 +748,20 @@ fn grouped_qualified_imports_and_self_superkinds_have_truthful_outcomes() {
     assert_eq!(
         grouped.imports,
         vec![Import::Many(
-            ethos_zero::Source("std::clone".to_owned()),
+            ethos_zero::Source::try_from("std::clone").unwrap(),
             vec![ethos_zero::Imported {
-                name: ethos_zero::Name("Clonable".to_owned()),
-                emitted: ethos_zero::Name("Clone".to_owned()),
+                name: ethos_zero::Name::try_from("Clonable").unwrap(),
+                emitted: ethos_zero::Name::try_from("Clone").unwrap(),
             }],
         )],
     );
     let rust =
         "Kinds\n[ std:clone:[ Clonable.Clone ] ]\n[ Copying<Clonable>.[ copy.[ Text ] ] ]".rust();
     assert!(rust.contains("pub trait Copying<A: std::clone::Clone>"));
+    let file = "Types\n[ std:clone:[ Clonable.Clone ] ]\n[]\n[]".file();
+    let delineation = Protosizable::protosize(&file).unwrap();
+    let text = protos::Textualizable::<protos::Delineation>::textualize(&delineation);
+    assert_eq!(Potential::<File>::from(text).actualize(()).unwrap(), file);
     let cycle = "Kinds\n[]\n[ K.{ [ K ] [] [] [] } ]".fault();
     assert!(matches!(cycle.1, Fault::Conceptual(_, Problem::Cycle(_))));
 }
@@ -817,8 +821,23 @@ fn a_lowercase_type_name_reads_as_written() {
         panic!("expected Types");
     };
     assert!(
-        matches!(&types.types[0], TypeDeclaration::Struct(Identity { name, .. }, _) if name.0 == "record")
+        matches!(&types.types[0], TypeDeclaration::Struct(Identity { name, .. }, _) if name.as_ref() == "record")
     );
+}
+
+#[test]
+fn programmatic_names_and_sources_are_validated_before_ascent() {
+    assert!(ethos_zero::Name::try_from("café").is_ok());
+    assert!(
+        "Types\n[]\n[ café.{ Text } ]\n[]"
+            .rust()
+            .contains("pub struct café")
+    );
+    assert!(ethos_zero::Name::try_from("match").is_err());
+    assert!(ethos_zero::Name::try_from("not-an-identifier").is_err());
+    assert!(ethos_zero::Name::try_from("r#escaped").is_err());
+    assert!(ethos_zero::Source::try_from("std::clone").is_ok());
+    assert!(ethos_zero::Source::try_from("std::vec::<Text>").is_err());
 }
 
 #[test]
